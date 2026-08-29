@@ -16,6 +16,13 @@ class Midphase {
         // overlapped, INCLUDING the empty set (not caching empty made every resting body re-walk
         // the BVH forever). Keyed by the OTHER body's id, since the query box moves with it.
         this._leafCache = new Map(); // otherBodyId -> { shape, minx,miny,minz,maxx,maxy,maxz, hits:[leafIndex...] }
+
+        // Per-expandPair()-call pools for compound-child / mesh-triangle world placement, grown as
+        // needed, never shrunk - see ExpandPair.js's _nextTriSlot / _nextChildSlot.
+        this._triSlots = [];
+        this._triSlotIndex = 0;
+        this._childSlots = [];
+        this._childSlotIndex = 0;
     }
 
     // Clears every cached leaf-walk result. Call when a static/kinematic compound or mesh body's
