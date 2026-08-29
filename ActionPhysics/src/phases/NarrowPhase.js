@@ -14,6 +14,7 @@ class NarrowPhase {
         this._epa = new EPA();
         this._contactPool = []; // reused ContactDetails, grown as needed, never shrunk
         this._poolIndex = 0;
+        this._pairResultScratch = []; // reused per-pair contact list, see PairTest.js
     }
 }
 

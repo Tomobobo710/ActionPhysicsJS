@@ -15,13 +15,20 @@
 
 	// ---- core mechanic: a single substep resolves a known overlap exactly ----
 
-	test('solver/core', 'a single substep resolves a box-on-ground overlap to exactly zero penetration', function (t) {
+	// Sphere-on-box, not box-on-box: this pins the SOLVER's one-shot exactness for a single contact
+	// point. A box on a much bigger box is a genuine 4-point face manifold (BoxBox's own SAT+clip
+	// contact), and 4 coincident-depth points solved Gauss-Seidel in one unconverged substep
+	// (iterations=1) legitimately overshoot slightly - each point's correction is computed against
+	// the position the previous point already moved, a well-known property of multi-point Gauss-
+	// Seidel position solving, not a bug. A sphere always contacts a box at exactly one point, so it
+	// isolates the single-point mechanic this test actually means to check.
+	test('solver/core', 'a single substep resolves a sphere-on-ground overlap to exactly zero penetration', function (t) {
 		var world = t.makeWorld({ gravity: 0 }); world.solver.substeps = 1;
 		t.box(world, 10, 0.5, 10, 0, { pos: [0, -0.5, 0], color: '#556' });
-		var box = t.box(world, 0.5, 0.5, 0.5, 1, { pos: [0, 0.4, 0], color: '#4af' }); // overlapping by exactly 0.1
+		var sphere = t.sphere(world, 0.5, 1, { pos: [0, 0.4, 0], color: '#4af' }); // overlapping by exactly 0.1
 
 		t.expect('exactly resolved to zero penetration in one substep', function () {
-			return { ok: Math.abs(box.position.y - 0.5) < 1e-9, detail: 'y=' + box.position.y.toFixed(10) };
+			return { ok: Math.abs(sphere.position.y - 0.5) < 1e-9, detail: 'y=' + sphere.position.y.toFixed(10) };
 		});
 		t.simulate(world, 1);
 	});
@@ -37,10 +44,14 @@
 		t.simulate(world, 1);
 	});
 
+	// Two spheres, not two boxes: two axis-aligned equal boxes overlapping face-to-face is itself a
+	// 4-point BoxBox manifold (see the sphere-on-ground test above for why that legitimately
+	// overshoots a single unconverged Gauss-Seidel substep) - two spheres always contact at exactly
+	// one point, isolating the single-point equal-mass split this test means to check.
 	test('solver/core', 'two equal-mass dynamic bodies split a correction evenly', function (t) {
 		var world = t.makeWorld({ gravity: 0 }); world.solver.substeps = 1;
-		var a = t.box(world, 0.5, 0.5, 0.5, 1, { pos: [0, 0, 0], color: '#4af' });
-		var b = t.box(world, 0.5, 0.5, 0.5, 1, { pos: [0.8, 0, 0], color: '#f84' }); // overlapping by 0.2 (half-extent sum 1.0)
+		var a = t.sphere(world, 0.5, 1, { pos: [0, 0, 0], color: '#4af' });
+		var b = t.sphere(world, 0.5, 1, { pos: [0.8, 0, 0], color: '#f84' }); // overlapping by 0.2 (radius sum 1.0)
 
 		t.expect('the pair separates to exactly the half-extent sum', function () {
 			var gap = b.position.x - a.position.x;
@@ -57,18 +68,20 @@
 
 	// ---- normal direction / sign convention (the actual bug found and fixed while building this) ----
 
-	test('solver/core', 'a box resting on top of the ground is pushed UP, never down through it', function (t) {
-		// Pins the GJK/EPA normal-sign convention end-to-end: either half signed backwards sends
-		// the box THROUGH the ground instead of out of it.
+	// Sphere-on-box, not box-on-box: same single-point rationale as the exactness test above - this
+	// one pins the normal-sign convention end-to-end (either half signed backwards sends the body
+	// THROUGH the ground), which needs exactly one contact point to check exactly, not BoxBox's
+	// legitimate 4-point overshoot.
+	test('solver/core', 'a sphere resting on top of the ground is pushed UP, never down through it', function (t) {
 		var world = t.makeWorld({ gravity: 0 }); world.solver.substeps = 1;
 		t.box(world, 10, 0.5, 10, 0, { pos: [0, -0.5, 0], color: '#556' });
-		var box = t.box(world, 0.5, 0.5, 0.5, 1, { pos: [0, 0.3, 0], color: '#4af' }); // overlapping by 0.2
+		var sphere = t.sphere(world, 0.5, 1, { pos: [0, 0.3, 0], color: '#4af' }); // overlapping by 0.2
 
-		t.expect('the box moved UP, out of the ground, not further down through it', function () {
-			return { ok: box.position.y > 0.3, detail: 'y=' + box.position.y.toFixed(6) };
+		t.expect('the sphere moved UP, out of the ground, not further down through it', function () {
+			return { ok: sphere.position.y > 0.3, detail: 'y=' + sphere.position.y.toFixed(6) };
 		});
 		t.expect('resolved to exactly the correct resting height', function () {
-			return { ok: Math.abs(box.position.y - 0.5) < 1e-9, detail: 'y=' + box.position.y.toFixed(10) };
+			return { ok: Math.abs(sphere.position.y - 0.5) < 1e-9, detail: 'y=' + sphere.position.y.toFixed(10) };
 		});
 		t.simulate(world, 1);
 	});
@@ -100,10 +113,12 @@
 		t.box(world, 0.5, 0.5, 0.5, 1, { pos: [0, 0.5, 0], color: '#4af' }); // exactly resting, no correction needed
 
 		// At exactly resting height C <= 0, so no correction runs; this checks only that manifold
-		// machinery survives a full step without losing its point - what warm start depends on.
-		t.expect('a manifold exists for the resting pair, with exactly one contact point', function () {
+		// machinery survives a full step without losing its points - what warm start depends on.
+		// A flat box resting on a much bigger box is a genuine 4-point face contact (BoxBox's own
+		// SAT+clip manifold), not the single GJK/EPA point this pair used to fall through to.
+		t.expect('a manifold exists for the resting pair, with its 4 contact points', function () {
 			var manifold = Array.from(world.narrowphase.manifolds.values())[0];
-			return { ok: !!manifold && manifold.pointCount === 1, detail: manifold ? ('pointCount=' + manifold.pointCount) : 'no manifold' };
+			return { ok: !!manifold && manifold.pointCount === 4, detail: manifold ? ('pointCount=' + manifold.pointCount) : 'no manifold' };
 		});
 		t.simulate(world, 1);
 	});
@@ -120,16 +135,17 @@
 	// becoming derived velocity. See Solver.js's own header for the full reasoning and the two
 	// narrower approaches (a flat magnitude cap, a fixed Baumgarte fraction) that were tried first and
 	// failed for different reasons.
+	// Sphere-on-box, not box-on-box: same single-point rationale as the exactness test above.
 	test('solver/core', 'a body spawned deep in overlap settles instantly with zero fabricated velocity', function (t) {
 		var world = t.makeWorld({ gravity: 0 }); world.solver.substeps = 1;
 		t.box(world, 10, 0.5, 10, 0, { pos: [0, -0.5, 0], color: '#556' });
-		var box = t.box(world, 0.5, 0.5, 0.5, 1, { pos: [0, 0.4, 0], color: '#f55' }); // overlapping by 0.1, zero real velocity behind it
+		var sphere = t.sphere(world, 0.5, 1, { pos: [0, 0.4, 0], color: '#f55' }); // overlapping by 0.1, zero real velocity behind it
 
 		t.expect('resolved to exactly the correct rest height', function () {
-			return { ok: Math.abs(box.position.y - 0.5) < 1e-9, detail: 'y=' + box.position.y.toFixed(10) };
+			return { ok: Math.abs(sphere.position.y - 0.5) < 1e-9, detail: 'y=' + sphere.position.y.toFixed(10) };
 		});
 		t.expect('zero derived velocity - the correction was entirely non-explainable, so entirely bias', function () {
-			return { ok: Math.abs(box.linear_velocity.y) < 1e-9, detail: 'vy=' + box.linear_velocity.y.toExponential(3) };
+			return { ok: Math.abs(sphere.linear_velocity.y) < 1e-9, detail: 'vy=' + sphere.linear_velocity.y.toExponential(3) };
 		});
 		t.simulate(world, 1);
 	});

@@ -20,13 +20,16 @@ proto.step = function (broadphasePairs, midphase, dt) {
         const margin = this._speculativeMargin(bodyA, bodyB);
 
         for (let i = 0; i < primitivePairs.length; i++) {
-            const contact = this._testPrimitivePair(primitivePairs[i].a, primitivePairs[i].b);
-            // signedDistance: positive = overlapping, negative = separated by that gap. Report
-            // while overlapping or within the speculative margin; drop once the gap exceeds it.
-            if (contact.signedDistance < -margin) continue;
-            let list = contactsByPair.get(key);
-            if (!list) { list = []; contactsByPair.set(key, list); }
-            list.push(contact);
+            const pairContacts = this._testPrimitivePair(primitivePairs[i].a, primitivePairs[i].b);
+            for (let c = 0; c < pairContacts.length; c++) {
+                const contact = pairContacts[c];
+                // signedDistance: positive = overlapping, negative = separated by that gap. Report
+                // while overlapping or within the speculative margin; drop once the gap exceeds it.
+                if (contact.signedDistance < -margin) continue;
+                let list = contactsByPair.get(key);
+                if (!list) { list = []; contactsByPair.set(key, list); }
+                list.push(contact);
+            }
         }
 
         // Ensure a manifold exists even with zero contacts this tick, so refresh() below can
@@ -38,19 +41,32 @@ proto.step = function (broadphasePairs, midphase, dt) {
     return this.manifolds;
 };
 
-// One pooled ContactDetails for one primitive pair. Dispatches to a closed-form test when one
-// applies (own numerics, no shared epsilon/iteration budget with any other pair type); falls
-// through to GJK/EPA otherwise. Never culls - the caller (step) decides what's worth a manifold entry.
+// One or more pooled ContactDetails for one primitive pair, as an array (reused scratch array -
+// copy out before the next call). Dispatches to a closed-form test when one applies (own
+// numerics, no shared epsilon/iteration budget with any other pair type); falls through to
+// GJK/EPA otherwise. Never culls - the caller (step) decides what's worth a manifold entry.
 proto._testPrimitivePair = function (placedA, placedB) {
-    const contact = this._nextPooledContact();
+    const results = this._pairResultScratch;
+    results.length = 0;
 
     if (SphereSphere.applies(placedA, placedB)) {
-        return SphereSphere.test(placedA, placedB, contact);
+        results.push(SphereSphere.test(placedA, placedB, this._nextPooledContact()));
+        return results;
     }
     if (SphereBox.applies(placedA, placedB)) {
-        return SphereBox.test(placedA, placedB, contact);
+        results.push(SphereBox.test(placedA, placedB, this._nextPooledContact()));
+        return results;
+    }
+    if (BoxBox.applies(placedA, placedB)) {
+        const self = this;
+        // null = boxes are actually separated - SAT's per-axis numbers aren't a true closest-point
+        // witness once apart, so fall through to GJK/EPA below, same as any pair with no
+        // closed-form test.
+        const boxResult = BoxBox.test(placedA, placedB, results, function () { return self._nextPooledContact(); });
+        if (boxResult !== null) return results;
     }
 
+    const contact = this._nextPooledContact();
     const support = new MinkowskiSupport(placedA, placedB);
     const gjkResult = this._gjk.run(support);
     if (gjkResult.overlapping) {
@@ -59,7 +75,8 @@ proto._testPrimitivePair = function (placedA, placedB) {
     } else {
         contact.setFromGJKSeparated(gjkResult);
     }
-    return contact;
+    results.push(contact);
+    return results;
 };
 
 proto._isCompoundOrMesh = function (shape) {
