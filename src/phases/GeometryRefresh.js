@@ -13,6 +13,13 @@ NarrowPhase.REFRESH_REST_LIN_SQ = 0.30 * 0.30;
 NarrowPhase.REFRESH_REST_ANG_SQ = 0.60 * 0.60;
 
 proto.refreshManifoldGeometry = function (manifolds) {
+    // Pooled contacts produced here (via _nextPooledContact / _testPrimitivePair) are all
+    // transient - copied into manifold points or the mesh-refresh accumulator within this call and
+    // never retained. step()'s contacts were already consumed by manifolds.refresh() before the
+    // solver started calling this. So rewind the pool each substep instead of letting _poolIndex
+    // climb monotonically all tick (which forced the pool to grow every tick -> new ContactDetails,
+    // the run's single biggest allocator).
+    this._poolIndex = 0;
     this._ctHintNormal = null; // stale from step()'s pair loop; each branch below sets it as needed
     for (const manifold of manifolds.values()) {
         const bodyA = manifold.bodyA, bodyB = manifold.bodyB;
@@ -175,16 +182,29 @@ proto._refreshMeshFaceManifoldFast = function (manifold, bodyA, bodyB) {
 // Re-clip the pair and move each existing point onto its nearest fresh clip point. Geometry only;
 // point count and warm-start lambdas are untouched.
 proto._refreshMeshFaceManifold = function (manifold, bodyA, bodyB) {
-    const primitivePairs = this._midphase.expandPair(bodyA, bodyB);
+    const sides = this._midphase.expandPairSides(bodyA, bodyB);
+    const sidesA = sides.a, sidesB = sides.b;
     // _testPrimitivePair reuses its scratch array per call, so copy the results into a private list.
     const acc = this._meshRefreshAcc || (this._meshRefreshAcc = []);
     acc.length = 0;
-    for (let i = 0; i < primitivePairs.length; i++) {
-        const pc = this._testPrimitivePair(primitivePairs[i].a, primitivePairs[i].b);
-        for (let c = 0; c < pc.length; c++) if (pc[c].fromMeshFace) {
-            const s = this._nextPooledContact();
-            s.copy(pc[c]);
-            acc.push(s);
+    // Only fromMeshFace contacts are kept below, and GJK/EPA never produces those - so run just the
+    // closed-form face tests here. Going through the full _testPrimitivePair dispatch would fire
+    // GJK on every non-contact triangle of the expansion purely to discard the result.
+    const self = this;
+    const nc = function () { return self._nextPooledContact(); };
+    for (let i = 0; i < sidesA.length; i++) {
+        for (let j = 0; j < sidesB.length; j++) {
+            const pa = sidesA[i], pb = sidesB[j];
+            const pc = this._pairResultScratch;
+            pc.length = 0;
+            if (ConvexTri.applies(pa, pb)) ConvexTri.test(pa, pb, pc, nc, this._ctHintNormal);
+            else if (TriTri.applies(pa, pb)) TriTri.test(pa, pb, pc, nc);
+            else continue;
+            for (let c = 0; c < pc.length; c++) if (pc[c].fromMeshFace) {
+                const s = this._nextPooledContact();
+                s.copy(pc[c]);
+                acc.push(s);
+            }
         }
     }
     if (acc.length === 0) return; // lost contact this substep - keep last good geometry

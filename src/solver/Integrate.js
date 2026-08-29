@@ -6,13 +6,23 @@ proto._integrate = function (bodies, gravity, h) {
         const b = bodies[i];
         if (b.bodyType !== RigidBody.DYNAMIC) continue;
 
-        this._prevPos.set(b.id, new Vector3().copy(b.position));
-        this._prevRot.set(b.id, new Quaternion().copy(b.rotation));
-        const bias = this._biasDelta.get(b.id) || new Vector3();
+        // These snapshots only need to survive within the substep (derived-velocity + restitution
+        // read them later this substep, never across substeps), so reuse the per-body slot rather
+        // than allocating a fresh Vector3/Quaternion every body every substep - ~6000 allocs/tick
+        // otherwise, forever, even at rest.
+        let prevPos = this._prevPos.get(b.id);
+        if (!prevPos) { prevPos = new Vector3(); this._prevPos.set(b.id, prevPos); }
+        prevPos.copy(b.position);
+        let prevRot = this._prevRot.get(b.id);
+        if (!prevRot) { prevRot = new Quaternion(); this._prevRot.set(b.id, prevRot); }
+        prevRot.copy(b.rotation);
+        let bias = this._biasDelta.get(b.id);
+        if (!bias) { bias = new Vector3(); this._biasDelta.set(b.id, bias); }
         bias.set(0, 0, 0);
-        this._biasDelta.set(b.id, bias);
         // Pre-gravity snapshot; restitution's pre-solve velocity reads this.
-        this._preGravityVel.set(b.id, new Vector3().copy(b.linear_velocity));
+        let preGrav = this._preGravityVel.get(b.id);
+        if (!preGrav) { preGrav = new Vector3(); this._preGravityVel.set(b.id, preGrav); }
+        preGrav.copy(b.linear_velocity);
 
         const g = b.gravity || gravity;
         b.linear_velocity.x += g.x * h * b.linear_factor.x;

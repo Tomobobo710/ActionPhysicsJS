@@ -28,6 +28,7 @@ ConvexTri.applies = function (placedA, placedB) {
 
 ConvexTri.SEPARATION_LIMIT = 0.5;   // speculative: report a face contact up to this gap in front of the plane
 ConvexTri.PENETRATION_LIMIT = 1.0;  // keep resolving as a face contact up to this depth behind it
+ConvexTri.MIN_CULL_LIMIT = 0.05;    // floor on the margin-derived 'separated' cull distance
 ConvexTri.EDGE_SLACK = 0.06;        // how far outside the triangle a support point may project and still count
 ConvexTri.AREA_EPSILON = 1e-12;
 ConvexTri.DEDUPE_DIST_SQ = 1e-6;
@@ -79,7 +80,8 @@ ConvexTri._pointInTri = function (hx, hy, hz, t0, t1, t2, tn, slack) {
 // within a hair of the (heightfield) triangle plane, at which point the centre heuristic flips the
 // normal and the contact shoves the body through. The established normal doesn't drift, so the
 // re-clip stays stable.
-ConvexTri.test = function (placedA, placedB, out, nextContact, hintNormalBToA) {
+// margin (optional): the pair's speculative margin. Only tightens the 'separated' verdict.
+ConvexTri.test = function (placedA, placedB, out, nextContact, hintNormalBToA, margin) {
     const aIsTri = placedA.shape instanceof TriangleShape;
     const triPlaced = aIsTri ? placedA : placedB;
     const cvxPlaced = aIsTri ? placedB : placedA;
@@ -127,12 +129,20 @@ ConvexTri.test = function (placedA, placedB, out, nextContact, hintNormalBToA) {
     const invRot = ConvexTri._invRot.copy(cvxPlaced.rotation).invert();
     const scratchDir = ConvexTri._scratchDir;
 
+    // PairTest.step discards contacts past the pair's margin, so past that the GJK/EPA fallback is
+    // wasted work. Marginless callers keep the old flat SEPARATION_LIMIT.
+    const cullLimit = (margin === undefined || margin === null)
+        ? ConvexTri.SEPARATION_LIMIT
+        : Math.min(ConvexTri.SEPARATION_LIMIT, Math.max(margin, ConvexTri.MIN_CULL_LIMIT));
+
     probeDir.set(-refN.x, -refN.y, -refN.z);
     MinkowskiSupport.supportOfInto(dp, cvxPlaced, invRot, probeDir, scratchDir);
     const gap = (dp.x - t0.x) * refN.x + (dp.y - t0.y) * refN.y + (dp.z - t0.z) * refN.z;
     if (gap > ConvexTri.SEPARATION_LIMIT) {
         // Every point of the convex is at least `gap` in front of the triangle's plane, so it
         // cannot be touching the triangle (which lies in that plane). Definitively separated.
+        // Not cullLimit: this branch also gates whether the pair gets a speculative face contact,
+        // so narrowing it changes trajectories.
         ConvexTri.lastVerdict = 'separated';
         return null;
     }
@@ -227,7 +237,7 @@ ConvexTri.test = function (placedA, placedB, out, nextContact, hintNormalBToA) {
         // the neighbouring coplanar tiles (gap ~ 0) but it sits laterally outside them.
         const outside = ConvexTri.lastDeepestOutsideDist;
         const along = gap > 0 ? gap : 0;
-        if (isFinite(outside) && Math.sqrt(along * along + outside * outside) > ConvexTri.SEPARATION_LIMIT) {
+        if (isFinite(outside) && Math.sqrt(along * along + outside * outside) > cullLimit) {
             ConvexTri.lastVerdict = 'separated';
         }
         return null;

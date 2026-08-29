@@ -11,6 +11,12 @@ class Midphase {
         this._triSlotIndex = 0;
         this._childSlots = [];
         this._childSlotIndex = 0;
+        this._primSlots = [];
+        this._primSlotIndex = 0;
+        // Scratch placements for nested compound recursion, indexed by depth.
+        this._nestedBodies = [];
+        // Reused return value of expandPairSides(); arrays are truncated, never replaced.
+        this._sides = { a: [], b: [] };
     }
 
     // Call when a static/kinematic compound/mesh body's geometry or transform changes.
@@ -18,5 +24,9 @@ class Midphase {
         this._leafCache.clear();
     }
 }
+
+// At or below this triangle count, a mesh is expanded wholesale instead of BVH-queried - see
+// _expandSide. Tiled CompoundShape ground is the motivating case (2 triangles per tile).
+Midphase.SMALL_MESH_TRIS = 4;
 
 ActionPhysics.Midphase = Midphase;

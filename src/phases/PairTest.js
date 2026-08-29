@@ -35,7 +35,8 @@ proto.step = function (broadphasePairs, midphase, dt) {
 
     for (let p = 0; p < broadphasePairs.length; p++) {
         const bodyA = broadphasePairs[p][0], bodyB = broadphasePairs[p][1];
-        const primitivePairs = midphase.expandPair(bodyA, bodyB);
+        const sides = midphase.expandPairSides(bodyA, bodyB);
+        const sidesA = sides.a, sidesB = sides.b;
         const key = bodyA.id < bodyB.id ? bodyA.id + ':' + bodyB.id : bodyB.id + ':' + bodyA.id;
         const margin = this._speculativeMargin(bodyA, bodyB);
 
@@ -47,17 +48,22 @@ proto.step = function (broadphasePairs, midphase, dt) {
         const existing = this.manifolds._manifolds.get(key);
         this._ctHintNormal = (existing && existing.points.length > 0 && existing.points[0].fromMeshFace)
             ? existing.points[0].normal : null;
+        // Contacts past this gap are discarded below, so closed-form tests can use it to skip the
+        // GJK/EPA fallback. Cleared after the loop; the refresh path has no pair margin.
+        this._curMargin = margin;
 
         let sawMeshFace = false;
-        for (let i = 0; i < primitivePairs.length; i++) {
-            const pairContacts = this._testPrimitivePair(primitivePairs[i].a, primitivePairs[i].b);
-            for (let c = 0; c < pairContacts.length; c++) {
-                const contact = pairContacts[c];
-                if (contact.signedDistance < -margin) continue; // gap beyond the speculative margin
-                if (contact.fromMeshFace) sawMeshFace = true;
-                let list = contactsByPair.get(key);
-                if (!list) { list = []; contactsByPair.set(key, list); }
-                list.push(contact);
+        for (let i = 0; i < sidesA.length; i++) {
+            for (let j = 0; j < sidesB.length; j++) {
+                const pairContacts = this._testPrimitivePair(sidesA[i], sidesB[j]);
+                for (let c = 0; c < pairContacts.length; c++) {
+                    const contact = pairContacts[c];
+                    if (contact.signedDistance < -margin) continue; // gap beyond the speculative margin
+                    if (contact.fromMeshFace) sawMeshFace = true;
+                    let list = contactsByPair.get(key);
+                    if (!list) { list = []; contactsByPair.set(key, list); }
+                    list.push(contact);
+                }
             }
         }
 
@@ -73,6 +79,7 @@ proto.step = function (broadphasePairs, midphase, dt) {
         // Ensure a manifold exists even with zero contacts, so refresh() can prune a separated pair.
         this.manifolds.getOrCreate(bodyA, bodyB);
     }
+    this._curMargin = null;
 
     this.manifolds.refresh(contactsByPair, this._dt);
     return this.manifolds;
@@ -109,7 +116,7 @@ proto._testPrimitivePair = function (placedA, placedB) {
     if (ConvexTri.applies(placedA, placedB)) {
         const self = this;
         // _ctHintNormal is set per pair by step() from the existing manifold, null on first contact.
-        const ctResult = ConvexTri.test(placedA, placedB, results, function () { return self._nextPooledContact(); }, this._ctHintNormal);
+        const ctResult = ConvexTri.test(placedA, placedB, results, function () { return self._nextPooledContact(); }, this._ctHintNormal, this._curMargin);
         if (ctResult !== null) return results;                       // face contact
         if (ConvexTri.lastVerdict === 'separated') return results;   // provably no contact - skip GJK/EPA
         // 'maybe': non-face contact still possible (edge/vertex) - fall through to GJK/EPA.

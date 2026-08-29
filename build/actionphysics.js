@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-29T18:24:19.621Z
+// ActionPhysics 0.1.0 — built 2026-08-29T23:33:59.275Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine. Ships as one concatenated
@@ -4029,6 +4029,12 @@ class Midphase {
         this._triSlotIndex = 0;
         this._childSlots = [];
         this._childSlotIndex = 0;
+        this._primSlots = [];
+        this._primSlotIndex = 0;
+        // Scratch placements for nested compound recursion, indexed by depth.
+        this._nestedBodies = [];
+        // Reused return value of expandPairSides(); arrays are truncated, never replaced.
+        this._sides = { a: [], b: [] };
     }
 
     // Call when a static/kinematic compound/mesh body's geometry or transform changes.
@@ -4036,6 +4042,10 @@ class Midphase {
         this._leafCache.clear();
     }
 }
+
+// At or below this triangle count, a mesh is expanded wholesale instead of BVH-queried - see
+// _expandSide. Tiled CompoundShape ground is the motivating case (2 triangles per tile).
+Midphase.SMALL_MESH_TRIS = 4;
 
 ActionPhysics.Midphase = Midphase;
 
@@ -4086,23 +4096,35 @@ proto._ensureBVH = function (shape) {
 };
 
 // Leaf indices of `shape` whose AABB overlaps `localQueryAABB` (in shape-local space). Cached per
-// (shape, other body); an identical query next tick hits the cache.
+// (other body, shape): expanding one body pair queries many shapes under the same otherBodyId -
+// every nested mesh child of a compound ground - so keying on the body alone makes each query evict
+// the previous one and the cache never hits.
 proto._queryLeaves = function (shape, otherBodyId, localQueryAABB) {
-    const cached = this._leafCache.get(otherBodyId);
-    if (cached && cached.shape === shape &&
+    let byShape = this._leafCache.get(otherBodyId);
+    if (byShape === undefined) {
+        byShape = new Map();
+        this._leafCache.set(otherBodyId, byShape);
+    }
+    const cached = byShape.get(shape);
+    if (cached &&
         cached.minx === localQueryAABB.min.x && cached.miny === localQueryAABB.min.y && cached.minz === localQueryAABB.min.z &&
         cached.maxx === localQueryAABB.max.x && cached.maxy === localQueryAABB.max.y && cached.maxz === localQueryAABB.max.z) {
         return cached.hits; // may be [] - a valid, cached answer
     }
     const bvh = this._ensureBVH(shape);
-    const hits = [];
+    const hits = cached ? cached.hits : [];
+    hits.length = 0;
     bvh.query(localQueryAABB, function (i) { hits.push(i); });
-    this._leafCache.set(otherBodyId, {
-        shape: shape,
-        minx: localQueryAABB.min.x, miny: localQueryAABB.min.y, minz: localQueryAABB.min.z,
-        maxx: localQueryAABB.max.x, maxy: localQueryAABB.max.y, maxz: localQueryAABB.max.z,
-        hits: hits
-    });
+    if (cached) {
+        cached.minx = localQueryAABB.min.x; cached.miny = localQueryAABB.min.y; cached.minz = localQueryAABB.min.z;
+        cached.maxx = localQueryAABB.max.x; cached.maxy = localQueryAABB.max.y; cached.maxz = localQueryAABB.max.z;
+    } else {
+        byShape.set(shape, {
+            minx: localQueryAABB.min.x, miny: localQueryAABB.min.y, minz: localQueryAABB.min.z,
+            maxx: localQueryAABB.max.x, maxy: localQueryAABB.max.y, maxz: localQueryAABB.max.z,
+            hits: hits
+        });
+    }
     return hits;
 };
 
@@ -4114,10 +4136,30 @@ var proto = Midphase.prototype;
 // Expands one side into primitive candidates. `otherAABB`: the other body's fattened AABB, for
 // culling. `otherBodyId`: leaf-cache key. `isNestedChild`: `body` is a compound child's placement
 // being recursed into (no speculative margin of its own, so the own-margin fattening is skipped).
-proto._expandSide = function (body, otherAABB, otherBodyId, isNestedChild) {
+// `out`: caller-owned array, reset by the caller; results (including nested recursion) append to it.
+proto._expandSide = function (body, otherAABB, otherBodyId, isNestedChild, out, depth) {
+    depth = depth || 0;
     const shape = body.shape;
     if (!(shape instanceof CompoundShape) && !(shape instanceof MeshShape)) {
-        return [{ shape: shape, position: body.position, rotation: body.rotation }];
+        const slot = this._nextPrimSlot();
+        slot.shape = shape;
+        slot.position = body.position;
+        slot.rotation = body.rotation;
+        slot.bodyCenter = null;
+        out.push(slot);
+        return out;
+    }
+
+    // A tiny mesh (one tile of a big CompoundShape ground) doesn't earn a BVH walk: per-triangle
+    // culling saves at most a test or two, while the local query AABB plus the tree walk costs more.
+    // Still cull the mesh as a whole - a distant one must yield no candidates - but do it with a
+    // direct world-space AABB overlap against the shape's own bounds.
+    if (shape instanceof MeshShape && shape.triangleCount <= Midphase.SMALL_MESH_TRIS) {
+        const bounds = Midphase._scratchSmallAABB;
+        shape.localAABBInto(bounds);
+        if (!Midphase._worldOverlaps(bounds, body, otherAABB)) return out;
+        this._emitTriangles(shape, body, out, null);
+        return out;
     }
 
     // Bring the other body's world AABB into this body's local space by inverse-transforming its 8
@@ -4152,8 +4194,10 @@ proto._expandSide = function (body, otherAABB, otherBodyId, isNestedChild) {
     }
 
     const hits = this._queryLeaves(shape, otherBodyId, localQuery);
-    const out = [];
     if (shape instanceof CompoundShape) {
+        // Per-depth scratch: this frame keeps reading `body` across iterations, so the callee
+        // can't be handed the object we're reading from.
+        const nestedBody = this._nestedBodyAt(depth);
         for (let k = 0; k < hits.length; k++) {
             const child = shape.children[hits[k]];
             const slot = this._nextChildSlot();
@@ -4164,29 +4208,44 @@ proto._expandSide = function (body, otherAABB, otherBodyId, isNestedChild) {
                 // A compound child that is itself a mesh/compound (e.g. a CompoundShape ground
                 // made of many small MeshShape tiles) is not itself a primitive - recurse into it
                 // at its own world placement, same as expanding a top-level body's shape.
-                const nested = this._expandSide({ shape: child.shape, position: slot.position, rotation: slot.rotation }, otherAABB, otherBodyId, true);
-                for (let n = 0; n < nested.length; n++) out.push(nested[n]);
+                nestedBody.shape = child.shape;
+                nestedBody.position = slot.position;
+                nestedBody.rotation = slot.rotation;
+                this._expandSide(nestedBody, otherAABB, otherBodyId, true, out, depth + 1);
             } else {
-                out.push({ shape: child.shape, position: slot.position, rotation: slot.rotation });
+                const prim = this._nextPrimSlot();
+                prim.shape = child.shape;
+                prim.position = slot.position;
+                prim.rotation = slot.rotation;
+                prim.bodyCenter = null;
+                out.push(prim);
             }
         }
     } else {
-        const a = Midphase._scratchTriA, b = Midphase._scratchTriB, c = Midphase._scratchTriC;
-        for (let k = 0; k < hits.length; k++) {
-            shape.triangleAt(hits[k], a, b, c);
-            // Baked to world space at identity rotation, so the narrowphase has nothing to undo.
-            const slot = this._nextTriSlot();
-            body.rotation.transformVectorInto(a, slot.a); slot.a.addInPlace(body.position);
-            body.rotation.transformVectorInto(b, slot.b); slot.b.addInPlace(body.position);
-            body.rotation.transformVectorInto(c, slot.c); slot.c.addInPlace(body.position);
-            slot.shape.a = slot.a; slot.shape.b = slot.b; slot.shape.c = slot.c;
-            // position stays at origin (verts are already world-space); bodyCenter is a hint TriTri
-            // uses to orient the contact normal.
-            slot.bodyCenter.copy(body.position);
-            out.push({ shape: slot.shape, position: slot.position, rotation: slot.rotation, bodyCenter: slot.bodyCenter });
-        }
+        this._emitTriangles(shape, body, out, hits);
     }
     return out;
+};
+
+// Appends `shape`'s triangles, baked to world space, into `out`. `hits`: leaf indices to emit, or
+// null for all of them.
+proto._emitTriangles = function (shape, body, out, hits) {
+    const a = Midphase._scratchTriA, b = Midphase._scratchTriB, c = Midphase._scratchTriC;
+    const n = hits ? hits.length : shape.triangleCount;
+    for (let k = 0; k < n; k++) {
+        shape.triangleAt(hits ? hits[k] : k, a, b, c);
+        // Baked to world space at identity rotation, so the narrowphase has nothing to undo.
+        const slot = this._nextTriSlot();
+        body.rotation.transformVectorInto(a, slot.a); slot.a.addInPlace(body.position);
+        body.rotation.transformVectorInto(b, slot.b); slot.b.addInPlace(body.position);
+        body.rotation.transformVectorInto(c, slot.c); slot.c.addInPlace(body.position);
+        slot.shape.a = slot.a; slot.shape.b = slot.b; slot.shape.c = slot.c;
+        // position stays at origin (verts are already world-space); bodyCenter is a hint TriTri
+        // uses to orient the contact normal.
+        slot.bodyCenter.copy(body.position);
+        // The slot is already the shape the narrowphase reads - hand it over directly.
+        out.push(slot);
+    }
 };
 
 // Pooled world-space triangle slot, grown as needed. The pool index resets once per expandPair()
@@ -4214,27 +4273,77 @@ proto._nextChildSlot = function () {
     return this._childSlots[this._childSlotIndex++];
 };
 
-// Expands a broadphase [bodyA, bodyB] pair into primitive x primitive candidates:
-// [{ a: {shape,position,rotation}, b: {shape,position,rotation} }, ...]
-proto.expandPair = function (bodyA, bodyB) {
-    // Both sides' compound/mesh expansion below draws from the same pooled slots, so the pool is
-    // reset once here, not per side - each hit this tick still gets its own slot, consumed
-    // synchronously by the caller before the next pair (see PairTest.js) or the next tick.
+// Pooled placement for a non-triangle primitive. Holds references to vectors owned elsewhere.
+proto._nextPrimSlot = function () {
+    if (this._primSlotIndex >= this._primSlots.length) {
+        this._primSlots.push({ shape: null, position: null, rotation: null, bodyCenter: null });
+    }
+    return this._primSlots[this._primSlotIndex++];
+};
+
+// Scratch placement for recursing into a nested compound child, one per depth.
+proto._nestedBodyAt = function (depth) {
+    while (this._nestedBodies.length <= depth) {
+        this._nestedBodies.push({ shape: null, position: null, rotation: null });
+    }
+    return this._nestedBodies[depth];
+};
+
+// Expands a broadphase pair into the two sides' primitive lists; the candidate set is their
+// cross-product, which callers walk directly instead of materialising it.
+//
+// Returns a reused { a, b } - arrays and placements are pooled and valid only until the next call.
+proto.expandPairSides = function (bodyA, bodyB) {
+    // Both sides draw from the same pools, so they reset once here, not per side.
     this._triSlotIndex = 0;
     this._childSlotIndex = 0;
+    this._primSlotIndex = 0;
+    const sides = this._sides;
+    sides.a.length = 0;
+    sides.b.length = 0;
     // The fattened broadphase AABB is used for child/triangle culling too, so a compound child or
     // mesh triangle a body is about to reach surfaces the same tick early as the body pair itself.
-    const sidesA = this._expandSide(bodyA, bodyB.getBroadphaseAABB(), bodyB.id);
-    const sidesB = this._expandSide(bodyB, bodyA.getBroadphaseAABB(), bodyA.id);
+    this._expandSide(bodyA, bodyB.getBroadphaseAABB(), bodyB.id, false, sides.a, 0);
+    this._expandSide(bodyB, bodyA.getBroadphaseAABB(), bodyA.id, false, sides.b, 0);
+    return sides;
+};
+
+// Materialised cross-product form of expandPairSides, for external callers and tests.
+proto.expandPair = function (bodyA, bodyB) {
+    const sides = this.expandPairSides(bodyA, bodyB);
     const out = [];
-    for (let i = 0; i < sidesA.length; i++) {
-        for (let j = 0; j < sidesB.length; j++) {
-            out.push({ a: sidesA[i], b: sidesB[j] });
+    for (let i = 0; i < sides.a.length; i++) {
+        for (let j = 0; j < sides.b.length; j++) {
+            out.push({ a: sides.a[i], b: sides.b[j] });
         }
     }
     return out;
 };
 
+// Does `local` (a shape-local AABB placed at `body`) overlap the world-space `otherAABB`? The
+// local box is rotated into world space by its 8 corners - conservative, never under-includes.
+Midphase._worldOverlaps = function (local, body, otherAABB) {
+    const rot = body.rotation, pos = body.position;
+    const corner = Midphase._scratchVec;
+    let minx = Infinity, miny = Infinity, minz = Infinity;
+    let maxx = -Infinity, maxy = -Infinity, maxz = -Infinity;
+    for (let cx = 0; cx < 2; cx++) for (let cy = 0; cy < 2; cy++) for (let cz = 0; cz < 2; cz++) {
+        corner.set(cx ? local.max.x : local.min.x, cy ? local.max.y : local.min.y, cz ? local.max.z : local.min.z);
+        rot.transformVectorInPlace(corner);
+        corner.addInPlace(pos);
+        if (corner.x < minx) minx = corner.x;
+        if (corner.y < miny) miny = corner.y;
+        if (corner.z < minz) minz = corner.z;
+        if (corner.x > maxx) maxx = corner.x;
+        if (corner.y > maxy) maxy = corner.y;
+        if (corner.z > maxz) maxz = corner.z;
+    }
+    return maxx >= otherAABB.min.x && minx <= otherAABB.max.x &&
+        maxy >= otherAABB.min.y && miny <= otherAABB.max.y &&
+        maxz >= otherAABB.min.z && minz <= otherAABB.max.z;
+};
+
+Midphase._scratchSmallAABB = new AABB();
 Midphase._scratchQuat = new Quaternion();
 Midphase._scratchAABB = new AABB();
 Midphase._scratchVec = new Vector3();
@@ -6193,6 +6302,7 @@ ConvexTri.applies = function (placedA, placedB) {
 
 ConvexTri.SEPARATION_LIMIT = 0.5;   // speculative: report a face contact up to this gap in front of the plane
 ConvexTri.PENETRATION_LIMIT = 1.0;  // keep resolving as a face contact up to this depth behind it
+ConvexTri.MIN_CULL_LIMIT = 0.05;    // floor on the margin-derived 'separated' cull distance
 ConvexTri.EDGE_SLACK = 0.06;        // how far outside the triangle a support point may project and still count
 ConvexTri.AREA_EPSILON = 1e-12;
 ConvexTri.DEDUPE_DIST_SQ = 1e-6;
@@ -6244,7 +6354,8 @@ ConvexTri._pointInTri = function (hx, hy, hz, t0, t1, t2, tn, slack) {
 // within a hair of the (heightfield) triangle plane, at which point the centre heuristic flips the
 // normal and the contact shoves the body through. The established normal doesn't drift, so the
 // re-clip stays stable.
-ConvexTri.test = function (placedA, placedB, out, nextContact, hintNormalBToA) {
+// margin (optional): the pair's speculative margin. Only tightens the 'separated' verdict.
+ConvexTri.test = function (placedA, placedB, out, nextContact, hintNormalBToA, margin) {
     const aIsTri = placedA.shape instanceof TriangleShape;
     const triPlaced = aIsTri ? placedA : placedB;
     const cvxPlaced = aIsTri ? placedB : placedA;
@@ -6292,12 +6403,20 @@ ConvexTri.test = function (placedA, placedB, out, nextContact, hintNormalBToA) {
     const invRot = ConvexTri._invRot.copy(cvxPlaced.rotation).invert();
     const scratchDir = ConvexTri._scratchDir;
 
+    // PairTest.step discards contacts past the pair's margin, so past that the GJK/EPA fallback is
+    // wasted work. Marginless callers keep the old flat SEPARATION_LIMIT.
+    const cullLimit = (margin === undefined || margin === null)
+        ? ConvexTri.SEPARATION_LIMIT
+        : Math.min(ConvexTri.SEPARATION_LIMIT, Math.max(margin, ConvexTri.MIN_CULL_LIMIT));
+
     probeDir.set(-refN.x, -refN.y, -refN.z);
     MinkowskiSupport.supportOfInto(dp, cvxPlaced, invRot, probeDir, scratchDir);
     const gap = (dp.x - t0.x) * refN.x + (dp.y - t0.y) * refN.y + (dp.z - t0.z) * refN.z;
     if (gap > ConvexTri.SEPARATION_LIMIT) {
         // Every point of the convex is at least `gap` in front of the triangle's plane, so it
         // cannot be touching the triangle (which lies in that plane). Definitively separated.
+        // Not cullLimit: this branch also gates whether the pair gets a speculative face contact,
+        // so narrowing it changes trajectories.
         ConvexTri.lastVerdict = 'separated';
         return null;
     }
@@ -6392,7 +6511,7 @@ ConvexTri.test = function (placedA, placedB, out, nextContact, hintNormalBToA) {
         // the neighbouring coplanar tiles (gap ~ 0) but it sits laterally outside them.
         const outside = ConvexTri.lastDeepestOutsideDist;
         const along = gap > 0 ? gap : 0;
-        if (isFinite(outside) && Math.sqrt(along * along + outside * outside) > ConvexTri.SEPARATION_LIMIT) {
+        if (isFinite(outside) && Math.sqrt(along * along + outside * outside) > cullLimit) {
             ConvexTri.lastVerdict = 'separated';
         }
         return null;
@@ -6517,7 +6636,8 @@ proto.step = function (broadphasePairs, midphase, dt) {
 
     for (let p = 0; p < broadphasePairs.length; p++) {
         const bodyA = broadphasePairs[p][0], bodyB = broadphasePairs[p][1];
-        const primitivePairs = midphase.expandPair(bodyA, bodyB);
+        const sides = midphase.expandPairSides(bodyA, bodyB);
+        const sidesA = sides.a, sidesB = sides.b;
         const key = bodyA.id < bodyB.id ? bodyA.id + ':' + bodyB.id : bodyB.id + ':' + bodyA.id;
         const margin = this._speculativeMargin(bodyA, bodyB);
 
@@ -6529,17 +6649,22 @@ proto.step = function (broadphasePairs, midphase, dt) {
         const existing = this.manifolds._manifolds.get(key);
         this._ctHintNormal = (existing && existing.points.length > 0 && existing.points[0].fromMeshFace)
             ? existing.points[0].normal : null;
+        // Contacts past this gap are discarded below, so closed-form tests can use it to skip the
+        // GJK/EPA fallback. Cleared after the loop; the refresh path has no pair margin.
+        this._curMargin = margin;
 
         let sawMeshFace = false;
-        for (let i = 0; i < primitivePairs.length; i++) {
-            const pairContacts = this._testPrimitivePair(primitivePairs[i].a, primitivePairs[i].b);
-            for (let c = 0; c < pairContacts.length; c++) {
-                const contact = pairContacts[c];
-                if (contact.signedDistance < -margin) continue; // gap beyond the speculative margin
-                if (contact.fromMeshFace) sawMeshFace = true;
-                let list = contactsByPair.get(key);
-                if (!list) { list = []; contactsByPair.set(key, list); }
-                list.push(contact);
+        for (let i = 0; i < sidesA.length; i++) {
+            for (let j = 0; j < sidesB.length; j++) {
+                const pairContacts = this._testPrimitivePair(sidesA[i], sidesB[j]);
+                for (let c = 0; c < pairContacts.length; c++) {
+                    const contact = pairContacts[c];
+                    if (contact.signedDistance < -margin) continue; // gap beyond the speculative margin
+                    if (contact.fromMeshFace) sawMeshFace = true;
+                    let list = contactsByPair.get(key);
+                    if (!list) { list = []; contactsByPair.set(key, list); }
+                    list.push(contact);
+                }
             }
         }
 
@@ -6555,6 +6680,7 @@ proto.step = function (broadphasePairs, midphase, dt) {
         // Ensure a manifold exists even with zero contacts, so refresh() can prune a separated pair.
         this.manifolds.getOrCreate(bodyA, bodyB);
     }
+    this._curMargin = null;
 
     this.manifolds.refresh(contactsByPair, this._dt);
     return this.manifolds;
@@ -6591,7 +6717,7 @@ proto._testPrimitivePair = function (placedA, placedB) {
     if (ConvexTri.applies(placedA, placedB)) {
         const self = this;
         // _ctHintNormal is set per pair by step() from the existing manifold, null on first contact.
-        const ctResult = ConvexTri.test(placedA, placedB, results, function () { return self._nextPooledContact(); }, this._ctHintNormal);
+        const ctResult = ConvexTri.test(placedA, placedB, results, function () { return self._nextPooledContact(); }, this._ctHintNormal, this._curMargin);
         if (ctResult !== null) return results;                       // face contact
         if (ConvexTri.lastVerdict === 'separated') return results;   // provably no contact - skip GJK/EPA
         // 'maybe': non-face contact still possible (edge/vertex) - fall through to GJK/EPA.
@@ -6665,6 +6791,13 @@ NarrowPhase.REFRESH_REST_LIN_SQ = 0.30 * 0.30;
 NarrowPhase.REFRESH_REST_ANG_SQ = 0.60 * 0.60;
 
 proto.refreshManifoldGeometry = function (manifolds) {
+    // Pooled contacts produced here (via _nextPooledContact / _testPrimitivePair) are all
+    // transient - copied into manifold points or the mesh-refresh accumulator within this call and
+    // never retained. step()'s contacts were already consumed by manifolds.refresh() before the
+    // solver started calling this. So rewind the pool each substep instead of letting _poolIndex
+    // climb monotonically all tick (which forced the pool to grow every tick -> new ContactDetails,
+    // the run's single biggest allocator).
+    this._poolIndex = 0;
     this._ctHintNormal = null; // stale from step()'s pair loop; each branch below sets it as needed
     for (const manifold of manifolds.values()) {
         const bodyA = manifold.bodyA, bodyB = manifold.bodyB;
@@ -6827,16 +6960,29 @@ proto._refreshMeshFaceManifoldFast = function (manifold, bodyA, bodyB) {
 // Re-clip the pair and move each existing point onto its nearest fresh clip point. Geometry only;
 // point count and warm-start lambdas are untouched.
 proto._refreshMeshFaceManifold = function (manifold, bodyA, bodyB) {
-    const primitivePairs = this._midphase.expandPair(bodyA, bodyB);
+    const sides = this._midphase.expandPairSides(bodyA, bodyB);
+    const sidesA = sides.a, sidesB = sides.b;
     // _testPrimitivePair reuses its scratch array per call, so copy the results into a private list.
     const acc = this._meshRefreshAcc || (this._meshRefreshAcc = []);
     acc.length = 0;
-    for (let i = 0; i < primitivePairs.length; i++) {
-        const pc = this._testPrimitivePair(primitivePairs[i].a, primitivePairs[i].b);
-        for (let c = 0; c < pc.length; c++) if (pc[c].fromMeshFace) {
-            const s = this._nextPooledContact();
-            s.copy(pc[c]);
-            acc.push(s);
+    // Only fromMeshFace contacts are kept below, and GJK/EPA never produces those - so run just the
+    // closed-form face tests here. Going through the full _testPrimitivePair dispatch would fire
+    // GJK on every non-contact triangle of the expansion purely to discard the result.
+    const self = this;
+    const nc = function () { return self._nextPooledContact(); };
+    for (let i = 0; i < sidesA.length; i++) {
+        for (let j = 0; j < sidesB.length; j++) {
+            const pa = sidesA[i], pb = sidesB[j];
+            const pc = this._pairResultScratch;
+            pc.length = 0;
+            if (ConvexTri.applies(pa, pb)) ConvexTri.test(pa, pb, pc, nc, this._ctHintNormal);
+            else if (TriTri.applies(pa, pb)) TriTri.test(pa, pb, pc, nc);
+            else continue;
+            for (let c = 0; c < pc.length; c++) if (pc[c].fromMeshFace) {
+                const s = this._nextPooledContact();
+                s.copy(pc[c]);
+                acc.push(s);
+            }
         }
     }
     if (acc.length === 0) return; // lost contact this substep - keep last good geometry
@@ -7031,13 +7177,23 @@ proto._integrate = function (bodies, gravity, h) {
         const b = bodies[i];
         if (b.bodyType !== RigidBody.DYNAMIC) continue;
 
-        this._prevPos.set(b.id, new Vector3().copy(b.position));
-        this._prevRot.set(b.id, new Quaternion().copy(b.rotation));
-        const bias = this._biasDelta.get(b.id) || new Vector3();
+        // These snapshots only need to survive within the substep (derived-velocity + restitution
+        // read them later this substep, never across substeps), so reuse the per-body slot rather
+        // than allocating a fresh Vector3/Quaternion every body every substep - ~6000 allocs/tick
+        // otherwise, forever, even at rest.
+        let prevPos = this._prevPos.get(b.id);
+        if (!prevPos) { prevPos = new Vector3(); this._prevPos.set(b.id, prevPos); }
+        prevPos.copy(b.position);
+        let prevRot = this._prevRot.get(b.id);
+        if (!prevRot) { prevRot = new Quaternion(); this._prevRot.set(b.id, prevRot); }
+        prevRot.copy(b.rotation);
+        let bias = this._biasDelta.get(b.id);
+        if (!bias) { bias = new Vector3(); this._biasDelta.set(b.id, bias); }
         bias.set(0, 0, 0);
-        this._biasDelta.set(b.id, bias);
         // Pre-gravity snapshot; restitution's pre-solve velocity reads this.
-        this._preGravityVel.set(b.id, new Vector3().copy(b.linear_velocity));
+        let preGrav = this._preGravityVel.get(b.id);
+        if (!preGrav) { preGrav = new Vector3(); this._preGravityVel.set(b.id, preGrav); }
+        preGrav.copy(b.linear_velocity);
 
         const g = b.gravity || gravity;
         b.linear_velocity.x += g.x * h * b.linear_factor.x;

@@ -4,10 +4,30 @@ var proto = Midphase.prototype;
 // Expands one side into primitive candidates. `otherAABB`: the other body's fattened AABB, for
 // culling. `otherBodyId`: leaf-cache key. `isNestedChild`: `body` is a compound child's placement
 // being recursed into (no speculative margin of its own, so the own-margin fattening is skipped).
-proto._expandSide = function (body, otherAABB, otherBodyId, isNestedChild) {
+// `out`: caller-owned array, reset by the caller; results (including nested recursion) append to it.
+proto._expandSide = function (body, otherAABB, otherBodyId, isNestedChild, out, depth) {
+    depth = depth || 0;
     const shape = body.shape;
     if (!(shape instanceof CompoundShape) && !(shape instanceof MeshShape)) {
-        return [{ shape: shape, position: body.position, rotation: body.rotation }];
+        const slot = this._nextPrimSlot();
+        slot.shape = shape;
+        slot.position = body.position;
+        slot.rotation = body.rotation;
+        slot.bodyCenter = null;
+        out.push(slot);
+        return out;
+    }
+
+    // A tiny mesh (one tile of a big CompoundShape ground) doesn't earn a BVH walk: per-triangle
+    // culling saves at most a test or two, while the local query AABB plus the tree walk costs more.
+    // Still cull the mesh as a whole - a distant one must yield no candidates - but do it with a
+    // direct world-space AABB overlap against the shape's own bounds.
+    if (shape instanceof MeshShape && shape.triangleCount <= Midphase.SMALL_MESH_TRIS) {
+        const bounds = Midphase._scratchSmallAABB;
+        shape.localAABBInto(bounds);
+        if (!Midphase._worldOverlaps(bounds, body, otherAABB)) return out;
+        this._emitTriangles(shape, body, out, null);
+        return out;
     }
 
     // Bring the other body's world AABB into this body's local space by inverse-transforming its 8
@@ -42,8 +62,10 @@ proto._expandSide = function (body, otherAABB, otherBodyId, isNestedChild) {
     }
 
     const hits = this._queryLeaves(shape, otherBodyId, localQuery);
-    const out = [];
     if (shape instanceof CompoundShape) {
+        // Per-depth scratch: this frame keeps reading `body` across iterations, so the callee
+        // can't be handed the object we're reading from.
+        const nestedBody = this._nestedBodyAt(depth);
         for (let k = 0; k < hits.length; k++) {
             const child = shape.children[hits[k]];
             const slot = this._nextChildSlot();
@@ -54,29 +76,44 @@ proto._expandSide = function (body, otherAABB, otherBodyId, isNestedChild) {
                 // A compound child that is itself a mesh/compound (e.g. a CompoundShape ground
                 // made of many small MeshShape tiles) is not itself a primitive - recurse into it
                 // at its own world placement, same as expanding a top-level body's shape.
-                const nested = this._expandSide({ shape: child.shape, position: slot.position, rotation: slot.rotation }, otherAABB, otherBodyId, true);
-                for (let n = 0; n < nested.length; n++) out.push(nested[n]);
+                nestedBody.shape = child.shape;
+                nestedBody.position = slot.position;
+                nestedBody.rotation = slot.rotation;
+                this._expandSide(nestedBody, otherAABB, otherBodyId, true, out, depth + 1);
             } else {
-                out.push({ shape: child.shape, position: slot.position, rotation: slot.rotation });
+                const prim = this._nextPrimSlot();
+                prim.shape = child.shape;
+                prim.position = slot.position;
+                prim.rotation = slot.rotation;
+                prim.bodyCenter = null;
+                out.push(prim);
             }
         }
     } else {
-        const a = Midphase._scratchTriA, b = Midphase._scratchTriB, c = Midphase._scratchTriC;
-        for (let k = 0; k < hits.length; k++) {
-            shape.triangleAt(hits[k], a, b, c);
-            // Baked to world space at identity rotation, so the narrowphase has nothing to undo.
-            const slot = this._nextTriSlot();
-            body.rotation.transformVectorInto(a, slot.a); slot.a.addInPlace(body.position);
-            body.rotation.transformVectorInto(b, slot.b); slot.b.addInPlace(body.position);
-            body.rotation.transformVectorInto(c, slot.c); slot.c.addInPlace(body.position);
-            slot.shape.a = slot.a; slot.shape.b = slot.b; slot.shape.c = slot.c;
-            // position stays at origin (verts are already world-space); bodyCenter is a hint TriTri
-            // uses to orient the contact normal.
-            slot.bodyCenter.copy(body.position);
-            out.push({ shape: slot.shape, position: slot.position, rotation: slot.rotation, bodyCenter: slot.bodyCenter });
-        }
+        this._emitTriangles(shape, body, out, hits);
     }
     return out;
+};
+
+// Appends `shape`'s triangles, baked to world space, into `out`. `hits`: leaf indices to emit, or
+// null for all of them.
+proto._emitTriangles = function (shape, body, out, hits) {
+    const a = Midphase._scratchTriA, b = Midphase._scratchTriB, c = Midphase._scratchTriC;
+    const n = hits ? hits.length : shape.triangleCount;
+    for (let k = 0; k < n; k++) {
+        shape.triangleAt(hits ? hits[k] : k, a, b, c);
+        // Baked to world space at identity rotation, so the narrowphase has nothing to undo.
+        const slot = this._nextTriSlot();
+        body.rotation.transformVectorInto(a, slot.a); slot.a.addInPlace(body.position);
+        body.rotation.transformVectorInto(b, slot.b); slot.b.addInPlace(body.position);
+        body.rotation.transformVectorInto(c, slot.c); slot.c.addInPlace(body.position);
+        slot.shape.a = slot.a; slot.shape.b = slot.b; slot.shape.c = slot.c;
+        // position stays at origin (verts are already world-space); bodyCenter is a hint TriTri
+        // uses to orient the contact normal.
+        slot.bodyCenter.copy(body.position);
+        // The slot is already the shape the narrowphase reads - hand it over directly.
+        out.push(slot);
+    }
 };
 
 // Pooled world-space triangle slot, grown as needed. The pool index resets once per expandPair()
@@ -104,27 +141,77 @@ proto._nextChildSlot = function () {
     return this._childSlots[this._childSlotIndex++];
 };
 
-// Expands a broadphase [bodyA, bodyB] pair into primitive x primitive candidates:
-// [{ a: {shape,position,rotation}, b: {shape,position,rotation} }, ...]
-proto.expandPair = function (bodyA, bodyB) {
-    // Both sides' compound/mesh expansion below draws from the same pooled slots, so the pool is
-    // reset once here, not per side - each hit this tick still gets its own slot, consumed
-    // synchronously by the caller before the next pair (see PairTest.js) or the next tick.
+// Pooled placement for a non-triangle primitive. Holds references to vectors owned elsewhere.
+proto._nextPrimSlot = function () {
+    if (this._primSlotIndex >= this._primSlots.length) {
+        this._primSlots.push({ shape: null, position: null, rotation: null, bodyCenter: null });
+    }
+    return this._primSlots[this._primSlotIndex++];
+};
+
+// Scratch placement for recursing into a nested compound child, one per depth.
+proto._nestedBodyAt = function (depth) {
+    while (this._nestedBodies.length <= depth) {
+        this._nestedBodies.push({ shape: null, position: null, rotation: null });
+    }
+    return this._nestedBodies[depth];
+};
+
+// Expands a broadphase pair into the two sides' primitive lists; the candidate set is their
+// cross-product, which callers walk directly instead of materialising it.
+//
+// Returns a reused { a, b } - arrays and placements are pooled and valid only until the next call.
+proto.expandPairSides = function (bodyA, bodyB) {
+    // Both sides draw from the same pools, so they reset once here, not per side.
     this._triSlotIndex = 0;
     this._childSlotIndex = 0;
+    this._primSlotIndex = 0;
+    const sides = this._sides;
+    sides.a.length = 0;
+    sides.b.length = 0;
     // The fattened broadphase AABB is used for child/triangle culling too, so a compound child or
     // mesh triangle a body is about to reach surfaces the same tick early as the body pair itself.
-    const sidesA = this._expandSide(bodyA, bodyB.getBroadphaseAABB(), bodyB.id);
-    const sidesB = this._expandSide(bodyB, bodyA.getBroadphaseAABB(), bodyA.id);
+    this._expandSide(bodyA, bodyB.getBroadphaseAABB(), bodyB.id, false, sides.a, 0);
+    this._expandSide(bodyB, bodyA.getBroadphaseAABB(), bodyA.id, false, sides.b, 0);
+    return sides;
+};
+
+// Materialised cross-product form of expandPairSides, for external callers and tests.
+proto.expandPair = function (bodyA, bodyB) {
+    const sides = this.expandPairSides(bodyA, bodyB);
     const out = [];
-    for (let i = 0; i < sidesA.length; i++) {
-        for (let j = 0; j < sidesB.length; j++) {
-            out.push({ a: sidesA[i], b: sidesB[j] });
+    for (let i = 0; i < sides.a.length; i++) {
+        for (let j = 0; j < sides.b.length; j++) {
+            out.push({ a: sides.a[i], b: sides.b[j] });
         }
     }
     return out;
 };
 
+// Does `local` (a shape-local AABB placed at `body`) overlap the world-space `otherAABB`? The
+// local box is rotated into world space by its 8 corners - conservative, never under-includes.
+Midphase._worldOverlaps = function (local, body, otherAABB) {
+    const rot = body.rotation, pos = body.position;
+    const corner = Midphase._scratchVec;
+    let minx = Infinity, miny = Infinity, minz = Infinity;
+    let maxx = -Infinity, maxy = -Infinity, maxz = -Infinity;
+    for (let cx = 0; cx < 2; cx++) for (let cy = 0; cy < 2; cy++) for (let cz = 0; cz < 2; cz++) {
+        corner.set(cx ? local.max.x : local.min.x, cy ? local.max.y : local.min.y, cz ? local.max.z : local.min.z);
+        rot.transformVectorInPlace(corner);
+        corner.addInPlace(pos);
+        if (corner.x < minx) minx = corner.x;
+        if (corner.y < miny) miny = corner.y;
+        if (corner.z < minz) minz = corner.z;
+        if (corner.x > maxx) maxx = corner.x;
+        if (corner.y > maxy) maxy = corner.y;
+        if (corner.z > maxz) maxz = corner.z;
+    }
+    return maxx >= otherAABB.min.x && minx <= otherAABB.max.x &&
+        maxy >= otherAABB.min.y && miny <= otherAABB.max.y &&
+        maxz >= otherAABB.min.z && minz <= otherAABB.max.z;
+};
+
+Midphase._scratchSmallAABB = new AABB();
 Midphase._scratchQuat = new Quaternion();
 Midphase._scratchAABB = new AABB();
 Midphase._scratchVec = new Vector3();
