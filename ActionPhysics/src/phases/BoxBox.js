@@ -11,8 +11,16 @@ BoxBox.applies = function (placedA, placedB) {
 // SAT tie-break: an edge-edge axis only wins over the best face axis if it beats it by more than
 // this fraction of the face overlap - guards the classic SAT jitter case of two boxes resting
 // face-to-face, where an edge axis can numerically tie a face axis and flip the contact type
-// (4-point face manifold vs 1-point edge manifold) tick to tick.
-BoxBox.RELATIVE_TOLERANCE = 0.005;
+// (4-point face manifold vs 1-point edge manifold) tick to tick. 0.25 (not the much tighter 0.005
+// first tried): a real reproduction - two boxes stacked with a real few-degrees relative tilt from
+// asymmetric loading - showed the edge axis beating the face axis by as much as 6% (ratio 0.94) at
+// genuinely small positive (overlapping) depths, well outside a 0.5% margin, and each such flip
+// injected a real torque kick (a 4-point resting manifold collapsing to 1 stray point for a handful
+// of ticks, repeatedly, over the whole run) that accumulated into unbounded rotation over time - not
+// a one-off transient. Edge-edge is only EVER the geometrically correct answer for a genuine corner/
+// edge-first collision (see box-box/corner-drop), which separates from a face contact by a much
+// wider margin than 25% of the face overlap - this loses nothing there while fixing the flicker.
+BoxBox.RELATIVE_TOLERANCE = 0.25;
 // Absolute floor under the tie-break margin above - at near-zero overlap (exact touch, sd ~ 0)
 // RELATIVE_TOLERANCE * faceOverlap itself vanishes to ~0, so plain float noise between the face
 // and edge overlap sums (they differ only by each absR epsilon's rounding) would otherwise win the
@@ -128,18 +136,31 @@ BoxBox.test = function (placedA, placedB, out, nextContact) {
 
     // Prefer the face axis unless an edge axis is a clearly tighter fit - biases toward face
     // contacts (4-point manifolds) on ties, which is what keeps resting boxes from flickering
-    // into a 1-point edge manifold every few ticks. Uses the ABSOLUTE floor alone (not scaled by a
-    // possibly-negative faceOverlap) once separated - a relative fraction of a negative number is
-    // itself negative and would wrongly widen, not narrow, the edge axis's window to win the tie.
-    const tieBreakMargin = faceOverlap >= 0
-        ? Math.max(BoxBox.RELATIVE_TOLERANCE * faceOverlap, BoxBox.ABSOLUTE_TOLERANCE)
-        : BoxBox.ABSOLUTE_TOLERANCE;
-    if (bestEdgeI >= 0 && bestEdgeOverlap < faceOverlap - tieBreakMargin) {
-        // Edge-edge's own closest-point construction assumes the two edges are genuinely the
-        // closest FEATURE, which stops holding once the boxes are far enough apart that a face (not
-        // an edge) is actually nearest - conservatively only trust it within the same margin as a
-        // real speculative contact would be kept by the caller anyway.
-        if (bestEdgeOverlap < -BoxBox.SEPARATED_AXIS_LIMIT) return null;
+    // into a 1-point edge manifold every few ticks. Scaled by |faceOverlap| (not faceOverlap itself)
+    // so this works the same whether overlapping or separated - a body with even a hair of
+    // accumulated rotation produces an edge-cross axis (ax[i] x bx[j]) that is numerically almost
+    // exactly a face axis in a new direction (see the box-bridging-two-supports repro this fixes: a
+    // ~0.5 degree tilt on the lower box turned "A's x-axis cross B's z-axis" into an axis 0.008 rad
+    // off pure -Y, i.e. functionally the SAME axis as the Y-face test, not a genuinely different
+    // tighter one) - a fixed absolute epsilon is far too tight to catch that at realistic overlap
+    // magnitudes (~0.1+), and simply DROPPING the possibly-negative faceOverlap's sign (as the old
+    // "only when non-negative" version did) left every separated pair with zero relative tolerance,
+    // which is exactly the case that broke.
+    // The edge branch is only trusted when the boxes are ACTUALLY OVERLAPPING (faceOverlap >= 0).
+    // SAT's own "most negative overlap wins" rule (the same rule that correctly picks the tightest
+    // separating axis while overlapping) means the axis with the LARGEST gap wins while separated -
+    // and an edge-cross axis reports a bigger gap than the true face axis remarkably easily under
+    // even modest relative tilt (two boxes 23 degrees off parallel, mid-fall, still well short of
+    // contact) despite the two boxes plainly still approaching FACE first, not edge first. Taking
+    // that "biggest gap" axis at face value while separated collapses what should still be a
+    // multi-point speculative face contact into a single degenerate edge-closest-point - which is
+    // exactly the wrong shape to warm-start into the real contact one substep later (see the offset-
+    // stack repro this fixes: box0-box1 spiralled from a stable ~13 degree lean into a full 179
+    // degree flip once this kicked in around the tick they came close enough to matter). Once
+    // genuinely overlapping (faceOverlap >= 0), SAT's normal minimum-overlap logic is trustworthy
+    // again - a real corner/edge-first collision (box-box/corner-drop) still needs this branch.
+    const tieBreakMargin = Math.max(BoxBox.RELATIVE_TOLERANCE * Math.abs(faceOverlap), BoxBox.ABSOLUTE_TOLERANCE);
+    if (faceOverlap >= 0 && bestEdgeI >= 0 && bestEdgeOverlap < faceOverlap - tieBreakMargin) {
         BoxBox._buildEdgeContact(placedA, placedB, ax, bx, halfA, halfB, posA, posB,
             bestEdgeI, bestEdgeJ, bestEdgeOverlap, out, nextContact);
         return out;

@@ -26,13 +26,17 @@ if (!fs.existsSync(buildFile)) {
 var stampLine = fs.readFileSync(buildFile, 'utf8').split(/\r?\n/)[0];
 console.log(stampLine.replace(/^\/\/\s*/, '=== ') + ' ===');
 
-// Skipped from headless runs: the 385-box pyramid (1200 ticks x 385 bodies) is slow and would
-// dominate every run's signal during perf iteration. The two perf-settle scenes are pure timing
-// benchmarks, not pass/fail correctness tests, and dominate wall-clock time; skipped by explicit
-// standing instruction until told otherwise. The files are untouched, just unloaded here; remove
-// an entry to fold it back into every run.
+// Skipped from headless runs: the two perf-settle scenes are pure timing benchmarks, not pass/fail
+// correctness tests, and dominate wall-clock time; skipped by explicit standing instruction until
+// told otherwise. The files are untouched, just unloaded here; remove an entry to fold it back into
+// every run.
+//
+// pyramid.js (385-box pyramid, 1200 ticks) was skipped here too while box-box fell through to
+// GJK/EPA's single-point contacts and the perf was untenable for routine runs. Box-box now has its
+// own closed-form multi-point manifold (see src/phases/BoxBox.js) and the perf is good - re-enabled
+// as the primary correctness stress target for box-box: it is pure box-on-box, at scale, with hard
+// asserts (no sink, no rise, exact layer spacing, no drift, no tilt, full rest) rather than soft ones.
 var SKIP_FILES = {
-	'pyramid.js': true,
 	'perf-settle-scene.js': true,
 	'perf-settle-scene-compound.js': true,
 };
