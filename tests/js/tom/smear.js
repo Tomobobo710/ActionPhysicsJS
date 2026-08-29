@@ -29,7 +29,7 @@
 		t.box(w, 0.3, 0.9, 0.3, 0, { pos: [0, 0.9, 0], friction: 0.4, restitution: 0, color: '#3355ff' });
 
 		var box = t.box(w, HALF, HALF, HALF, 2, {
-			pos: [0.4, 0.9 + 2.92, 0.017], rot: SEED_Q, friction: 3, restitution: 0.33, color: '#e0b020'
+			pos: [0.32, 0.9 + 2.92, 0.017], rot: SEED_Q, color: '#e0b020'
 		});
 
 		var bottomAxis = mostDownwardLocalAxis(box.rotation);

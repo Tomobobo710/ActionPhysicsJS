@@ -289,7 +289,7 @@
 		var c = null, restY = null, maxUpVy = 0, maxRise = 0;
 		PBF.renderables(t, p);
 		PBF.drive(t, p, function (tick) {
-			if (tick === 20) c = S.dropOnHead(w, p, S.sc(0.3), S.sc(0.8), 2 * S.SC * S.SC * S.SC, { friction: 3, restitution: 0.33 });
+			if (tick === 20) c = S.dropOnHead(w, p, S.sc(0.3), S.sc(0.8), 2 * S.SC * S.SC * S.SC);
 			if (tick === 140) restY = c.position.y;
 			if (tick > 140 && tick <= 152) {
 				maxUpVy = Math.max(maxUpVy, c.linear_velocity.y);
