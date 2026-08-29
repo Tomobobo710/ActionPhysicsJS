@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-28T14:20:06.984Z
+// ActionPhysics 0.1.0 — built 2026-08-28T14:37:19.044Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine.

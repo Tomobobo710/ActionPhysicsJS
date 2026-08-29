@@ -96,7 +96,10 @@
 		var shapes = [];
 		function track(body, name, color) {
 			body._color = color;
-			shapes.push({ name: name, body: body, x0: body.position.x, y0: body.position.y, z0: body.position.z });
+			// rollX: total ABSOLUTE rotation about the world X axis (the ramp's roll axis), integrated
+			// as sum(|angular_velocity.x| * dt) each tick - see the tumble criteria below for why
+			// absolute, not net.
+			shapes.push({ name: name, body: body, x0: body.position.x, y0: body.position.y, z0: body.position.z, rollX: 0 });
 			return body;
 		}
 
@@ -134,6 +137,14 @@
 				pusher.linear_velocity.set(0, 0, pusherSpeed);
 			} else {
 				pusher.linear_velocity.set(0, 0, 0);
+			}
+			// Integrate each shape's ABSOLUTE roll about the world X axis (see the tumble criteria).
+			// Absolute (|w.x|), not net: a shape that rocks forward then back nets ~zero X rotation
+			// while genuinely having tumbled - a box on this ramp does exactly that (net ~0.1 turns,
+			// absolute ~1.2). Summing |w.x|*dt measures how much X-axis rolling actually happened,
+			// which is the physical "ass over end" claim.
+			for (var i = 0; i < shapes.length; i++) {
+				shapes[i].rollX += Math.abs(shapes[i].body.angular_velocity.x) * t.DT;
 			}
 		});
 
@@ -182,6 +193,37 @@
 			}
 		}
 
+		// ---- Tumbling (rotation about X) -----------------------------------------------------------
+		// A steep drop-off + ramp should make things TUMBLE, not slide down rigid. We assert the total
+		// absolute rotation each shape accumulates about the world X axis (the ramp's roll axis) - see
+		// rollX in track()/onTick for why absolute, not net (a rocking box nets ~0, but genuinely rolls).
+		// TWO tiers, measured from the real per-shape numbers, not guessed:
+		//   - EVERY shape must clear 1 full turn (2*PI rad) - the floor for "it actually tumbled, it
+		//     didn't just skid down frozen." The laggards are the box (~1.2, it rocks corner to corner)
+		//     and the cone (~1.65, it pivots on its point/base rather than cartwheeling).
+		//   - The ROUND rollers (sphere, capsule, cylinder) must clear 3 full turns - round things on a
+		//     70-degree ramp roll freely and rack up far more (sphere ~5.4, capsule ~4.0, cylinder ~3.2).
+		//     The box and cone are deliberately NOT held to this - they physically can't roll like that,
+		//     and pinning them to 3 would be asserting a fiction.
+		var TURN = 2 * Math.PI;
+		var ROLLERS = { sphere: true, capsule: true, cylinder: true };
+		function rolls(shapeRec, minTurns) {
+			return function () {
+				var turns = shapeRec.rollX / TURN;
+				return {
+					ok: turns >= minTurns,
+					detail: shapeRec.name + ' rolled ' + turns.toFixed(2) + ' turns about X (need >= ' + minTurns + ')'
+				};
+			};
+		}
+		for (var ti = 0; ti < shapes.length; ti++) {
+			var rec = shapes[ti];
+			t.expect(rec.name + ' tumbles at least 1 full turn about X (did not slide down rigid)', rolls(rec, 1));
+			if (ROLLERS[rec.name]) {
+				t.expect(rec.name + ' (a roller) tumbles at least 3 full turns about X', rolls(rec, 3));
+			}
+		}
+
 		// Minimal sanity gate only (no pinned trajectory/pose - see file header) - just enough of a
 		// real t.expect() for the viewer to treat this as a live/steppable scene instead of a frozen
 		// setup-only snapshot (render.js's captureSetup only schedules live stepping when at least one
@@ -203,12 +245,14 @@
 	}, {
 		visual: true, steps: TOTAL, page: 'menagerie',
 		description:
-			"Coin-pusher rig: five shapes (box, sphere, capsule, cone, cylinder) lined up on a high " +
-			"platform get slowly shoved off the edge by a moving pusher box, fall onto a steep ramp, " +
-			"and tumble down onto the floor. Asserts real engine contact (not pose) per shape per " +
-			"surface: every shape must actually touch the ramp, the raised debug bar, and the floor — " +
-			"15 criteria that flip green live as each shape arrives, so a regression names the exact " +
-			"shape-and-surface that was missed."
+			"Coin-pusher rig: five shapes (box, sphere, capsule, cone, cylinder) are slowly shoved off " +
+			"a high platform, fall onto a steep ramp, and tumble down to the floor. Measures physical " +
+			"correctness, per shape, without pinning any exact path or pose: (1) real engine contact — " +
+			"every shape must actually touch the ramp, the raised bar, and the floor (read from the " +
+			"world's contact events, not guessed from distance); and (2) tumbling — every shape must " +
+			"roll at least a full turn about the ramp's axis, and the round shapes at least three. Each " +
+			"criterion flips green live as it's met, so a regression names the exact shape and what it " +
+			"failed to do — 'sphere never touched the ramp', 'cylinder only rolled twice'."
 	});
 })(
 	typeof module !== 'undefined' && module.exports ? require('../runner.js') : window.APRunner,
