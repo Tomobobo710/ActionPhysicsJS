@@ -212,7 +212,7 @@
 		var spawnZ = -(side / 2 + S.sc(1.5));
 		var p = S.feetSpawn(w, 0, spawnZ, {});
 
-		var pushableMass = p._pushMassLimit * 0.3;
+		var pushableMass = p._pushMassLimit * 0.2;
 		var box = PBF.object(w, side, pushableMass, { x: 0, y: side / 2, z: side / 2 }, '#7a5a3a', { friction: 0.4, restitution: 0.1 });
 		PBF.renderables(t, p);
 
