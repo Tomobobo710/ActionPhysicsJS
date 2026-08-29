@@ -1,6 +1,3 @@
-// Quaternion. The load-bearing tests here are about DRIFT: orientation is built by thousands of
-// successive multiplications and the failure mode is not one wrong answer, it is a slow loss of unit
-// length that silently scales every rotated vector.
 (function (Runner) {
 	Runner.suite('math');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;
@@ -108,8 +105,6 @@
 		t.checkEqual(q.w, 1, 'identity');
 	});
 
-	// The reason normalize() exists. Ten thousand multiplications is a few minutes of simulated time for
-	// one rotating body.
 	test('math/quaternion', 'length drifts without normalisation and holds with it', function (t) {
 		var step = new Q().setAxisAngle(new V(0.267, 0.535, 0.802), 0.01);
 		var i;
@@ -126,7 +121,6 @@
 		t.checkTrue(keptErr <= driftErr, 'normalising is never worse (drift err ' + driftErr.toExponential(2) + ')');
 	});
 
-	// Why drift matters: the body appears to change size and its inertia tensor goes wrong.
 	test('math/quaternion', 'a non-unit quaternion scales the vectors it rotates', function (t) {
 		var q = new Q().setAxisAngle(new V(0, 1, 0), 0.5);
 		q.x *= 1.01; q.y *= 1.01; q.z *= 1.01; q.w *= 1.01;
@@ -147,7 +141,6 @@
 		t.check(q.angleBetween(q), 0, 1e-7, 'self angle is zero');
 	});
 
-	// q and -q are the same rotation, so the sign of the dot product carries no distance information.
 	test('math/quaternion', 'angleBetween handles double cover', function (t) {
 		var q = new Q().setAxisAngle(new V(0, 1, 0), 1.0);
 		var neg = new Q(-q.x, -q.y, -q.z, -q.w);
@@ -162,5 +155,4 @@
 		t.check(Math.abs(sm), 0.7, 1e-13, 'magnitude -');
 		t.checkTrue(sp * sm < 0, 'opposite signs: ' + sp.toFixed(4) + ' vs ' + sm.toFixed(4));
 	});
-
 })(typeof module !== 'undefined' && module.exports ? require('../runner.js') : window.APRunner);

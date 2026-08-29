@@ -1,6 +1,3 @@
-// Deterministic transcendentals. Two properties matter and are tested separately: ACCURACY against
-// Math.*, and EXACT SYMMETRY — sin(-x) === -sin(x) bit-for-bit, because an asymmetric sine biases
-// everything that rotates and that integrates into visible drift.
 (function (Runner) {
 	Runner.suite('math');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;
@@ -10,7 +7,6 @@
 		"Checked for accuracy against Math.* and for bit-exact symmetry.";
 	function test(group, name, fn) { Runner.test(group, name, fn, { page: 'scalar', description: DESC }); }
 
-	// Sweep a function against a reference; returns the worst absolute error and where it occurred.
 	function worst(ours, ref, lo, hi, samples) {
 		var w = 0, at = lo;
 		for (var i = 0; i <= samples; i++) {
@@ -51,7 +47,6 @@
 		}
 	});
 
-	// Range reduction is where naive implementations fall apart.
 	test('math/scalar', 'sin/cos stay accurate for large angles', function (t) {
 		var xs = [100, 1000, -5000, 12345.6789];
 		for (var i = 0; i < xs.length; i++) {
@@ -79,8 +74,6 @@
 		}
 	});
 
-	// Callers reach acos/asin through dot products of unit vectors, where |x| can exceed 1 by a few ULP
-	// from rounding alone. That is not an error and must not produce NaN.
 	test('math/scalar', 'acos and asin clamp instead of returning NaN', function (t) {
 		t.checkEqual(S.acos(1.0000000002), 0, 'acos just above 1');
 		t.checkEqual(S.acos(-1.0000000002), S.PI, 'acos just below -1');
@@ -111,5 +104,4 @@
 		t.checkEqual(S.clamp(-5, 0, 1), 0);
 		t.checkEqual(S.clamp(0.5, 0, 1), 0.5);
 	});
-
 })(typeof module !== 'undefined' && module.exports ? require('../runner.js') : window.APRunner);

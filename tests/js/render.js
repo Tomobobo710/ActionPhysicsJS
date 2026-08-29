@@ -197,25 +197,17 @@
 				done = anim.ctx.evalTick(anim.world, anim.tick);
 			}
 			anim.reflect();
-			// Reconcile the DRAWN set with what's actually in play THIS frame. Bodies are created AND destroyed
-			// mid-sim: the controller REBUILDS its collider on crouch/scale (swaps controller.object, removing
-			// the old one from the world), and tests drop crates in. So each frame we compute the live set —
-			// everything in the world + the controller's current collider + explicit extras — then ADD drawables
-			// for newcomers, SYNC all, and REMOVE drawables for anything that left (or the stale tall collider
-			// lingers on screen after a crouch). Diffing against world membership is what keeps the picture true.
+			// Reconcile the DRAWN set with what's actually in play THIS frame. Bodies can be created mid-sim
+			// (a test drops a crate in from an onTick hook, straight via world.addRigidBody rather than a
+			// t.box()/t.sphere() helper), so each frame we compute the live set — everything actually in the
+			// world's own body list, plus anything ctx tracked directly — then ADD drawables for newcomers,
+			// SYNC all, and REMOVE drawables for anything that left. Diffing against world membership (not
+			// just ctx.bodies) is what keeps the picture true for a body added the raw way.
 			var live = [];
 			var w = anim.world;
-			if (w && w.objects && typeof w.objects.forEach === 'function') w.objects.forEach(function (o) { if (live.indexOf(o) === -1) live.push(o); });
+			// ActionPhysics's World keeps its body list on `bodies` (see World.js) - read THAT.
+			if (w && w.bodies && typeof w.bodies.forEach === 'function') w.bodies.forEach(function (o) { if (live.indexOf(o) === -1) live.push(o); });
 			(anim.ctx.bodies || []).forEach(function (o) { if (o && live.indexOf(o) === -1) live.push(o); });
-			// The controller REBUILDS its collider (controller.object) on crouch/scale as a fresh body that
-			// defaults to isVisible:false — so force the CURRENT collider visible every frame, or it vanishes
-			// (or a stale one lingers) after a crouch. This is the thing that keeps the capsule short when crouched.
-			var ctrl = anim.ctx._pbController;
-			if (ctrl && ctrl.object) {
-				var co = ctrl.object;
-				if (typeof co.setVisibility === 'function') co.setVisibility(true); else co.isVisible = true;
-				if (live.indexOf(co) === -1) live.push(co);
-			}
 			// remove drawables whose body is no longer live
 			anim._drawn = anim._drawn || [];
 			for (var di = anim._drawn.length - 1; di >= 0; di--) {

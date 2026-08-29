@@ -1,8 +1,3 @@
-// EPA: penetration depth, normal, and witness points from a GJK simplex that already encloses
-// the origin. GJK proves overlap; EPA measures how deep. The hard case this suite exists to pin
-// down is the predecessor's own EPA bug (plan.md, Bug reference): the closest-face tracking must
-// read the LIVE polytope's actual closest surviving face, never a value cached from an earlier
-// iteration whose face has since been proven wrong and replaced by expansion.
 (function (Runner) {
 	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;
@@ -20,8 +15,6 @@
 		return { shape: shape, position: pos || new V(0, 0, 0), rotation: rot || new Q() };
 	}
 
-	// Runs GJK then EPA for an overlapping pair; asserts GJK actually found overlap first (a test
-	// bug producing a non-overlapping pair would otherwise silently pass nothing).
 	function overlapDepth(t, a, b) {
 		var sup = new AP.MinkowskiSupport(a, b);
 		var gjkResult = new AP.GJK().run(sup);
@@ -29,8 +22,6 @@
 		if (!gjkResult.overlapping) return null;
 		return { epa: new AP.EPA().run(sup, gjkResult.simplex), sup: sup };
 	}
-
-	// ---- exact cases: flat-faced shapes converge exactly ----
 
 	test('collision/epa', 'penetrating boxes report the exact overlap depth and axis normal', function (t) {
 		var r = overlapDepth(t, placed(new AP.BoxShape(1, 1, 1), new V(0, 0, 0)), placed(new AP.BoxShape(1, 1, 1), new V(1.5, 0, 0)));
@@ -52,8 +43,6 @@
 		t.check(Math.abs(rz.epa.normal.z), 1, 1e-6, 'Z-axis normal');
 	});
 
-	// ---- approximate cases: curved shapes converge asymptotically (expected, not a bug) ----
-
 	test('collision/epa', 'overlapping spheres converge close to the exact depth at the default iteration budget', function (t) {
 		var r = overlapDepth(t, placed(new AP.SphereShape(1), new V(0, 0, 0)), placed(new AP.SphereShape(1), new V(1, 0, 0)));
 		t.check(r.epa.distance, 1.0, 1e-2, 'depth = 1 + 1 - 1, within curvature-approximation tolerance');
@@ -61,8 +50,7 @@
 	});
 
 	test('collision/epa', 'shallow sphere overlap (the realistic contact regime) converges tightly', function (t) {
-		// Shallow overlap - realistic for a resting/speculative contact - converges far more
-		// precisely than a deep one because the polytope starts much closer to the true surface.
+
 		var r = overlapDepth(t, placed(new AP.SphereShape(1), new V(0, 0, 0)), placed(new AP.SphereShape(1), new V(1.95, 0, 0)));
 		t.check(r.epa.distance, 0.05, 1e-4, 'shallow depth converges to near machine precision');
 	});
@@ -71,8 +59,6 @@
 		var r = overlapDepth(t, placed(new AP.SphereShape(1), new V(0, 0, 0)), placed(new AP.BoxShape(1, 1, 1), new V(1.5, 0, 0)));
 		t.check(r.epa.distance, 0.5, 1e-3, 'sphere surface at x=1, box surface at x=0.5');
 	});
-
-	// ---- more iterations tightens curved-shape convergence (monotonic, not a coincidence) ----
 
 	test('collision/epa', 'more iterations converges a deep sphere overlap closer to the true depth', function (t) {
 		var a = placed(new AP.SphereShape(1.2), new V(0, 0, 0));
@@ -86,15 +72,11 @@
 		t.checkTrue(errHigh < errLow, 'error shrinks as iteration budget grows (asymptotic convergence, not noise)');
 	});
 
-	// ---- witness points ----
-
 	test('collision/epa', 'witness points land on each shape\'s own surface', function (t) {
 		var r = overlapDepth(t, placed(new AP.BoxShape(1, 1, 1), new V(0, 0, 0)), placed(new AP.BoxShape(1, 1, 1), new V(1.5, 0, 0)));
 		t.check(r.epa.pointA.x, 1, 1e-6, 'witness on A sits on A\'s own +X face');
 		t.check(r.epa.pointB.x, 0.5, 1e-6, 'witness on B sits on B\'s own -X face');
 	});
-
-	// ---- cross-check against independent ground truth ----
 
 	test('collision/epa', 'box-box depth matches the axis-aligned closed form across many random overlaps', function (t) {
 		var s = 999; function rand() { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff; }
@@ -110,8 +92,6 @@
 		}
 		t.checkEqual(mismatches, 0, trials + ' random box overlaps, checked against the axis-aligned closed form (exact for flat faces)');
 	});
-
-	// ---- visual ----
 
 	test('collision/epa', 'penetration depth and normal for two overlapping boxes', function (t) {
 		var a = placed(new AP.BoxShape(1, 1, 1), new V(-0.75, 0, 0));

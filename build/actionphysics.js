@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-24T06:31:13.958Z
+// ActionPhysics 0.1.0 — built 2026-08-26T23:04:06.251Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine.
@@ -2639,26 +2639,9 @@ ActionPhysics.AABB = AABB;
 
 
 // ==== src/shapes/Shape.js ====
-/**
- * Shape contract. Every shape provides, in LOCAL space (unrotated, centered on its own origin):
- *
- *   supportInto(out, direction)   farthest point on the shape along `direction` (need not be
- *                                 normalized). This is the ONLY primitive GJK/EPA require —
- *                                 everything else here exists for AABBs, mass properties and
- *                                 the visual bench, not collision.
- *   localAABBInto(out)            tight local-space AABB.
- *   computeMassData()             { mass, inertia: Matrix3, centerOfMass: Vector3 } for a shape
- *                                 of density 1; RigidBody scales inertia by (mass / this.volume)
- *                                 when the caller supplies its own mass.
- *   volume()                      for the density scaling above.
- *
- * Shapes never allocate on the hot path: supportInto/localAABBInto write into caller-owned
- * `out` arguments. computeMassData() runs once per body and may allocate.
- */
+// Shape contract, all in local space: supportInto (the only GJK/EPA primitive), localAABBInto,
+// computeMassData (density 1), volume (for density scaling). No allocation on supportInto/localAABBInto.
 class Shape {
-    // A shape reports the CATEGORY of margin its narrowphase pair needs. Plane and Triangle are
-    // degenerate (infinite extent / zero thickness) and get special-cased at dispatch rather than
-    // patched inside GJK/EPA — see plan.md, Shapes section.
     constructor(type) {
         this.type = type;
     }
@@ -2684,7 +2667,7 @@ ActionPhysics.Shape = Shape;
 
 
 // ==== src/shapes/BoxShape.js ====
-// Every dimension is a half-extent (plan.md, Units and conventions) — matches AABB, matches
+// Every dimension is a half-extent — matches AABB, matches
 // every other shape's convention. No shape silently uses a different one.
 class BoxShape extends Shape {
     constructor(halfWidth, halfHeight, halfDepth) {
@@ -2766,9 +2749,8 @@ ActionPhysics.SphereShape = SphereShape;
 
 
 // ==== src/shapes/CylinderShape.js ====
-// Axis is local Y. halfHeight is a half-extent (see plan.md, Units and conventions) — this is
-// the deliberate departure from the predecessor, whose capsule took total height and silently
-// broke callers written in half-extents everywhere else.
+// Axis is local Y. halfHeight is a half-extent, matching every other shape's convention
+// (CapsuleShape's total-height constructor is the one deliberate exception).
 class CylinderShape extends Shape {
     constructor(radius, halfHeight) {
         super('cylinder');
@@ -2879,11 +2861,8 @@ ActionPhysics.ConeShape = ConeShape;
 
 
 // ==== src/shapes/CapsuleShape.js ====
-// Axis is local Y. Constructor takes TOTAL height, unlike every other shape here — noted
-// explicitly because it is the one deliberate exception to the half-extent rule (plan.md,
-// Units and conventions): a capsule's height already includes its hemispherical caps, so there
-// is no natural "half-extent" reading that isn't itself confusing. segmentHalfLength is the
-// half-length of the cylindrical core only (between sphere centers), derived once here.
+// Axis is local Y. Constructor takes TOTAL height (includes hemispherical caps), unlike every
+// other shape's half-extent convention.
 class CapsuleShape extends Shape {
     constructor(radius, totalHeight) {
         super('capsule');
@@ -2895,10 +2874,19 @@ class CapsuleShape extends Shape {
         this.segmentHalfLength = totalHeight / 2 - radius;
     }
 
+    // Sphere-swept-segment support: radius*normalize(dir) offset by the farther cap center. At
+    // dir.y ~0 the true farthest point is the barrel equator, not a cap center - handled explicitly.
     supportInto(out, direction) {
-        const centerY = direction.y >= 0 ? this.segmentHalfLength : -this.segmentHalfLength;
         const lsq = direction.x * direction.x + direction.y * direction.y + direction.z * direction.z;
-        if (lsq === 0) { out.x = this.radius; out.y = centerY; out.z = 0; return out; }
+        if (lsq === 0) { out.x = 0; out.y = 0; out.z = 0; return out; }
+        if (Math.abs(direction.y) < 1e-9) {
+            const s = this.radius / Math.sqrt(lsq);
+            out.x = direction.x * s;
+            out.y = 0;
+            out.z = direction.z * s;
+            return out;
+        }
+        const centerY = direction.y > 0 ? this.segmentHalfLength : -this.segmentHalfLength;
         const s = this.radius / Math.sqrt(lsq);
         out.x = direction.x * s;
         out.y = direction.y * s + centerY;
@@ -2920,25 +2908,21 @@ class CapsuleShape extends Shape {
         return cylinder + sphere;
     }
 
-    // Composite of a cylindrical core plus two hemispherical caps, each contributing its own
-    // parallel-axis term. Standard closed forms; see e.g. Bullet/Rapier capsule inertia derivations.
+    // Cylinder core + two hemispherical caps, each with its own parallel-axis term.
     computeMassData() {
         const r = this.radius, hs = this.segmentHalfLength;
         const cylinderVolume = Scalar.PI * r * r * (2 * hs);
-        const hemisphereVolume = (2 / 3) * Scalar.PI * r * r * r; // one hemisphere
+        const hemisphereVolume = (2 / 3) * Scalar.PI * r * r * r;
         const mass = cylinderVolume + 2 * hemisphereVolume;
 
-        const cylinderMass = cylinderVolume;   // density 1
+        const cylinderMass = cylinderVolume;
         const hemisphereMass = hemisphereVolume;
 
         const iAxisCyl = 0.5 * cylinderMass * r * r;
         const iSideCyl = cylinderMass * (3 * r * r + (2 * hs) * (2 * hs)) / 12;
 
-        // Solid hemisphere about its own flat-face centroid axis (through the sphere center, Y):
-        const iAxisHemi = 0.4 * hemisphereMass * r * r; // same coefficient as full sphere for the polar axis
-        // About an axis through the hemisphere's centroid perpendicular to the pole, then shifted
-        // by the parallel-axis theorem out to the capsule's cylinder-cap junction at y = hs.
-        const hemiCentroidOffset = (3 / 8) * r; // centroid distance from flat face along the axis
+        const iAxisHemi = 0.4 * hemisphereMass * r * r;
+        const hemiCentroidOffset = (3 / 8) * r;
         const iSideHemiAboutOwnCentroid = hemisphereMass * (83 / 320) * r * r;
         const distFromCapsuleCenter = hs + hemiCentroidOffset;
         const iSideHemiShifted = iSideHemiAboutOwnCentroid + hemisphereMass * distFromCapsuleCenter * distFromCapsuleCenter;
@@ -2955,17 +2939,17 @@ ActionPhysics.CapsuleShape = CapsuleShape;
 
 
 // ==== src/shapes/ConvexShape.js ====
-// Arbitrary convex hull from a point cloud. Points are LOCAL-space Vector3, taken as already
-// forming (or being reducible to) a convex hull — support/mass computation below do not verify
-// convexity, matching every other shape here trusting its constructor input.
+// Arbitrary convex hull from a local-space point cloud. Support is a brute-force max-dot scan;
+// mass/hull data is built lazily via incremental 3D Quickhull.
 class ConvexShape extends Shape {
+
     constructor(points) {
         super('convex');
         this.points = points;
+        this._hullFaces = null; // lazy: [[ia,ib,ic], ...] indices into points, outward-wound
+        this._massData = null;  // lazy: { mass, inertia, centerOfMass } for density 1
     }
 
-    // Brute-force max-dot scan. O(n) per query; fine for the hull sizes physics shapes use
-    // (tens of points), and simplicity here keeps GJK's one required primitive easy to trust.
     supportInto(out, direction) {
         const pts = this.points;
         let bestDot = -Infinity, bestIndex = 0;
@@ -2992,31 +2976,243 @@ class ConvexShape extends Shape {
         return out;
     }
 
-    // No closed-form volume/inertia for an arbitrary hull without its face list (which this
-    // shape does not carry — see plan.md's component list: Convex is a GJK/EPA support shape,
-    // not a tessellated mesh). Approximated as the equivalent-volume sphere from the AABB's
-    // bounding radius; a caller needing exact mass properties for a hull supplies its own via
-    // a MeshShape (has faces) instead.
     volume() {
-        const aabb = new AABB();
-        this.localAABBInto(aabb);
-        const c = new Vector3();
-        aabb.centerInto(c);
-        let r = 0;
-        for (let i = 0; i < this.points.length; i++) {
-            const d = this.points[i].distanceTo(c);
-            if (d > r) r = d;
-        }
-        this._boundingRadius = r;
-        return (4 / 3) * Scalar.PI * r * r * r;
+        return this._computeMassData().mass;
     }
 
     computeMassData() {
-        const mass = this.volume();
-        const r = this._boundingRadius;
-        const i = 0.4 * mass * r * r;
-        const inertia = new Matrix3().setDiagonal(new Vector3(i, i, i));
-        return { mass: mass, inertia: inertia, centerOfMass: new Vector3(0, 0, 0) };
+        const m = this._computeMassData();
+        return {
+            mass: m.mass,
+            inertia: new Matrix3().copy(m.inertia),
+            centerOfMass: new Vector3(m.centerOfMass.x, m.centerOfMass.y, m.centerOfMass.z)
+        };
+    }
+
+    // Divergence-theorem integration: signed tetrahedra from the local origin to each hull face.
+    _computeMassData() {
+        if (this._massData) return this._massData;
+        const faces = this._hull();
+
+        let volume = 0;
+        const comAccum = new Vector3(0, 0, 0);
+        let Ixx = 0, Iyy = 0, Izz = 0, Ixy = 0, Ixz = 0, Iyz = 0;
+
+        const pts = this.points;
+        for (let f = 0; f < faces.length; f++) {
+            const a = pts[faces[f][0]], b = pts[faces[f][1]], c = pts[faces[f][2]];
+
+            const cx = b.y * c.z - b.z * c.y, cy = b.z * c.x - b.x * c.z, cz = b.x * c.y - b.y * c.x;
+            const tetVol = (a.x * cx + a.y * cy + a.z * cz) / 6;
+            volume += tetVol;
+
+            comAccum.x += tetVol * (a.x + b.x + c.x) / 4;
+            comAccum.y += tetVol * (a.y + b.y + c.y) / 4;
+            comAccum.z += tetVol * (a.z + b.z + c.z) / 4;
+
+            const sx2 = a.x * a.x + b.x * b.x + c.x * c.x, sy2 = a.y * a.y + b.y * b.y + c.y * c.y, sz2 = a.z * a.z + b.z * b.z + c.z * c.z;
+            const sx = a.x + b.x + c.x, sy = a.y + b.y + c.y, sz = a.z + b.z + c.z;
+            const sxy = a.x * a.y + b.x * b.y + c.x * c.y;
+            const sxz = a.x * a.z + b.x * b.z + c.x * c.z;
+            const syz = a.y * a.z + b.y * b.z + c.y * c.z;
+            const k = tetVol / 20;
+            const ix2 = k * (sx2 + sx * sx), iy2 = k * (sy2 + sy * sy), iz2 = k * (sz2 + sz * sz);
+            Ixx += iy2 + iz2;
+            Iyy += ix2 + iz2;
+            Izz += ix2 + iy2;
+            Ixy += k * (sxy + sx * sy);
+            Ixz += k * (sxz + sx * sz);
+            Iyz += k * (syz + sy * sz);
+        }
+
+        volume = Math.abs(volume);
+        const com = volume > 0 ? new Vector3(comAccum.x / volume, comAccum.y / volume, comAccum.z / volume) : new Vector3(0, 0, 0);
+
+        // Parallel axis theorem: shift origin-relative moments to the center of mass.
+        const cx = com.x, cy = com.y, cz = com.z;
+        const IxxC = Math.abs(Ixx - volume * (cy * cy + cz * cz));
+        const IyyC = Math.abs(Iyy - volume * (cx * cx + cz * cz));
+        const IzzC = Math.abs(Izz - volume * (cx * cx + cy * cy));
+        const IxyC = Ixy - volume * cx * cy;
+        const IxzC = Ixz - volume * cx * cz;
+        const IyzC = Iyz - volume * cy * cz;
+
+        const inertia = new Matrix3();
+        inertia.e00 = IxxC; inertia.e01 = -IxyC; inertia.e02 = -IxzC;
+        inertia.e10 = -IxyC; inertia.e11 = IyyC; inertia.e12 = -IyzC;
+        inertia.e20 = -IxzC; inertia.e21 = -IyzC; inertia.e22 = IzzC;
+
+        this._massData = { mass: volume, inertia: inertia, centerOfMass: com };
+        return this._massData;
+    }
+
+    // Incremental 3D Quickhull: seed tetrahedron -> repeatedly absorb the farthest outside point,
+    // remove faces it can see, re-triangulate the horizon -> stop when no outside points remain.
+    _hull() {
+        if (this._hullFaces) return this._hullFaces;
+        const pts = this.points;
+        if (pts.length < 4) { this._hullFaces = []; return this._hullFaces; }
+
+        const seed = ConvexShape._seedTetrahedron(pts);
+        let faces = seed.faces; // each: { a, b, c: point indices; outside: index[] }
+        for (let i = 0; i < pts.length; i++) {
+            if (seed.used.has(i)) continue;
+            ConvexShape._assignToOutsideSet(faces, pts, i);
+        }
+
+        while (true) {
+            let face = null;
+            for (let f = 0; f < faces.length; f++) if (faces[f].outside.length > 0) { face = faces[f]; break; }
+            if (!face) break;
+
+            let farIdx = -1, farDist = -Infinity;
+            for (let k = 0; k < face.outside.length; k++) {
+                const idx = face.outside[k];
+                const d = ConvexShape._planeDistance(pts, face, idx);
+                if (d > farDist) { farDist = d; farIdx = idx; }
+            }
+
+            const visible = [];
+            for (let f = 0; f < faces.length; f++) {
+                if (ConvexShape._planeDistance(pts, faces[f], farIdx) > 1e-9) visible.push(f);
+            }
+
+            const visibleSet = new Set(visible);
+            const edgeCount = new Map(); // "lo:hi" -> { count, a, b }
+            for (let vi = 0; vi < visible.length; vi++) {
+                const fc = faces[visible[vi]];
+                ConvexShape._forEachEdge(fc, function (a, b) {
+                    const key = a < b ? a + ':' + b : b + ':' + a;
+                    let e = edgeCount.get(key);
+                    if (!e) { e = { count: 0, a: a, b: b }; edgeCount.set(key, e); }
+                    e.count++;
+                });
+            }
+            const horizon = [];
+            edgeCount.forEach(function (e) { if (e.count === 1) horizon.push([e.a, e.b]); });
+
+            let orphanPool = [];
+            for (let vi = 0; vi < visible.length; vi++) orphanPool = orphanPool.concat(faces[visible[vi]].outside);
+
+            const sortedVisible = visible.slice().sort(function (x, y) { return y - x; });
+            for (let vi = 0; vi < sortedVisible.length; vi++) faces.splice(sortedVisible[vi], 1);
+
+            const newFaces = [];
+            for (let h = 0; h < horizon.length; h++) {
+                const nf = ConvexShape._makeFace(pts, horizon[h][0], horizon[h][1], farIdx, seed.centroid);
+                newFaces.push(nf);
+            }
+
+            for (let o = 0; o < orphanPool.length; o++) {
+                if (orphanPool[o] === farIdx) continue;
+                ConvexShape._assignToOutsideSet(newFaces, pts, orphanPool[o]);
+            }
+
+            faces = faces.concat(newFaces);
+        }
+
+        this._hullFaces = faces.map(function (f) { return [f.a, f.b, f.c]; });
+        return this._hullFaces;
+    }
+
+    static _seedTetrahedron(pts) {
+        let minX = 0, maxX = 0, minY = 0, maxY = 0, minZ = 0, maxZ = 0;
+        for (let i = 1; i < pts.length; i++) {
+            if (pts[i].x < pts[minX].x) minX = i; if (pts[i].x > pts[maxX].x) maxX = i;
+            if (pts[i].y < pts[minY].y) minY = i; if (pts[i].y > pts[maxY].y) maxY = i;
+            if (pts[i].z < pts[minZ].z) minZ = i; if (pts[i].z > pts[maxZ].z) maxZ = i;
+        }
+        const candidates = [minX, maxX, minY, maxY, minZ, maxZ];
+
+        let ia = candidates[0], ib = candidates[1], bestD = -Infinity;
+        for (let i = 0; i < candidates.length; i++) {
+            for (let j = i + 1; j < candidates.length; j++) {
+                const d = pts[candidates[i]].distanceSquared(pts[candidates[j]]);
+                if (d > bestD) { bestD = d; ia = candidates[i]; ib = candidates[j]; }
+            }
+        }
+
+        let ic = -1, bestLineD = -Infinity;
+        for (let i = 0; i < pts.length; i++) {
+            if (i === ia || i === ib) continue;
+            const d = ConvexShape._pointLineDistanceSquared(pts[i], pts[ia], pts[ib]);
+            if (d > bestLineD) { bestLineD = d; ic = i; }
+        }
+
+        const normal = ConvexShape._faceNormal(pts[ia], pts[ib], pts[ic]);
+        let id = -1, bestPlaneD = -Infinity;
+        for (let i = 0; i < pts.length; i++) {
+            if (i === ia || i === ib || i === ic) continue;
+            const dx = pts[i].x - pts[ia].x, dy = pts[i].y - pts[ia].y, dz = pts[i].z - pts[ia].z;
+            const d = Math.abs(dx * normal.x + dy * normal.y + dz * normal.z);
+            if (d > bestPlaneD) { bestPlaneD = d; id = i; }
+        }
+
+        const centroid = new Vector3(
+            (pts[ia].x + pts[ib].x + pts[ic].x + pts[id].x) / 4,
+            (pts[ia].y + pts[ib].y + pts[ic].y + pts[id].y) / 4,
+            (pts[ia].z + pts[ib].z + pts[ic].z + pts[id].z) / 4
+        );
+
+        const faces = [
+            ConvexShape._makeFace(pts, ia, ib, ic, centroid),
+            ConvexShape._makeFace(pts, ia, ib, id, centroid),
+            ConvexShape._makeFace(pts, ia, ic, id, centroid),
+            ConvexShape._makeFace(pts, ib, ic, id, centroid)
+        ];
+
+        const used = new Set([ia, ib, ic, id]);
+        return { faces: faces, used: used, centroid: centroid };
+    }
+
+    // Winds i0,i1,i2 so the outward normal points away from insidePoint.
+    static _makeFace(pts, i0, i1, i2, insidePoint) {
+        const normal = ConvexShape._faceNormal(pts[i0], pts[i1], pts[i2]);
+        const toInside = insidePoint.x * normal.x + insidePoint.y * normal.y + insidePoint.z * normal.z
+            - (pts[i0].x * normal.x + pts[i0].y * normal.y + pts[i0].z * normal.z);
+        if (toInside > 0) return { a: i0, b: i2, c: i1, outside: [] };
+        return { a: i0, b: i1, c: i2, outside: [] };
+    }
+
+    static _faceNormal(a, b, c) {
+        const abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z;
+        const acx = c.x - a.x, acy = c.y - a.y, acz = c.z - a.z;
+        return new Vector3(aby * acz - abz * acy, abz * acx - abx * acz, abx * acy - aby * acx);
+    }
+
+    // Signed distance to face's plane; positive = outside.
+    static _planeDistance(pts, face, idx) {
+        const a = pts[face.a], b = pts[face.b], c = pts[face.c], p = pts[idx];
+        const n = ConvexShape._faceNormal(a, b, c);
+        const len = Math.sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+        if (len < 1e-12) return -Infinity;
+        return ((p.x - a.x) * n.x + (p.y - a.y) * n.y + (p.z - a.z) * n.z) / len;
+    }
+
+    static _assignToOutsideSet(faces, pts, idx) {
+        let bestFace = null, bestDist = 1e-9;
+        for (let f = 0; f < faces.length; f++) {
+            const d = ConvexShape._planeDistance(pts, faces[f], idx);
+            if (d > bestDist) { bestDist = d; bestFace = faces[f]; }
+        }
+        if (bestFace) bestFace.outside.push(idx);
+    }
+
+    static _forEachEdge(face, fn) {
+        fn(face.a, face.b);
+        fn(face.b, face.c);
+        fn(face.c, face.a);
+    }
+
+    static _pointLineDistanceSquared(p, a, b) {
+        const abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z;
+        const apx = p.x - a.x, apy = p.y - a.y, apz = p.z - a.z;
+        const abLenSq = abx * abx + aby * aby + abz * abz;
+        if (abLenSq < 1e-12) return apx * apx + apy * apy + apz * apz;
+        const t = (apx * abx + apy * aby + apz * abz) / abLenSq;
+        const cx = a.x + t * abx, cy = a.y + t * aby, cz = a.z + t * abz;
+        const dx = p.x - cx, dy = p.y - cy, dz = p.z - cz;
+        return dx * dx + dy * dy + dz * dz;
     }
 }
 
@@ -3025,8 +3221,7 @@ ActionPhysics.ConvexShape = ConvexShape;
 
 // ==== src/shapes/PlaneShape.js ====
 // A finite plane: a flat rectangle with zero thickness. Degenerate by construction — special-
-// cased explicitly rather than patched into GJK/EPA later (plan.md, Shapes: "Plane and Triangle
-// are degenerate and are special-cased explicitly at the shape level, not patched later").
+// cased explicitly at the shape level rather than patched into GJK/EPA later.
 //
 // orientation selects which local axis is the normal: 'x', 'y', or 'z'. halfW/halfL extend along
 // the other two axes, in the cyclic order (y,z) for 'x', (z,x) for 'y', (x,y) for 'z' — i.e. the
@@ -3080,7 +3275,7 @@ ActionPhysics.PlaneShape = PlaneShape;
 // ==== src/shapes/TriangleShape.js ====
 // A single zero-thickness triangle in local space. Degenerate like PlaneShape, for the same
 // reason — see PlaneShape's header. Used both standalone and as the per-triangle shape a
-// MeshShape's midphase dispatches into (plan.md: "midphase — which triangles of a mesh?").
+// MeshShape's midphase dispatches into.
 class TriangleShape extends Shape {
     constructor(a, b, c) {
         super('triangle');
@@ -3124,9 +3319,9 @@ ActionPhysics.TriangleShape = TriangleShape;
 
 // ==== src/shapes/MeshShape.js ====
 // Static triangle mesh: a vertex list plus flat index triples. Zero mass by construction — a
-// mesh is a static/kinematic-only shape (plan.md: BVH is "built once for static geometry").
-// The midphase BVH over these triangles is built lazily by whatever consumes this shape
-// (plan.md, Spatial: "one BVH implementation, three call sites"); this class only owns geometry.
+// mesh is a static/kinematic-only shape (its BVH is built once and never updated).
+// The midphase BVH over these triangles is built lazily by whatever consumes this shape;
+// this class only owns geometry.
 class MeshShape extends Shape {
     constructor(vertices, indices) {
         super('mesh');
@@ -3293,30 +3488,51 @@ ActionPhysics.CompoundShape = CompoundShape;
 
 
 // ==== src/shapes/LineSweptShape.js ====
-// A shape swept along a line segment: the Minkowski sum of `shape` with the segment from
-// -halfLength to +halfLength along local Y. Used for continuous-collision / swept queries
-// (plan.md, component 11: Queries — ray casting, shape sweeps) without a dedicated CCD solver:
-// the query just asks "does this swept volume touch anything", which is a support function away
-// once the base shape has one.
+// A shape swept along a line segment from `start` to `end` (LOCAL-space points): the Minkowski sum
+// of `shape` with that segment. Used for continuous-collision / swept queries
+// without a dedicated CCD solver: the query just asks
+// "does this swept volume touch anything", which is a support function away once the base shape
+// has one.
 class LineSweptShape extends Shape {
-    constructor(shape, halfLength) {
+    constructor(shape, start, end) {
         super('lineswept');
         this.shape = shape;
-        this.halfLength = halfLength;
+        this.start = start;
+        this.end = end;
+        this.aabb = new AABB();
+        this._recomputeAABB();
+    }
+
+    _recomputeAABB() {
+        this.shape.localAABBInto(this.aabb);
+        const sx = this.start.x, sy = this.start.y, sz = this.start.z;
+        const ex = this.end.x, ey = this.end.y, ez = this.end.z;
+        this.aabb.min.x += Math.min(sx, ex); this.aabb.max.x += Math.max(sx, ex);
+        this.aabb.min.y += Math.min(sy, ey); this.aabb.max.y += Math.max(sy, ey);
+        this.aabb.min.z += Math.min(sz, ez); this.aabb.max.z += Math.max(sz, ez);
+        return this.aabb;
     }
 
     // Minkowski sum with a segment: support(d) = shape.support(d) + endpoint(d), where the
-    // endpoint chosen is whichever end of the segment is farther along d.
+    // endpoint chosen is whichever end of the segment is farther along d (has the larger dot
+    // product with d).
     supportInto(out, direction) {
         this.shape.supportInto(out, direction);
-        out.y += direction.y >= 0 ? this.halfLength : -this.halfLength;
+        const ds = this.start.x * direction.x + this.start.y * direction.y + this.start.z * direction.z;
+        const de = this.end.x * direction.x + this.end.y * direction.y + this.end.z * direction.z;
+        if (de >= ds) { out.x += this.end.x; out.y += this.end.y; out.z += this.end.z; }
+        else { out.x += this.start.x; out.y += this.start.y; out.z += this.start.z; }
         return out;
     }
 
+    // Point-in-shape support, matching RigidBody.findSupportPoint's own direct-shape convention.
+    findSupportPoint(direction, out) {
+        return this.supportInto(out, direction);
+    }
+
     localAABBInto(out) {
-        this.shape.localAABBInto(out);
-        out.min.y -= this.halfLength;
-        out.max.y += this.halfLength;
+        out.min.copy(this.aabb.min);
+        out.max.copy(this.aabb.max);
         return out;
     }
 
@@ -3332,8 +3548,8 @@ ActionPhysics.LineSweptShape = LineSweptShape;
 
 
 // ==== src/bodies/RigidBody.js ====
-// Body type, as a first-class concept (plan.md: "What mature engines have that Goblin doesn't" #2).
-// Checked in exactly one place per stage, never as scattered mass===Infinity comparisons.
+// Body type, as a first-class concept: checked in exactly one place per stage, never as scattered
+// mass===Infinity comparisons.
 const BODY_STATIC = 0;
 const BODY_KINEMATIC = 1;
 const BODY_DYNAMIC = 2;
@@ -3342,13 +3558,11 @@ let _nextBodyId = 1;
 
 /**
  * A rigid body: shape + world transform + (for dynamic bodies) mass/motion state. Broadphase and
- * midphase only need shape + transform + AABB; the mass/motion/material fields exist now rather
- * than being bolted on at the solver stage, so this class is not rebuilt twice (plan.md's "one
- * owner per concern" applies to the body's own field layout too - Mass is owned here, not
- * scattered across whichever stage happens to need it first).
+ * midphase only need shape + transform + AABB; mass/motion/material fields exist so every concern
+ * has exactly one owning home.
  *
- * Field groups match the API surface table in plan.md: Transform, Motion, Forces, Material, Mass,
- * Filtering, Identity.
+ * See Forces.js (impulse/force application), DerivedState.js (AABB/inertia recompute), and
+ * Accessors.js (support point, ray cast, transform, listeners).
  */
 class RigidBody {
     constructor(shape, mass) {
@@ -3387,10 +3601,22 @@ class RigidBody {
         this.gravity = null; // null = use World.gravity; setGravity() overrides per-body
 
         // ---- Material ----
-        this.friction = 0.5;
-        this.restitution = 0;
-        this.linear_damping = 0;
-        this.angular_damping = 0;
+        // Matches ActionEngineJS's own ActionRigidBody3D.MATERIAL_DEFAULTS - a body built directly
+        // against this engine should behave the same as one built through that wrapper.
+        // angular_damping is not 0: Coulomb friction opposes tangential SLIP, and a cleanly rolling
+        // shape has ~zero slip at the contact by construction, so without angular damping a rolling
+        // body never stops on friction alone (see angular_friction below and VelocitySolve.js).
+        this.friction = 3.0;
+        this.restitution = 0.33;
+        this.linear_damping = 0.1;
+        this.angular_damping = 0.9;
+        // Contact-tangent-plane angular damping (metres): caps relative angular velocity ABOUT the
+        // contact's tangent plane (any axis lying in the contact surface), the same way Coulomb
+        // friction caps tangential linear slip. Shape-agnostic - it happens to be what real rolling
+        // resistance looks like on a round shape, but it also damps an ordinary box's pivot/topple
+        // at a contact corner. NOT the same thing as a future shape-aware rolling-resistance model
+        // (which would key off actual rolling contact geometry); this name is reserved for that.
+        this.angular_friction = 0.05;
 
         // ---- Filtering ----
         this.collision_mask = 0xFFFFFFFF;
@@ -3399,8 +3625,7 @@ class RigidBody {
         // ---- Events ----
         this._listeners = {};
 
-        // Sleep (owned entirely by the sleep manager once it exists - plan.md, Sleep). Present
-        // here only as the state a body carries; no stage but the sleep manager writes to it.
+        // Sleep state, owned entirely by the sleep manager.
         this.isAwake = true;
         this.sleepTimer = 0;
     }
@@ -3408,8 +3633,8 @@ class RigidBody {
     get is_static() { return this.bodyType === RigidBody.STATIC; }
     get mass() { return this._mass; }
 
-    // Scales the shape's density-1 inertia by (mass / shape.volume()), per Shape's contract
-    // (src/shapes/Shape.js) — computeMassData() always returns density-1 values.
+    // Scales the shape's density-1 inertia by (mass / shape.volume()), per Shape's contract -
+    // computeMassData() always returns density-1 values.
     setMassFromShape(shape, mass) {
         this._mass = mass;
         this._massInverted = mass > 0 ? 1 / mass : 0;
@@ -3432,165 +3657,251 @@ class RigidBody {
         this.gravity = new Vector3(x, y, z);
         return this;
     }
-
-    // Refresh everything derived from position/rotation: the world AABB (tight and broadphase
-    // variants) and the world-space inverse inertia tensor. Called once per body per tick by
-    // whichever stage owns "current" - narrowphase and the solver assume it has already run (Rule
-    // 1: stage contracts are absolute).
-    //
-    // `dt` (optional) is this tick's timestep, used only to size the broadphase AABB's velocity
-    // sweep (see _recomputeBroadphaseAABB). The tight AABB (getAABB) never depends on dt.
-    updateDerived(dt) {
-        this._recomputeAABB();
-        this._recomputeBroadphaseAABB(dt || 0);
-        this._recomputeWorldInverseInertia();
-        return this;
-    }
-
-    // The TIGHT world AABB: the exact rotated bound of the shape at the current transform, no
-    // margin. This is the body's geometric truth - what a raycast/query wants, and what getAABB()
-    // returns. Broadphase uses the fattened variant below instead (getBroadphaseAABB).
-    _recomputeAABB() {
-        const local = RigidBody._scratchLocalAABB;
-        this.shape.localAABBInto(local);
-        // Conservative rotated bound via the 8-corner sweep, same technique CompoundShape uses for
-        // its own children - correct for any rotation, not just axis-aligned ones.
-        const rotMat = RigidBody._scratchMat3;
-        rotMat.fromQuaternion(this.rotation);
-        const corner = RigidBody._scratchVec;
-        this._aabb.setEmpty();
-        for (let cx = 0; cx < 2; cx++) for (let cy = 0; cy < 2; cy++) for (let cz = 0; cz < 2; cz++) {
-            corner.x = cx ? local.max.x : local.min.x;
-            corner.y = cy ? local.max.y : local.min.y;
-            corner.z = cz ? local.max.z : local.min.z;
-            rotMat.transformVector3(corner);
-            corner.addInPlace(this.position);
-            if (corner.x < this._aabb.min.x) this._aabb.min.x = corner.x;
-            if (corner.y < this._aabb.min.y) this._aabb.min.y = corner.y;
-            if (corner.z < this._aabb.min.z) this._aabb.min.z = corner.z;
-            if (corner.x > this._aabb.max.x) this._aabb.max.x = corner.x;
-            if (corner.y > this._aabb.max.y) this._aabb.max.y = corner.y;
-            if (corner.z > this._aabb.max.z) this._aabb.max.z = corner.z;
-        }
-        this._aabbDirty = false;
-    }
-
-    // The BROADPHASE world AABB: the tight AABB fattened for speculative contacts by a fixed margin
-    // plus this tick's velocity sweep on each axis, so a fast approach is caught a full tick BEFORE
-    // the shapes actually overlap. That lookahead is what makes speculative contacts possible at
-    // all: narrowphase can only create a pre-overlap (still-separated) contact point for a pair
-    // broadphase actually reports, and a raw tight AABB doesn't overlap until the shapes already do
-    // (by which time the body has fallen straight through the speculative window). Fattening only
-    // ever ADDS candidate pairs, never removes one (Rule: broadphase no-false-negatives) -
-    // narrowphase then culls precisely with its own per-pair margin. Kept SEPARATE from the tight
-    // AABB so the body's geometric bound stays truthful for queries/rendering.
-    //
-    // Sweep is directional (grow the box only on the side the body is moving toward on each axis),
-    // keeping the fattened box tight rather than symmetric - a body moving down grows its box
-    // downward, not upward. SPECULATIVE_MARGIN is the absolute floor for the resting/slow case
-    // where velocity*dt alone is ~0.
-    _recomputeBroadphaseAABB(dt) {
-        const m = RigidBody.SPECULATIVE_MARGIN;
-        const sx = this.linear_velocity.x * dt, sy = this.linear_velocity.y * dt, sz = this.linear_velocity.z * dt;
-        // Angular sweep: a point at the body's bounding radius R moves at up to |omega|*R, so a
-        // spinning body's far corner sweeps that far this tick even when the CENTER (which the
-        // linear sweep above tracks) barely moves. Missing this was a real bug: a box that tips
-        // onto one corner spins up to a few rad/s, its OPPOSITE corner then approaches the ground
-        // at |omega|*R (a couple of m/s) with the center's linear velocity pointing elsewhere, so
-        // the linear sweep never grew the box toward that corner - the corner slammed in undetected
-        // and the one-shot correction of the resulting deep overlap injected more spin, diverging.
-        // Angular motion has no clean per-axis direction, so this term is applied ISOTROPICALLY
-        // (all six faces) - the conservative honest choice, never an under-estimate. R is taken from
-        // the tight AABB's own half-extent (its farthest corner from center).
-        const ex = (this._aabb.max.x - this._aabb.min.x) * 0.5;
-        const ey = (this._aabb.max.y - this._aabb.min.y) * 0.5;
-        const ez = (this._aabb.max.z - this._aabb.min.z) * 0.5;
-        const R = Math.sqrt(ex * ex + ey * ey + ez * ez);
-        const wMag = Math.sqrt(this.angular_velocity.x * this.angular_velocity.x +
-            this.angular_velocity.y * this.angular_velocity.y + this.angular_velocity.z * this.angular_velocity.z);
-        const a = wMag * R * dt;
-        this._broadphaseAABB.min.x = this._aabb.min.x - m - a - (sx < 0 ? -sx : 0);
-        this._broadphaseAABB.max.x = this._aabb.max.x + m + a + (sx > 0 ? sx : 0);
-        this._broadphaseAABB.min.y = this._aabb.min.y - m - a - (sy < 0 ? -sy : 0);
-        this._broadphaseAABB.max.y = this._aabb.max.y + m + a + (sy > 0 ? sy : 0);
-        this._broadphaseAABB.min.z = this._aabb.min.z - m - a - (sz < 0 ? -sz : 0);
-        this._broadphaseAABB.max.z = this._aabb.max.z + m + a + (sz > 0 ? sz : 0);
-    }
-
-    _recomputeWorldInverseInertia() {
-        if (this._massInverted === 0) { this._worldInverseInertiaTensor.zero(); return; }
-        const rotMat = RigidBody._scratchMat3;
-        rotMat.fromQuaternion(this.rotation);
-        const rotT = RigidBody._scratchMat3b;
-        rotT.transposeInto(rotMat);
-        this._worldInverseInertiaTensor.multiplyFrom(rotMat, this.inverseInertiaTensor);
-        this._worldInverseInertiaTensor.multiply(rotT);
-    }
-
-    // Broadphase's required primitive: the body's CURRENT world AABB. Assumes updateDerived() has
-    // already run this tick (Rule 1) - getAABB() never recomputes on its own, so a stale call is a
-    // caller bug surfaced as a stale box, not silently patched over here.
-    getAABB() {
-        return this._aabb;
-    }
-
-    // The fattened broadphase-query AABB (tight bound + speculative margin + velocity sweep).
-    // Broadphase and midphase read THIS, not getAABB(), so a pair surfaces the tick before overlap
-    // (see _recomputeBroadphaseAABB). Same staleness assumption as getAABB(): updateDerived() owns
-    // recomputing it once per tick.
-    getBroadphaseAABB() {
-        return this._broadphaseAABB;
-    }
-
-    addListener(event, fn) {
-        (this._listeners[event] || (this._listeners[event] = [])).push(fn);
-        return this;
-    }
-
-    emit(event, arg) {
-        const list = this._listeners[event];
-        if (!list) return;
-        for (let i = 0; i < list.length; i++) list[i](arg);
-    }
 }
 
-// Scratch objects for the allocation-free AABB/inertia recompute above. Per-class, not shared
-// across unrelated algorithms (plan.md: "scratch memory: per-stage arenas, never global") - these
-// three are private to RigidBody's own derived-state recompute and touched nowhere else.
+// Scratch objects for the allocation-free AABB/inertia recompute in DerivedState.js.
 RigidBody._scratchLocalAABB = new AABB();
 RigidBody._scratchMat3 = new Matrix3();
 RigidBody._scratchMat3b = new Matrix3();
 RigidBody._scratchVec = new Vector3();
+RigidBody._scratchInvRot = new Quaternion();
+RigidBody._scratchSupportDir = new Vector3();
 
 RigidBody.STATIC = BODY_STATIC;
 RigidBody.KINEMATIC = BODY_KINEMATIC;
 RigidBody.DYNAMIC = BODY_DYNAMIC;
 
 // Fixed broadphase-AABB fattening for speculative contacts (metres). Matches the narrowphase
-// speculative base so the two stages agree on "how early is a contact worth seeing": broadphase
-// surfaces the pair at least this far before overlap, and narrowphase then creates the actual
-// pre-overlap point within its own (equal-or-larger, velocity-widened) margin. Kept as an
-// absolute floor here; the velocity sweep in _recomputeAABB handles fast approaches on top of it.
+// speculative base so both stages agree on how early a contact is worth seeing.
 RigidBody.SPECULATIVE_MARGIN = 0.02;
 
 ActionPhysics.RigidBody = RigidBody;
 
 
+// ==== src/bodies/Forces.js ====
+// Impulse (instantaneous velocity change) and force/torque (continuous, integrated per-substep,
+// cleared once per tick) application.
+var proto = RigidBody.prototype;
+
+proto.applyImpulse = function (impulse) {
+    if (this._massInverted <= 0) return this;
+    this.linear_velocity.x += impulse.x * this._massInverted * this.linear_factor.x;
+    this.linear_velocity.y += impulse.y * this._massInverted * this.linear_factor.y;
+    this.linear_velocity.z += impulse.z * this._massInverted * this.linear_factor.z;
+    return this;
+};
+
+// Impulse at a world-space point: linear change plus the angular change it produces about the
+// center (dw = I^-1 * (r x impulse)).
+proto.applyImpulseAtPoint = function (impulse, worldPoint) {
+    if (this._massInverted <= 0) return this;
+    this.applyImpulse(impulse);
+    const rx = worldPoint.x - this.position.x, ry = worldPoint.y - this.position.y, rz = worldPoint.z - this.position.z;
+    const tqx = ry * impulse.z - rz * impulse.y, tqy = rz * impulse.x - rx * impulse.z, tqz = rx * impulse.y - ry * impulse.x;
+    const I = this._worldInverseInertiaTensor;
+    this.angular_velocity.x += (I.e00 * tqx + I.e01 * tqy + I.e02 * tqz) * this.angular_factor.x;
+    this.angular_velocity.y += (I.e10 * tqx + I.e11 * tqy + I.e12 * tqz) * this.angular_factor.y;
+    this.angular_velocity.z += (I.e20 * tqx + I.e21 * tqy + I.e22 * tqz) * this.angular_factor.z;
+    return this;
+};
+
+proto.applyTorqueImpulse = function (torqueImpulse) {
+    if (this._massInverted <= 0) return this;
+    const I = this._worldInverseInertiaTensor;
+    const tx = torqueImpulse.x, ty = torqueImpulse.y, tz = torqueImpulse.z;
+    this.angular_velocity.x += (I.e00 * tx + I.e01 * ty + I.e02 * tz) * this.angular_factor.x;
+    this.angular_velocity.y += (I.e10 * tx + I.e11 * ty + I.e12 * tz) * this.angular_factor.y;
+    this.angular_velocity.z += (I.e20 * tx + I.e21 * ty + I.e22 * tz) * this.angular_factor.z;
+    return this;
+};
+
+// Continuous force, integrated by the solver every substep until cleared. Adds, not overwrites -
+// multiple calls in the same tick (gravity plus thrust plus wind) all contribute.
+proto.applyForce = function (force) {
+    this.accumulated_force.x += force.x;
+    this.accumulated_force.y += force.y;
+    this.accumulated_force.z += force.z;
+    return this;
+};
+
+proto.applyTorque = function (torque) {
+    this.accumulated_torque.x += torque.x;
+    this.accumulated_torque.y += torque.y;
+    this.accumulated_torque.z += torque.z;
+    return this;
+};
+
+// A force at a world-space point contributes the force itself plus the torque it produces about
+// the center (r x force) - the continuous-force analogue of applyImpulseAtPoint.
+proto.applyForceAtPoint = function (force, worldPoint) {
+    this.applyForce(force);
+    const rx = worldPoint.x - this.position.x, ry = worldPoint.y - this.position.y, rz = worldPoint.z - this.position.z;
+    this.accumulated_torque.x += ry * force.z - rz * force.y;
+    this.accumulated_torque.y += rz * force.x - rx * force.z;
+    this.accumulated_torque.z += rx * force.y - ry * force.x;
+    return this;
+};
+
+// Zeroes accumulated force/torque. Called by World.step once per TICK (not per substep) - a
+// caller who wants a force to keep acting must call applyForce again next tick.
+proto.clearForces = function () {
+    this.accumulated_force.set(0, 0, 0);
+    this.accumulated_torque.set(0, 0, 0);
+    return this;
+};
+
+
+// ==== src/bodies/DerivedState.js ====
+// Recomputes everything derived from position/rotation: tight AABB, fattened broadphase AABB, and
+// world-space inverse inertia. Called once per body per tick by whichever stage owns "current" -
+// narrowphase and the solver assume it has already run.
+var proto = RigidBody.prototype;
+
+proto.updateDerived = function (dt) {
+    this._recomputeAABB();
+    this._recomputeBroadphaseAABB(dt || 0);
+    this._recomputeWorldInverseInertia();
+    return this;
+};
+
+// The TIGHT world AABB: the exact rotated bound of the shape at the current transform, no margin -
+// the body's geometric truth, what getAABB()/a raycast wants. Broadphase uses the fattened variant.
+proto._recomputeAABB = function () {
+    const local = RigidBody._scratchLocalAABB;
+    this.shape.localAABBInto(local);
+    // Conservative rotated bound via the 8-corner sweep (same technique CompoundShape uses),
+    // correct for any rotation, not just axis-aligned ones.
+    const rotMat = RigidBody._scratchMat3;
+    rotMat.fromQuaternion(this.rotation);
+    const corner = RigidBody._scratchVec;
+    this._aabb.setEmpty();
+    for (let cx = 0; cx < 2; cx++) for (let cy = 0; cy < 2; cy++) for (let cz = 0; cz < 2; cz++) {
+        corner.x = cx ? local.max.x : local.min.x;
+        corner.y = cy ? local.max.y : local.min.y;
+        corner.z = cz ? local.max.z : local.min.z;
+        rotMat.transformVector3(corner);
+        corner.addInPlace(this.position);
+        if (corner.x < this._aabb.min.x) this._aabb.min.x = corner.x;
+        if (corner.y < this._aabb.min.y) this._aabb.min.y = corner.y;
+        if (corner.z < this._aabb.min.z) this._aabb.min.z = corner.z;
+        if (corner.x > this._aabb.max.x) this._aabb.max.x = corner.x;
+        if (corner.y > this._aabb.max.y) this._aabb.max.y = corner.y;
+        if (corner.z > this._aabb.max.z) this._aabb.max.z = corner.z;
+    }
+    this._aabbDirty = false;
+};
+
+// The BROADPHASE world AABB: tight AABB fattened by a fixed margin plus this tick's velocity sweep
+// per axis, so a fast approach is caught a full tick before the shapes actually overlap - the
+// lookahead speculative contacts depend on. Fattening only ever adds candidate pairs, never
+// removes one; narrowphase culls precisely with its own per-pair margin. Kept separate from the
+// tight AABB so the body's geometric bound stays truthful for queries/rendering.
+//
+// Sweep is directional (grows only on the side the body is moving toward), keeping the box tight
+// rather than symmetric. SPECULATIVE_MARGIN is the absolute floor for the resting/slow case.
+proto._recomputeBroadphaseAABB = function (dt) {
+    const m = RigidBody.SPECULATIVE_MARGIN;
+    const sx = this.linear_velocity.x * dt, sy = this.linear_velocity.y * dt, sz = this.linear_velocity.z * dt;
+    // Angular sweep: a point at the body's bounding radius R moves at up to |omega|*R even when the
+    // center (tracked by the linear sweep) barely moves - a tipping box's far corner otherwise
+    // slams in undetected. Applied isotropically (all six faces), the conservative honest choice,
+    // since angular motion has no clean per-axis direction.
+    const ex = (this._aabb.max.x - this._aabb.min.x) * 0.5;
+    const ey = (this._aabb.max.y - this._aabb.min.y) * 0.5;
+    const ez = (this._aabb.max.z - this._aabb.min.z) * 0.5;
+    const R = Math.sqrt(ex * ex + ey * ey + ez * ez);
+    const wMag = Math.sqrt(this.angular_velocity.x * this.angular_velocity.x +
+        this.angular_velocity.y * this.angular_velocity.y + this.angular_velocity.z * this.angular_velocity.z);
+    const a = wMag * R * dt;
+    this._broadphaseAABB.min.x = this._aabb.min.x - m - a - (sx < 0 ? -sx : 0);
+    this._broadphaseAABB.max.x = this._aabb.max.x + m + a + (sx > 0 ? sx : 0);
+    this._broadphaseAABB.min.y = this._aabb.min.y - m - a - (sy < 0 ? -sy : 0);
+    this._broadphaseAABB.max.y = this._aabb.max.y + m + a + (sy > 0 ? sy : 0);
+    this._broadphaseAABB.min.z = this._aabb.min.z - m - a - (sz < 0 ? -sz : 0);
+    this._broadphaseAABB.max.z = this._aabb.max.z + m + a + (sz > 0 ? sz : 0);
+};
+
+proto._recomputeWorldInverseInertia = function () {
+    if (this._massInverted === 0) { this._worldInverseInertiaTensor.zero(); return; }
+    const rotMat = RigidBody._scratchMat3;
+    rotMat.fromQuaternion(this.rotation);
+    const rotT = RigidBody._scratchMat3b;
+    rotT.transposeInto(rotMat);
+    this._worldInverseInertiaTensor.multiplyFrom(rotMat, this.inverseInertiaTensor);
+    this._worldInverseInertiaTensor.multiply(rotT);
+};
+
+// Assumes updateDerived() has already run this tick - never recomputes on its own, so a stale call
+// is a caller bug surfaced as a stale box, not silently patched over here.
+proto.getAABB = function () {
+    return this._aabb;
+};
+
+// Broadphase/midphase read THIS, not getAABB(), so a pair surfaces the tick before overlap.
+proto.getBroadphaseAABB = function () {
+    return this._broadphaseAABB;
+};
+
+
+// ==== src/bodies/Accessors.js ====
+// Support point, transform sync, ray cast, and event listeners.
+var proto = RigidBody.prototype;
+
+// A Transform (position + rotation + scale) synced from this body's own position/rotation, for
+// consumer code (tests, queries) that wants Transform's own API. Does not replace position/rotation
+// as this body's real state - every solver/narrowphase/query call site reads those fields directly.
+// Lazily allocated once, then reused and re-synced on every call.
+proto.getTransform = function () {
+    if (!this._transform) this._transform = new Transform();
+    this._transform.syncFromPhysicsBody(this);
+    return this._transform;
+};
+
+// World-space support point: the farthest point on this body's shape along world-space
+// `direction`. Same composition MinkowskiSupport uses internally (inverse-rotate into local space,
+// call the shape's own supportInto, rotate back, translate) - exposed standalone for a caller with
+// no reason to construct a MinkowskiSupport (which pairs two bodies) for a single-body question.
+proto.findSupportPoint = function (direction, out) {
+    const scratchDir = RigidBody._scratchSupportDir;
+    RigidBody._scratchInvRot.copy(this.rotation).invert();
+    RigidBody._scratchInvRot.transformVectorInto(direction, scratchDir);
+    this.shape.supportInto(out, scratchDir);
+    this.rotation.transformVectorInPlace(out);
+    out.addInPlace(this.position);
+    return out;
+};
+
+// Casts against THIS body alone, for a caller that already holds a body reference and wants a hit
+// test against just that shape without World.rayIntersect's whole-scene search.
+proto.rayIntersect = function (start, end) {
+    return Queries.rayIntersectBody(start, end, this);
+};
+
+proto.addListener = function (event, fn) {
+    (this._listeners[event] || (this._listeners[event] = [])).push(fn);
+    return this;
+};
+
+proto.emit = function (event, arg) {
+    const list = this._listeners[event];
+    if (!list) return;
+    for (let i = 0; i < list.length; i++) list[i](arg);
+};
+
+// Runs this body's speculativeContact listeners; returns false if any vetoes the point.
+proto._speculativeVeto = function (contact, other) {
+    const list = this._listeners.speculativeContact;
+    if (!list) return true;
+    for (let i = 0; i < list.length; i++) {
+        if (list[i]({ contact: contact, other: other }) === false) return false;
+    }
+    return true;
+};
+
+
 // ==== src/spatial/BVH.js ====
-/**
- * Static BVH over a fixed set of leaves, built once. Flattened array layout - array indexing, not
- * pointer chasing (plan.md, Spatial). One implementation, three call sites: compound children,
- * mesh triangles, swept queries.
- *
- * Construction takes a leaf count and two callbacks:
- *   leafAABBInto(out, leafIndex)   writes the leaf's AABB into `out`
- * The tree never touches what a "leaf" IS - a compound child, a mesh triangle, whatever - it only
- * knows AABBs and indices, so this file has no per-caller special cases.
- *
- * Nodes are stored in three parallel typed arrays: min/max as Float64Array (3 components each),
- * and an Int32Array carrying (left, right, leafIndex) - leafIndex is -1 for an internal node.
- * A leaf node has left = right = -1 implicitly (never read); an internal node has leafIndex = -1.
- */
+// Static BVH over a fixed leaf set, built once. Flattened parallel typed arrays (min/max xyz,
+// left/right/leafIndex; leafIndex -1 = internal node). Median-split on the widest axis, no SAH.
 class BVH {
     constructor() {
         this.nodeCount = 0;
@@ -3611,15 +3922,12 @@ class BVH {
         this.leafIndex = new Int32Array(n).fill(-1);
     }
 
-    // Builds the tree over `leafCount` leaves. leafAABBInto(out, i) must fill `out` (an AABB) with
-    // leaf i's bound. A degenerate call (leafCount === 0) leaves the tree empty (root === -1);
-    // querying an empty tree is not an error, it just visits nothing.
+    // leafAABBInto(out, i) fills `out` with leaf i's bound.
     build(leafCount, leafAABBInto) {
         this.nodeCount = 0;
         this.root = -1;
         if (leafCount === 0) return this;
 
-        // Up to 2*leafCount-1 nodes for a full binary tree over leafCount leaves.
         this._ensureCapacity(Math.max(1, 2 * leafCount - 1));
 
         const scratch = new AABB();
@@ -3649,10 +3957,6 @@ class BVH {
             return { minX: bx0, minY: by0, minZ: bz0, maxX: bx1, maxY: by1, maxZ: bz1 };
         }
 
-        // Median split on the widest axis of [lo, hi)'s combined bound. A cheap, deterministic
-        // heuristic (no SAH) - correct measured cost per plan.md is 1.38 children visited per
-        // query, which came from exactly this kind of structure; revisit only if a stress test
-        // shows it isn't good enough.
         function buildRange(lo, hi) {
             const b = boundsOf(lo, hi);
             const nodeIdx = self.nodeCount++;
@@ -3670,7 +3974,6 @@ class BVH {
             if (sy >= sx && sy >= sz) { axis = 1; getCenter = centerY; }
             else if (sz >= sx && sz >= sy) { axis = 2; getCenter = centerZ; }
 
-            // Partition indices[lo,hi) around the median center on the chosen axis, in place.
             const sub = indices.subarray(lo, hi);
             Array.prototype.sort.call(sub, function (ia, ib) { return getCenter[ia] - getCenter[ib]; });
             const mid = lo + ((hi - lo) >> 1);
@@ -3685,8 +3988,7 @@ class BVH {
         return this;
     }
 
-    // Visits every leaf whose node AABB intersects `queryAABB`, calling onLeaf(leafIndex) for
-    // each. No allocation - an explicit stack in a plain array, reused across calls via `_stack`.
+    // Visits every leaf whose node AABB intersects queryAABB. Explicit stack, no allocation.
     query(queryAABB, onLeaf) {
         if (this.root === -1) return;
         const qminx = queryAABB.min.x, qminy = queryAABB.min.y, qminz = queryAABB.min.z;
@@ -3712,31 +4014,15 @@ ActionPhysics.BVH = BVH;
 
 
 // ==== src/phases/SAPBroadphase.js ====
-/**
- * Sweep-and-prune broadphase over AABBs, sorted along a single axis.
- *
- * Produces: candidate body pairs, no false negatives (plan.md, Broadphase). May assume AABBs are
- * current - it never recomputes one, only reads body.getBroadphaseAABB() (the fattened, speculative-
- * margin variant, so a pair surfaces the tick before overlap). Must never test actual shapes;
- * the only thing this file knows about a body is its AABB.
- *
- * ONE axis, not three. The classic SAP maintains sorted lists on all three axes and intersects
- * them; a single axis with a good pick (the one with the most spread, recomputed occasionally)
- * gets most of the culling at a third of the bookkeeping. The remaining axes are checked directly
- * per candidate pair below, which is cheap because the axis sort has already thrown out most of
- * the O(n^2) pairs.
- */
+// Sweep-and-prune broadphase over AABBs, sorted along one axis (the most-spread axis, re-picked
+// each call). Reads body.getBroadphaseAABB() (fattened, speculative-margin variant); never tests
+// real shapes.
 class SAPBroadphase {
     constructor() {
-        // Sorted by AABB min on the sweep axis. Re-sorted every update() - insertion-sort cost is
-        // fine because frame-to-frame the order barely changes (temporal coherence), and an O(n
-        // log n) sort with no coherence assumption is simpler to trust than a persistent structure
-        // during this stage's first pass.
-        this._entries = [];   // { body, aabb } - aabb is a snapshot reference, not a copy
+        this._entries = []; // { body, aabb } - aabb is a snapshot reference, not a copy
         this._axis = 'x';
     }
 
-    // Body lifecycle - the World is the only expected caller.
     add(body) {
         this._entries.push({ body: body, aabb: body.getBroadphaseAABB() });
     }
@@ -3747,9 +4033,6 @@ class SAPBroadphase {
         }
     }
 
-    // Re-picks the sweep axis from the current AABB spread. Cheap (O(n)) and only needs to be
-    // roughly right - a wrong axis costs candidate-pair quality, never correctness, because every
-    // axis is still checked directly on each candidate pair in _sweep().
     _pickAxis() {
         let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, minZ = Infinity, maxZ = -Infinity;
         for (let i = 0; i < this._entries.length; i++) {
@@ -3762,8 +4045,7 @@ class SAPBroadphase {
         this._axis = (sx >= sy && sx >= sz) ? 'x' : (sy >= sz ? 'y' : 'z');
     }
 
-    // Returns candidate pairs as [bodyA, bodyB][], A.id < B.id always, so downstream pairing (a
-    // manifold cache keyed by two ids) has one canonical order without the caller sorting again.
+    // [bodyA, bodyB][], A.id < B.id always.
     computePairs() {
         const n = this._entries.length;
         const pairs = [];
@@ -3778,14 +4060,9 @@ class SAPBroadphase {
             const maxOnAxis = ei.aabb.max[axis];
             for (let j = i + 1; j < n; j++) {
                 const ej = this._entries[j];
-                // Sorted by min on the sweep axis: once ej's min passes ei's max, no later entry
-                // can overlap ei on this axis either (their mins only increase from here).
-                if (ej.aabb.min[axis] > maxOnAxis) break;
-                if (!ei.aabb.intersects(ej.aabb)) continue; // confirms the other two axes
+                if (ej.aabb.min[axis] > maxOnAxis) break; // mins only increase from here
+                if (!ei.aabb.intersects(ej.aabb)) continue;
                 const a = ei.body, b = ej.body;
-                // Two statics/kinematics never need a contact between each other - nothing can
-                // move them into or out of overlap from this pair alone. Filtered here rather
-                // than downstream so midphase/narrowphase never see a pair that can't matter.
                 if (a.bodyType !== RigidBody.DYNAMIC && b.bodyType !== RigidBody.DYNAMIC) continue;
                 if ((a.collision_mask & b.collision_groups) === 0) continue;
                 if ((b.collision_mask & a.collision_groups) === 0) continue;
@@ -3803,203 +4080,257 @@ ActionPhysics.SAPBroadphase = SAPBroadphase;
 /**
  * Midphase: which children of a compound / triangles of a mesh actually need narrowphase?
  *
- * Produces: candidate PRIMITIVE-shape pairs from a broadphase body pair, each candidate carrying
- * the primitive shape plus its WORLD transform (position, rotation) - narrowphase (once it exists)
- * takes these directly, with no compound/mesh awareness of its own. May assume the broadphase pair
- * is real (Rule 1). Must never compute contact data - only "these two primitives might touch".
+ * Produces candidate PRIMITIVE-shape pairs from a broadphase body pair, each carrying the
+ * primitive shape plus its world transform - narrowphase takes these directly, with no
+ * compound/mesh awareness of its own. Never computes contact data, only "these two might touch".
  *
- * A body's shape is one of three kinds here:
- *   - primitive (Box, Sphere, Convex, ...): the body itself IS the one candidate, no BVH needed.
- *   - CompoundShape: candidates are its children whose world AABB overlaps the other side.
- *   - MeshShape: candidates are its triangles (wrapped as TriangleShape) whose world AABB overlaps.
- *
- * Each CompoundShape/MeshShape gets its own BVH over its children/triangles, built ONCE and cached
- * on the shape instance itself (`shape._midphaseBVH`) - static geometry, built once per plan.md's
- * Spatial section. A shape never rebuilds this even if queried by many different bodies (a mesh
- * asset shared across several static bodies builds its BVH exactly once).
+ * A body's shape is one of three kinds: primitive (the body IS the one candidate, no BVH needed),
+ * CompoundShape (candidates are children whose world AABB overlaps the other side), or MeshShape
+ * (candidates are triangles, same rule). See BVHCache.js (per-shape BVH build + leaf query/cache)
+ * and ExpandPair.js (turning a broadphase pair into primitive candidates).
  */
 class Midphase {
     constructor() {
-        // Static-geometry leaf cache: for a given (shape, queryAABB) the set of leaf indices that
-        // overlapped, INCLUDING the empty set. Not caching an empty result was the bug that made
-        // every resting body re-walk the BVH and re-run GJK every frame forever (plan.md, Bug
-        // reference / Caching) - 80% of all cache checks in that measurement. Keyed by the OTHER
-        // body's id, since the query box moves every tick with that body; invalidated once per
-        // tick for a moving other-body, kept for a sleeping one (the sleep manager owns eviction
-        // once it exists - this cache only ever stores what it's given, never guesses staleness).
+        // Static-geometry leaf cache: for a (shape, queryAABB) pair, the leaf indices that
+        // overlapped, INCLUDING the empty set (not caching empty made every resting body re-walk
+        // the BVH forever). Keyed by the OTHER body's id, since the query box moves with it.
         this._leafCache = new Map(); // otherBodyId -> { shape, minx,miny,minz,maxx,maxy,maxz, hits:[leafIndex...] }
+
+        // Per-expandPair()-call pools for compound-child / mesh-triangle world placement, grown as
+        // needed, never shrunk - see ExpandPair.js's _nextTriSlot / _nextChildSlot.
+        this._triSlots = [];
+        this._triSlotIndex = 0;
+        this._childSlots = [];
+        this._childSlotIndex = 0;
     }
 
-    // Clears every cached leaf-walk result. Call this when a static/kinematic compound or mesh
-    // body's geometry or transform changes - the cache has no way to know that on its own (it is
-    // keyed by the OTHER body, not the static one), matching the "sleeping bodies still get woken
-    // explicitly" discipline in plan.md's Sleep section rather than guessing at staleness here.
+    // Clears every cached leaf-walk result. Call when a static/kinematic compound or mesh body's
+    // geometry/transform changes - the cache (keyed by the OTHER body) has no way to know on its own.
     invalidate() {
         this._leafCache.clear();
     }
-
-    // Ensures shape._midphaseBVH exists, building it on first use. Compound: one leaf per child.
-    // Mesh: one leaf per triangle.
-    _ensureBVH(shape) {
-        if (shape._midphaseBVH) return shape._midphaseBVH;
-        const bvh = new BVH();
-        if (shape instanceof CompoundShape) {
-            const scratch = new AABB();
-            const rotMat = new Matrix3();
-            const corner = new Vector3();
-            bvh.build(shape.children.length, function (out, i) {
-                const child = shape.children[i];
-                child.shape.localAABBInto(scratch);
-                rotMat.fromQuaternion(child.localRotation);
-                out.setEmpty();
-                for (let cx = 0; cx < 2; cx++) for (let cy = 0; cy < 2; cy++) for (let cz = 0; cz < 2; cz++) {
-                    corner.x = cx ? scratch.max.x : scratch.min.x;
-                    corner.y = cy ? scratch.max.y : scratch.min.y;
-                    corner.z = cz ? scratch.max.z : scratch.min.z;
-                    rotMat.transformVector3(corner);
-                    corner.addInPlace(child.localPosition);
-                    if (corner.x < out.min.x) out.min.x = corner.x;
-                    if (corner.y < out.min.y) out.min.y = corner.y;
-                    if (corner.z < out.min.z) out.min.z = corner.z;
-                    if (corner.x > out.max.x) out.max.x = corner.x;
-                    if (corner.y > out.max.y) out.max.y = corner.y;
-                    if (corner.z > out.max.z) out.max.z = corner.z;
-                }
-            });
-        } else if (shape instanceof MeshShape) {
-            const a = new Vector3(), b = new Vector3(), c = new Vector3();
-            bvh.build(shape.triangleCount, function (out, i) {
-                shape.triangleAt(i, a, b, c);
-                out.setEmpty();
-                out.min.x = Math.min(a.x, b.x, c.x); out.max.x = Math.max(a.x, b.x, c.x);
-                out.min.y = Math.min(a.y, b.y, c.y); out.max.y = Math.max(a.y, b.y, c.y);
-                out.min.z = Math.min(a.z, b.z, c.z); out.max.z = Math.max(a.z, b.z, c.z);
-            });
-        }
-        shape._midphaseBVH = bvh;
-        return bvh;
-    }
-
-    // Leaf indices of `shape` (a Compound or Mesh) whose LOCAL-space AABB overlaps `localQueryAABB`
-    // (already expressed in the shape's own local space by the caller). Cached per (shape, other
-    // body) — an identical query next tick for a body that hasn't moved returns the same box and
-    // hits the cache; a different box invalidates and re-walks.
-    _queryLeaves(shape, otherBodyId, localQueryAABB) {
-        const cached = this._leafCache.get(otherBodyId);
-        if (cached && cached.shape === shape &&
-            cached.minx === localQueryAABB.min.x && cached.miny === localQueryAABB.min.y && cached.minz === localQueryAABB.min.z &&
-            cached.maxx === localQueryAABB.max.x && cached.maxy === localQueryAABB.max.y && cached.maxz === localQueryAABB.max.z) {
-            return cached.hits; // may be [] - an empty result is a valid, cached answer
-        }
-        const bvh = this._ensureBVH(shape);
-        const hits = [];
-        bvh.query(localQueryAABB, function (i) { hits.push(i); });
-        this._leafCache.set(otherBodyId, {
-            shape: shape,
-            minx: localQueryAABB.min.x, miny: localQueryAABB.min.y, minz: localQueryAABB.min.z,
-            maxx: localQueryAABB.max.x, maxy: localQueryAABB.max.y, maxz: localQueryAABB.max.z,
-            hits: hits
-        });
-        return hits;
-    }
-
-    // Expands one side of a broadphase pair into primitive candidates: [{ shape, position,
-    // rotation }]. `otherAABB` is the other body's WORLD AABB, used to cull compound children /
-    // mesh triangles that can't possibly matter. `otherBodyId` keys the leaf cache (see above).
-    _expandSide(body, otherAABB, otherBodyId) {
-        const shape = body.shape;
-        if (!(shape instanceof CompoundShape) && !(shape instanceof MeshShape)) {
-            return [{ shape: shape, position: body.position, rotation: body.rotation }];
-        }
-
-        // Bring the other body's world AABB into this body's LOCAL space by inverse-transforming
-        // its 8 corners - conservative (may over-include), never under-includes, matching
-        // broadphase's own no-false-negatives contract one level down.
-        const invRot = Midphase._scratchQuat.copy(body.rotation).invert();
-        const localQuery = Midphase._scratchAABB.setEmpty();
-        const corner = Midphase._scratchVec;
-        for (let cx = 0; cx < 2; cx++) for (let cy = 0; cy < 2; cy++) for (let cz = 0; cz < 2; cz++) {
-            corner.x = cx ? otherAABB.max.x : otherAABB.min.x;
-            corner.y = cy ? otherAABB.max.y : otherAABB.min.y;
-            corner.z = cz ? otherAABB.max.z : otherAABB.min.z;
-            corner.subInPlace(body.position);
-            invRot.transformVectorInPlace(corner);
-            if (corner.x < localQuery.min.x) localQuery.min.x = corner.x;
-            if (corner.y < localQuery.min.y) localQuery.min.y = corner.y;
-            if (corner.z < localQuery.min.z) localQuery.min.z = corner.z;
-            if (corner.x > localQuery.max.x) localQuery.max.x = corner.x;
-            if (corner.y > localQuery.max.y) localQuery.max.y = corner.y;
-            if (corner.z > localQuery.max.z) localQuery.max.z = corner.z;
-        }
-
-        const hits = this._queryLeaves(shape, otherBodyId, localQuery);
-        const out = [];
-        if (shape instanceof CompoundShape) {
-            for (let k = 0; k < hits.length; k++) {
-                const child = shape.children[hits[k]];
-                // World transform = body transform composed with the child's local offset.
-                const worldPos = new Vector3();
-                body.rotation.transformVectorInto(child.localPosition, worldPos);
-                worldPos.addInPlace(body.position);
-                const worldRot = new Quaternion().multiplyQuaternions(body.rotation, child.localRotation);
-                out.push({ shape: child.shape, position: worldPos, rotation: worldRot });
-            }
-        } else {
-            const a = new Vector3(), b = new Vector3(), c = new Vector3();
-            for (let k = 0; k < hits.length; k++) {
-                shape.triangleAt(hits[k], a, b, c);
-                // Triangle vertices are baked into world space directly, at body identity rotation -
-                // simpler than carrying a per-triangle local frame narrowphase would have to undo.
-                const wa = new Vector3(), wb = new Vector3(), wc = new Vector3();
-                body.rotation.transformVectorInto(a, wa); wa.addInPlace(body.position);
-                body.rotation.transformVectorInto(b, wb); wb.addInPlace(body.position);
-                body.rotation.transformVectorInto(c, wc); wc.addInPlace(body.position);
-                out.push({ shape: new TriangleShape(wa, wb, wc), position: new Vector3(0, 0, 0), rotation: new Quaternion() });
-            }
-        }
-        return out;
-    }
-
-    // Expands a broadphase [bodyA, bodyB] pair into primitive x primitive candidates:
-    // [{ a: {shape,position,rotation}, b: {shape,position,rotation} }, ...]
-    // Never computes contact data (Rule 1) - purely a cross-product of the two expansions.
-    expandPair(bodyA, bodyB) {
-        // The fattened broadphase AABB (speculative margin included) is used for child/triangle
-        // culling too, so a compound child or mesh triangle that a body is about to reach is
-        // surfaced the same tick early as the body pair itself - conservative (over-includes, never
-        // under-includes), matching broadphase's own no-false-negatives contract one level down.
-        const sidesA = this._expandSide(bodyA, bodyB.getBroadphaseAABB(), bodyB.id);
-        const sidesB = this._expandSide(bodyB, bodyA.getBroadphaseAABB(), bodyA.id);
-        const out = [];
-        for (let i = 0; i < sidesA.length; i++) {
-            for (let j = 0; j < sidesB.length; j++) {
-                out.push({ a: sidesA[i], b: sidesB[j] });
-            }
-        }
-        return out;
-    }
 }
-
-Midphase._scratchQuat = new Quaternion();
-Midphase._scratchAABB = new AABB();
-Midphase._scratchVec = new Vector3();
 
 ActionPhysics.Midphase = Midphase;
 
 
+// ==== src/phases/BVHCache.js ====
+// Per-shape BVH construction (cached on the shape instance, built once) and cached leaf queries.
+var proto = Midphase.prototype;
+
+// Ensures shape._midphaseBVH exists, building on first use. Compound: one leaf per child. Mesh:
+// one leaf per triangle.
+proto._ensureBVH = function (shape) {
+    if (shape._midphaseBVH) return shape._midphaseBVH;
+    const bvh = new BVH();
+    if (shape instanceof CompoundShape) {
+        const scratch = new AABB();
+        const rotMat = new Matrix3();
+        const corner = new Vector3();
+        bvh.build(shape.children.length, function (out, i) {
+            const child = shape.children[i];
+            child.shape.localAABBInto(scratch);
+            rotMat.fromQuaternion(child.localRotation);
+            out.setEmpty();
+            for (let cx = 0; cx < 2; cx++) for (let cy = 0; cy < 2; cy++) for (let cz = 0; cz < 2; cz++) {
+                corner.x = cx ? scratch.max.x : scratch.min.x;
+                corner.y = cy ? scratch.max.y : scratch.min.y;
+                corner.z = cz ? scratch.max.z : scratch.min.z;
+                rotMat.transformVector3(corner);
+                corner.addInPlace(child.localPosition);
+                if (corner.x < out.min.x) out.min.x = corner.x;
+                if (corner.y < out.min.y) out.min.y = corner.y;
+                if (corner.z < out.min.z) out.min.z = corner.z;
+                if (corner.x > out.max.x) out.max.x = corner.x;
+                if (corner.y > out.max.y) out.max.y = corner.y;
+                if (corner.z > out.max.z) out.max.z = corner.z;
+            }
+        });
+    } else if (shape instanceof MeshShape) {
+        const a = new Vector3(), b = new Vector3(), c = new Vector3();
+        bvh.build(shape.triangleCount, function (out, i) {
+            shape.triangleAt(i, a, b, c);
+            out.setEmpty();
+            out.min.x = Math.min(a.x, b.x, c.x); out.max.x = Math.max(a.x, b.x, c.x);
+            out.min.y = Math.min(a.y, b.y, c.y); out.max.y = Math.max(a.y, b.y, c.y);
+            out.min.z = Math.min(a.z, b.z, c.z); out.max.z = Math.max(a.z, b.z, c.z);
+        });
+    }
+    shape._midphaseBVH = bvh;
+    return bvh;
+};
+
+// Leaf indices of `shape` whose local-space AABB overlaps `localQueryAABB` (already in the
+// shape's own local space). Cached per (shape, other body) - an identical query next tick for a
+// body that hasn't moved hits the cache; a different box invalidates and re-walks.
+proto._queryLeaves = function (shape, otherBodyId, localQueryAABB) {
+    const cached = this._leafCache.get(otherBodyId);
+    if (cached && cached.shape === shape &&
+        cached.minx === localQueryAABB.min.x && cached.miny === localQueryAABB.min.y && cached.minz === localQueryAABB.min.z &&
+        cached.maxx === localQueryAABB.max.x && cached.maxy === localQueryAABB.max.y && cached.maxz === localQueryAABB.max.z) {
+        return cached.hits; // may be [] - a valid, cached answer
+    }
+    const bvh = this._ensureBVH(shape);
+    const hits = [];
+    bvh.query(localQueryAABB, function (i) { hits.push(i); });
+    this._leafCache.set(otherBodyId, {
+        shape: shape,
+        minx: localQueryAABB.min.x, miny: localQueryAABB.min.y, minz: localQueryAABB.min.z,
+        maxx: localQueryAABB.max.x, maxy: localQueryAABB.max.y, maxz: localQueryAABB.max.z,
+        hits: hits
+    });
+    return hits;
+};
+
+
+// ==== src/phases/ExpandPair.js ====
+// Expanding a broadphase body pair into primitive-vs-primitive candidates.
+var proto = Midphase.prototype;
+
+// Expands one side into primitive candidates: [{ shape, position, rotation }]. `otherAABB` is the
+// other body's world (fattened) AABB, used to cull children/triangles that can't matter.
+// `otherBodyId` keys the leaf cache. `isNestedChild`: true when `body` is actually a compound
+// child's world placement (a plain {shape,position,rotation}, not a real RigidBody) being expanded
+// recursively because it is itself a mesh/compound - such a child has no speculative margin of its
+// own (that's a whole-body concept), so the own-margin fattening below is skipped for it.
+proto._expandSide = function (body, otherAABB, otherBodyId, isNestedChild) {
+    const shape = body.shape;
+    if (!(shape instanceof CompoundShape) && !(shape instanceof MeshShape)) {
+        return [{ shape: shape, position: body.position, rotation: body.rotation }];
+    }
+
+    // Bring the other body's world AABB into this body's local space by inverse-transforming its 8
+    // corners - conservative (may over-include), never under-includes.
+    const invRot = Midphase._scratchQuat.copy(body.rotation).invert();
+    const localQuery = Midphase._scratchAABB.setEmpty();
+    const corner = Midphase._scratchVec;
+    for (let cx = 0; cx < 2; cx++) for (let cy = 0; cy < 2; cy++) for (let cz = 0; cz < 2; cz++) {
+        corner.x = cx ? otherAABB.max.x : otherAABB.min.x;
+        corner.y = cy ? otherAABB.max.y : otherAABB.min.y;
+        corner.z = cz ? otherAABB.max.z : otherAABB.min.z;
+        corner.subInPlace(body.position);
+        invRot.transformVectorInPlace(corner);
+        if (corner.x < localQuery.min.x) localQuery.min.x = corner.x;
+        if (corner.y < localQuery.min.y) localQuery.min.y = corner.y;
+        if (corner.z < localQuery.min.z) localQuery.min.z = corner.z;
+        if (corner.x > localQuery.max.x) localQuery.max.x = corner.x;
+        if (corner.y > localQuery.max.y) localQuery.max.y = corner.y;
+        if (corner.z > localQuery.max.z) localQuery.max.z = corner.z;
+    }
+
+    // otherAABB carries the OTHER body's speculative margin, but THIS body's own margin never
+    // entered the query above - fatten symmetrically by this body's own broadphase-vs-tight AABB
+    // delta (taking the largest per-axis delta so a rotated body's local-frame margin isn't
+    // under-estimated), or a compound/mesh body approaching under its own margin can get zero
+    // candidates for a tick or two while already overlapping, then correct in one deep jolt.
+    if (!isNestedChild) {
+        const tightAABB = body.getAABB(), bpAABB = body.getBroadphaseAABB();
+        const marginX = Math.max(bpAABB.max.x - tightAABB.max.x, tightAABB.min.x - bpAABB.min.x);
+        const marginY = Math.max(bpAABB.max.y - tightAABB.max.y, tightAABB.min.y - bpAABB.min.y);
+        const marginZ = Math.max(bpAABB.max.z - tightAABB.max.z, tightAABB.min.z - bpAABB.min.z);
+        const ownMargin = Math.max(marginX, marginY, marginZ, 0);
+        localQuery.min.x -= ownMargin; localQuery.min.y -= ownMargin; localQuery.min.z -= ownMargin;
+        localQuery.max.x += ownMargin; localQuery.max.y += ownMargin; localQuery.max.z += ownMargin;
+    }
+
+    const hits = this._queryLeaves(shape, otherBodyId, localQuery);
+    const out = [];
+    if (shape instanceof CompoundShape) {
+        for (let k = 0; k < hits.length; k++) {
+            const child = shape.children[hits[k]];
+            const slot = this._nextChildSlot();
+            body.rotation.transformVectorInto(child.localPosition, slot.position);
+            slot.position.addInPlace(body.position);
+            slot.rotation.multiplyQuaternions(body.rotation, child.localRotation);
+            if (child.shape instanceof MeshShape || child.shape instanceof CompoundShape) {
+                // A compound child that is itself a mesh/compound (e.g. a CompoundShape ground
+                // made of many small MeshShape tiles) is not itself a primitive - recurse into it
+                // at its own world placement, same as expanding a top-level body's shape.
+                const nested = this._expandSide({ shape: child.shape, position: slot.position, rotation: slot.rotation }, otherAABB, otherBodyId, true);
+                for (let n = 0; n < nested.length; n++) out.push(nested[n]);
+            } else {
+                out.push({ shape: child.shape, position: slot.position, rotation: slot.rotation });
+            }
+        }
+    } else {
+        const a = Midphase._scratchTriA, b = Midphase._scratchTriB, c = Midphase._scratchTriC;
+        for (let k = 0; k < hits.length; k++) {
+            shape.triangleAt(hits[k], a, b, c);
+            // Baked into world space directly, at identity rotation - simpler than a per-triangle
+            // local frame narrowphase would have to undo.
+            const slot = this._nextTriSlot();
+            body.rotation.transformVectorInto(a, slot.a); slot.a.addInPlace(body.position);
+            body.rotation.transformVectorInto(b, slot.b); slot.b.addInPlace(body.position);
+            body.rotation.transformVectorInto(c, slot.c); slot.c.addInPlace(body.position);
+            slot.shape.a = slot.a; slot.shape.b = slot.b; slot.shape.c = slot.c;
+            out.push({ shape: slot.shape, position: slot.position, rotation: slot.rotation });
+        }
+    }
+    return out;
+};
+
+// One pooled { shape: TriangleShape, a/b/c: Vector3 (the shape's own world-space vertices),
+// position: Vector3(0,0,0), rotation: identity Quaternion } slot, grown as needed, never shrunk -
+// same pattern as NarrowPhase._contactPool. Indexed by _slotIndex, reset once per expandPair() call
+// (not per _expandSide) since both sides of one pair draw from the same tick's pool.
+proto._nextTriSlot = function () {
+    if (this._triSlotIndex >= this._triSlots.length) {
+        this._triSlots.push({
+            a: new Vector3(), b: new Vector3(), c: new Vector3(),
+            position: new Vector3(0, 0, 0), rotation: new Quaternion(),
+            shape: null
+        });
+        const slot = this._triSlots[this._triSlots.length - 1];
+        slot.shape = new TriangleShape(slot.a, slot.b, slot.c);
+    }
+    return this._triSlots[this._triSlotIndex++];
+};
+
+// One pooled { position, rotation } slot for a compound child's world placement, same pooling
+// pattern as _nextTriSlot (the child's own shape is reused directly - CompoundShape.children never
+// changes at runtime, so child.shape itself needs no pooling).
+proto._nextChildSlot = function () {
+    if (this._childSlotIndex >= this._childSlots.length) {
+        this._childSlots.push({ position: new Vector3(), rotation: new Quaternion() });
+    }
+    return this._childSlots[this._childSlotIndex++];
+};
+
+// Expands a broadphase [bodyA, bodyB] pair into primitive x primitive candidates:
+// [{ a: {shape,position,rotation}, b: {shape,position,rotation} }, ...]
+proto.expandPair = function (bodyA, bodyB) {
+    // Both sides' compound/mesh expansion below draws from the same pooled slots, so the pool is
+    // reset once here, not per side - each hit this tick still gets its own slot, consumed
+    // synchronously by the caller before the next pair (see PairTest.js) or the next tick.
+    this._triSlotIndex = 0;
+    this._childSlotIndex = 0;
+    // The fattened broadphase AABB is used for child/triangle culling too, so a compound child or
+    // mesh triangle a body is about to reach surfaces the same tick early as the body pair itself.
+    const sidesA = this._expandSide(bodyA, bodyB.getBroadphaseAABB(), bodyB.id);
+    const sidesB = this._expandSide(bodyB, bodyA.getBroadphaseAABB(), bodyA.id);
+    const out = [];
+    for (let i = 0; i < sidesA.length; i++) {
+        for (let j = 0; j < sidesB.length; j++) {
+            out.push({ a: sidesA[i], b: sidesB[j] });
+        }
+    }
+    return out;
+};
+
+Midphase._scratchQuat = new Quaternion();
+Midphase._scratchAABB = new AABB();
+Midphase._scratchVec = new Vector3();
+// Local-space triangle vertices, read fresh from shape.triangleAt() each hit, then transformed
+// into that hit's own pooled world-space slot - see _nextTriSlot.
+Midphase._scratchTriA = new Vector3();
+Midphase._scratchTriB = new Vector3();
+Midphase._scratchTriC = new Vector3();
+
+
 // ==== src/collision/MinkowskiSupport.js ====
-/**
- * World-space support function over the Minkowski DIFFERENCE of two placed shapes (A - B), the one
- * primitive GJK/EPA need. Each side is a { shape, position, rotation } as produced by Midphase.
- *
- * A shape's own supportInto() works in LOCAL space. To support a placed shape in world space along
- * world direction d: rotate d into local space (inverse rotation), call supportInto, rotate the
- * result back to world space, translate by position. Minkowski difference support along d is then
- * supportA(d) - supportB(-d) - the standard GJK primitive.
- *
- * Allocation-free: every method writes into a caller-owned `out`. A single instance is built per
- * narrowphase pair and reused across every GJK/EPA iteration for that pair.
- */
+// World-space support over the Minkowski difference A-B of two placed { shape, position, rotation }
+// sides. supportA(d) - supportB(-d), each side rotated local->world via its inverse rotation.
+// Allocation-free: writes into caller-owned `out`; one instance reused per narrowphase pair.
 class MinkowskiSupport {
     constructor(placedA, placedB) {
         this.a = placedA;
@@ -4009,24 +4340,28 @@ class MinkowskiSupport {
         this._invRotB = new Quaternion();
         this._invRotA.copy(placedA.rotation).invert();
         this._invRotB.copy(placedB.rotation).invert();
-        // Per-instance scratch (plan.md: "scratch memory: per-stage arenas, never global") - EPA
-        // calls supportInto() while GJK's own loop may still be holding references into a prior
-        // call's result, so a SHARED scratch across instances (or across nested calls) would
-        // silently corrupt whichever call didn't finish first.
+        // Per-instance, never shared - a shared scratch would corrupt a still-live prior result.
         this._scratchA = new Vector3();
         this._scratchB = new Vector3();
         this._scratchNeg = new Vector3();
     }
 
-    // Re-derive the cached inverse rotations if a placed side's rotation object was mutated after
-    // construction (narrowphase reuses one MinkowskiSupport across substeps for a persistent pair).
+    // Re-derives cached inverse rotations after a placed side's rotation is mutated in place.
     refresh() {
         this._invRotA.copy(this.a.rotation).invert();
         this._invRotB.copy(this.b.rotation).invert();
         return this;
     }
 
-    // World-space support of ONE placed side along world direction `dir`.
+    // Rebinds this instance to a different pair (e.g. reused across pairs within one tick) and
+    // re-derives the cached inverse rotations for the new sides.
+    setSides(placedA, placedB) {
+        this.a = placedA;
+        this.b = placedB;
+        return this.refresh();
+    }
+
+    // World-space support of one placed side along world direction `dir`.
     static supportOfInto(out, placed, invRot, dir, scratchDir) {
         invRot.transformVectorInto(dir, scratchDir);
         placed.shape.supportInto(out, scratchDir);
@@ -4035,9 +4370,8 @@ class MinkowskiSupport {
         return out;
     }
 
-    // out = supportA(dir) - supportB(-dir), in world space. Also writes the two world support
-    // points into outA/outB if given (EPA needs them per Minkowski-difference vertex, to recover
-    // the actual contact points once the penetrating simplex face is known).
+    // out = supportA(dir) - supportB(-dir). outA/outB (optional) get the world witness points -
+    // EPA needs those per vertex to recover contact points once the winning face is known.
     supportInto(out, dir, outA, outB) {
         const sa = outA || this._scratchA;
         const sb = outB || this._scratchB;
@@ -4054,65 +4388,23 @@ ActionPhysics.MinkowskiSupport = MinkowskiSupport;
 
 // ==== src/collision/GJK.js ====
 /**
- * GJK: distance / overlap test between two convex shapes via their Minkowski difference.
+ * GJK: distance / overlap test between two convex shapes via their Minkowski difference (Ericson,
+ * "Real-Time Collision Detection" ch. 5; Gilbert-Johnson-Keerthi).
  *
- * Written from the algorithm (Ericson, "Real-Time Collision Detection", ch. 5; the original
- * Gilbert-Johnson-Keerthi paper), not from a prior implementation - plan.md, "This is a rebuild,
- * not a port": narrowphase is the highest-risk component and the one place a structural anchor to
- * the predecessor would be worst to carry over.
+ * Two outcomes from the same loop: OVERLAPPING (simplex encloses the origin - handed to EPA for
+ * depth) or SEPARATED (distance, witness points, normal - used directly for speculative contacts).
  *
- * Two outcomes, both from the SAME loop:
- *   OVERLAPPING - the simplex encloses the origin. Returns the simplex as-is (2-4 points) for EPA
- *                 to expand into a penetration depth/normal. GJK itself does not compute depth.
- *   SEPARATED   - the loop converges on the closest points between the two hulls. Returns exact
- *                 distance, witness points on A and B, and a separating normal. This is what
- *                 speculative contacts run on: the query happens against a PREDICTED position
- *                 (Solver's job, not GJK's), and this result is used directly as a positive-
- *                 separation contact rather than triggering a second penetrating pass.
+ * FLUSH/EXACT-TOUCH: an exactly-touching pair is geometrically ambiguous with a lower-dimensional
+ * simplex alone (see Seeding.js and Interior.js). Every point-in-simplex routine below has an
+ * explicit degenerate fallback (zero-length edge, zero-area triangle) instead of producing NaN.
  *
- * BUG FIX CARRIED FROM THE PREDECESSOR (plan.md, Bug reference / Collision detection):
- * "Flush shapes reported no contact at all." Two shapes resting exactly touching (or a simplex that
- * degenerates during the walk - three collinear points, a zero-area triangle) produced NaN
- * barycentric coordinates and the contact was silently discarded. The fix here is structural: every
- * point-in-simplex / closest-point routine below has an EXPLICIT fallback for the degenerate case
- * (zero-length edge, zero-area triangle) that returns a valid geometric answer instead of NaN -
- * never a discard. See the `_degenerate...` fallback branches.
- *
- * EXACT-TOUCHING IS UNDECIDABLE FROM A LOWER-DIMENSIONAL SIMPLEX ALONE. When a 2-point or 3-point
- * simplex reduces to a closest point that IS the origin exactly, that is genuinely ambiguous with
- * only that simplex to look at: it is what a flush touch looks like (two boxes with coincident
- * faces produce a Minkowski-difference boundary the origin sits exactly on), but it is ALSO what a
- * lower-dimensional cross-section of a real 3D overlap looks like on the way to an enclosing
- * tetrahedron - a touching pair still has real geometric extent perpendicular to the touching plane
- * (a box has depth), so growing the simplex incrementally from a single starting direction finds
- * "progress" in both cases alike and can get stuck reporting the touching plane forever without
- * ever discovering a real enclosing tetrahedron on the other side of it. This is a well-known hard
- * case in GJK implementations generally (see e.g. the Signed Volumes / Montanari et al. distance
- * subalgorithm literature for a fully robust treatment).
- *
- * THE RESOLUTION USED HERE: seed several tetrahedra directly from diverse, non-coplanar probe
- * direction SETS (see SEED_DIRECTION_SETS / _seedTetrahedron) instead of growing one incrementally.
- * A real overlap's enclosing tetrahedron shows up with every face at a genuine NEGATIVE margin once
- * built from directions that are not all confined to the touching plane; an exact touch never
- * produces a fully-negative-margin tetrahedron no matter which diverse directions are tried,
- * because the origin genuinely sits on the true Minkowski-difference boundary there. If no seed
- * encloses, its best (closest-to-origin) reduction seeds the incremental fallback loop, which
- * handles the ordinary separated case and the terminal exact-touch report.
- *
- * KNOWN LIMITATION: a sparse, symmetric convex hull (e.g. an 8-vertex octahedron, ConvexShape's
- * support function ties between exactly 6 possible outputs) queried at EXACT axis-aligned
- * coincidence with an identical copy of itself can still evade every seed direction, because the
- * shape's support function only ever returns one of a handful of fixed points regardless of probe
- * direction diversity - unlike Box/Sphere/Cylinder/Capsule, whose support functions vary smoothly
- * or have enough distinct extremes that this does not occur. Any non-exact offset (even a tiny
- * fractional one) resolves correctly; this is a pathological, near-zero-probability configuration
- * for a live simulation (bodies do not spawn perfectly axis-coincident), not treated as fixed here.
+ * See Seeding.js (tetrahedron seeding + interior/degenerate-normal probes), Simplex.js
+ * (line/triangle/tetrahedron reduction), Run.js (the main loop).
  */
 class GJK {
     constructor() {
-        // Simplex: up to 4 points, each a { w: Vector3 (Minkowski diff point), a: Vector3 (world
-        // point on shape A), b: Vector3 (world point on shape B) }. Kept as parallel scratch
-        // arrays rather than objects, allocation-free across iterations.
+        // Simplex: up to 4 points, each { w: Minkowski diff point, a: world point on A, b: on B }.
+        // Parallel scratch arrays, allocation-free across iterations.
         this._wx = new Float64Array(4); this._wy = new Float64Array(4); this._wz = new Float64Array(4);
         this._ax = new Float64Array(4); this._ay = new Float64Array(4); this._az = new Float64Array(4);
         this._bx = new Float64Array(4); this._by = new Float64Array(4); this._bz = new Float64Array(4);
@@ -4126,7 +4418,7 @@ class GJK {
         this._scratchRef = new Vector3();
         this._initialProbeDir = new Vector3();
         this._newDir4 = new Vector3();
-        this._probeDir = new Vector3();  // scratch for the strict-interior penetration probe
+        this._probeDir = new Vector3();
         this._probeW = new Vector3();
     }
 
@@ -4139,9 +4431,8 @@ class GJK {
         this._bx[i] = b.x; this._by[i] = b.y; this._bz[i] = b.z;
     }
 
-    // Replace the simplex with exactly the points at the given source indices (in that order),
-    // used after each closest-feature reduction. Safe because sources are always <= current count
-    // and we write low-to-high after reading everything we need for this call already.
+    // Replace the simplex with exactly the points at the given source indices, used after each
+    // closest-feature reduction.
     _reduceTo(indices) {
         const wx = this._wx.slice(), wy = this._wy.slice(), wz = this._wz.slice();
         const ax = this._ax.slice(), ay = this._ay.slice(), az = this._az.slice();
@@ -4154,566 +4445,436 @@ class GJK {
         }
         this._count = indices.length;
     }
+}
 
-    /**
-     * Runs GJK for the pair of placed shapes wrapped by `support` (a MinkowskiSupport). Returns:
-     *   { overlapping: true,  simplex: this }                                   — hand to EPA
-     *   { overlapping: false, distance, normal, pointA, pointB }                — separated
-     * `normal` points from B to A (world space), matching the Narrowphase contract's convention.
-     * maxIterations guards against non-convergence on a pathological input; hitting it returns the
-     * best answer found so far rather than a wrong one (same discipline as EPA's converged-result
-     * rule below - never return "whatever the last iteration produced" as if it were final without
-     * saying so isn't possible here, so we return the best-so-far honestly, not silently).
-     */
-    run(support, maxIterations) {
-        maxIterations = maxIterations || 64;
+// Closest-distance below which a stalled walk is treated as overlapping rather than separated.
+GJK.OVERLAP_DISTANCE_EPSILON = 1e-5;
+
+ActionPhysics.GJK = GJK;
+
+
+// ==== src/collision/Seeding.js ====
+// Tetrahedron seeding + strict-interior probe. Seeding from several diverse direction sets (rather
+// than growing one incrementally from a single axis) is what tells a real 3D overlap apart from an
+// exact touch: incremental growth tends to walk into the touching plane and stall there, while a
+// real overlap's seed tetrahedron shows every face at a genuine negative margin once built from
+// directions spanning different octants.
+var proto = GJK.prototype;
+
+// Multiple direction sets exist because any single fixed set can, for a particular shape-size
+// pair, itself produce a degenerate seed tetrahedron. Odd/irrational-looking components (not just
+// +-1) avoid a sparse hull's (e.g. an octahedron) support function tying between exactly-aligned
+// vertices, which for two coincident identical hulls can collapse seed points to duplicates.
+GJK.SEED_DIRECTION_SETS = [
+    [[1, 1, 1], [1, -1, -1], [-1, 1, -1], [-1, -1, 1]],
+    [[1, 1, -1], [1, -1, 1], [-1, 1, 1], [-1, -1, -1]],
+    [[1, 0, 0], [-1, 0.3, 0.3], [0, -1, 0.3], [0, 0.3, -1]],
+    [[0.8763, 0.2451, 0.4127], [0.3312, -0.9021, 0.2734], [-0.6543, 0.1298, -0.7452], [-0.5532, -0.6789, 0.4821]]
+];
+
+// The 6 signed axes span every face normal of an axis-aligned contact, for the strict-interior
+// probe below; the search direction itself is probed separately for oblique contacts.
+GJK.INTERIOR_PROBE_DIRS = [
+    [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]
+];
+
+// Tries each seed set, building a tetrahedron and checking whether it encloses the origin with a
+// real margin. Returns { overlapping: true, simplex: this } on confirmed overlap, or
+// { overlapping: false, direction, closest } from whichever seed's own reduction got closest to
+// the origin, so the caller's incremental loop continues from the best available start.
+proto._seedTetrahedron = function (support) {
+    let bestDistSq = Infinity, bestSet = -1;
+    for (let s = 0; s < GJK.SEED_DIRECTION_SETS.length; s++) {
         this._clear();
-
-        // Seed a tetrahedron directly from four directions spanning genuinely different octants,
-        // rather than growing one incrementally from a single starting axis. This is what actually
-        // distinguishes real 3D overlap from exact touching (see the class header): incremental
-        // growth from one starting direction tends to walk INTO the exact-touching plane and get
-        // stuck there. Several diverse direction sets are tried (see SEED_DIRECTION_SETS) since any
-        // single fixed set can, for particular shape sizes, itself produce a degenerate tetrahedron
-        // by unlucky alignment.
-        //
-        // If no seed set immediately encloses the origin, the BEST set's own reduction (whichever
-        // came closest to the origin, whatever triangle/direction it settled on) becomes the
-        // STARTING point for the incremental loop
-        // below, rather than restarting from a fresh single-point simplex. This matters: a real
-        // overlap whose seed tetrahedron narrowly misses the origin is still much closer to
-        // resolving from that reduced simplex than from scratch - starting over from a single
-        // arbitrary axis is what let real overlaps fall through to a false "touching" report before
-        // this chaining was added (a lower-dimensional simplex from a fresh start hits the same
-        // degenerate-plane trap the seed exists to avoid in the first place).
-        let seeded = this._seedTetrahedron(support);
-        if (seeded.overlapping) return seeded;
-        this._dir.copy(seeded.direction);
-        this._closest.copy(seeded.closest);
-
-        if (this._dir.lengthSquared() < 1e-20) {
-            // Every seed (and its own reduction) settled on the origin exactly: the origin lies ON
-            // the Minkowski difference boundary. That is EITHER an exact touch (depth 0, SEPARATED by
-            // the pipeline's convention) OR a shallow penetration the seed tetrahedra could not
-            // enclose for this shape-size ratio (a small sphere on a large box, OVERLAPPING). The
-            // simplex alone cannot tell them apart, so probe: the origin is STRICTLY interior (real
-            // penetration) iff every probe direction's support extends strictly past it. If so, it is
-            // overlapping and EPA measures the depth; otherwise it is an exact touch, reported
-            // separated at distance 0 (never NaN - the documented flush-contact discipline).
-            return this._originStrictlyInside(support) ? { overlapping: true, simplex: this } : this._separatedResult(support);
-        }
-
-        for (let iter = 0; iter < maxIterations; iter++) {
-            support.supportInto(this._newW, this._dir, this._newA, this._newB);
-
-            // Standard GJK termination (Ericson 5.4): the new support point makes no progress in
-            // the search direction if it does not project further along `dir` than the simplex
-            // points already do.
-            const newAlong = this._newW.x * this._dir.x + this._newW.y * this._dir.y + this._newW.z * this._dir.z;
-            let bestAlong = -Infinity;
-            for (let k = 0; k < this._count; k++) {
-                const along = this._wx[k] * this._dir.x + this._wy[k] * this._dir.y + this._wz[k] * this._dir.z;
-                if (along > bestAlong) bestAlong = along;
-            }
-            if (newAlong <= bestAlong + 1e-10) {
-                // Stall: the support makes no further progress toward the origin. Normally this means
-                // separated - but it ALSO fires when the origin is already ON or just inside the
-                // Minkowski difference and the search direction has collapsed toward zero length
-                // (closest point ~= origin). Those are opposite conclusions. Disambiguate by the
-                // closest DISTANCE: a genuinely separated pair has a POSITIVE gap here, so a closest
-                // distance of ~0 means the origin is enclosed/touching = OVERLAPPING, and the current
-                // simplex is handed to EPA to extract depth. Without this, a small sphere shallowly
-                // penetrating a much larger box (whose seed tetrahedron does not enclose the origin
-                // for that size ratio, and whose incremental walk then stalls at the face) was
-                // reported SEPARATED with distance 0 - so EPA never ran, the penetration went
-                // uncorrected, and the one-shot fix a tick later launched the body. The threshold is
-                // a length, well below any contact depth the solver resolves but far above the
-                // ~1e-8 numerical floor of a true closest-point-at-origin.
-                const closestDistSq = this._closest.x * this._closest.x + this._closest.y * this._closest.y + this._closest.z * this._closest.z;
-                if (closestDistSq < GJK.OVERLAP_DISTANCE_EPSILON * GJK.OVERLAP_DISTANCE_EPSILON) {
-                    // Origin ~= on the boundary: real penetration (strictly inside) or exact touch.
-                    return this._originStrictlyInside(support) ? { overlapping: true, simplex: this } : this._separatedResult(support);
-                }
-                return this._separatedResult(support);
-            }
-
-            this._push(this._newW, this._newA, this._newB);
-
-            const result = this._doSimplex();
-            if (result.containsOrigin) {
-                return { overlapping: true, simplex: this };
-            }
-            this._dir.copy(result.direction);
-            this._closest.copy(result.closest);
-
-            // Search direction collapsed to zero: origin on the current simplex - touch or
-            // penetration. Discriminate by strict interiority, same as the post-seed guard above.
-            if (this._dir.lengthSquared() < 1e-20) {
-                return this._originStrictlyInside(support) ? { overlapping: true, simplex: this } : this._separatedResult(support);
-            }
-        }
-        // Iteration cap reached without a clean termination. This mirrors EPA's own rule below
-        // (plan.md, Bug reference: "return the converged result, never the last one") - the
-        // current simplex IS the best convergence reached, so report it honestly as SEPARATED
-        // rather than pretending overlap or discarding.
-        return this._separatedResult(support);
-    }
-
-    // Several sets of four directions, each spanning genuinely different octants, used to seed a
-    // tetrahedron directly rather than growing one incrementally from a single starting axis (see
-    // run()'s call site for why that matters). Multiple rotated sets exist because ANY single
-    // fixed set can, for a particular pair of shape sizes/positions, happen to produce a seed
-    // tetrahedron that is itself degenerate (its own 4 support points landing coplanar/collinear -
-    // an unlucky alignment between the probe directions and the shapes' geometry, not a boundary-
-    // touching case) - trying a second, differently-rotated set resolves that without having to
-    // detect the degeneracy explicitly.
-    // Deliberately irrational-ish, non-axis-aligned components (not just +-1) - a sparse convex
-    // hull (e.g. an 8-vertex octahedron) has its support function tied between vertices exactly on
-    // clean +-1 diagonals, which for two IDENTICAL coincident hulls collapses two of the four seed
-    // points to duplicates and reproduces the same "two faces exactly through the origin" pattern
-    // as the touching case - a real, deep overlap misreported as not-enclosing. Odd-looking
-    // component ratios make an exact tie between two support vertices astronomically unlikely for
-    // any shape that isn't specifically axis-aligned-symmetric along that exact ratio.
-    // Closest-distance below which a STALLED incremental walk is treated as overlapping rather than
-    // separated (see the stall branch in run()). A length: comfortably below any real contact depth
-    // the solver resolves, comfortably above the numerical noise of a true closest-point-at-origin.
-    static OVERLAP_DISTANCE_EPSILON = 1e-5;
-
-    // Fixed probe directions for the strict-interior penetration test (_originStrictlyInside). The 6
-    // signed axes span every face normal of an axis-aligned contact; the search direction is probed
-    // separately (both signs) for oblique contacts. Enough coverage that an exact touch always
-    // exposes its zero-margin separating direction, cheap enough to run only at the rare collapse.
-    static INTERIOR_PROBE_DIRS = [
-        [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]
-    ];
-
-    static SEED_DIRECTION_SETS = [
-        [[1, 1, 1], [1, -1, -1], [-1, 1, -1], [-1, -1, 1]],
-        [[1, 1, -1], [1, -1, 1], [-1, 1, 1], [-1, -1, -1]],
-        [[1, 0, 0], [-1, 0.3, 0.3], [0, -1, 0.3], [0, 0.3, -1]],
-        [[0.8763, 0.2451, 0.4127], [0.3312, -0.9021, 0.2734], [-0.6543, 0.1298, -0.7452], [-0.5532, -0.6789, 0.4821]]
-    ];
-
-    // Tries each seed direction set in turn, building a tetrahedron and checking whether it
-    // encloses the origin with a real (non-degenerate) margin.
-    //
-    // Returns { overlapping: true, simplex: this } on a confirmed overlap (this.wx/wy/wz etc. hold
-    // the enclosing simplex, ready for EPA). Otherwise returns { overlapping: false, direction,
-    // closest } from whichever seed's own reduction got CLOSEST to the origin - not just the last
-    // one tried - so the caller's incremental loop continues from the best available starting
-    // point rather than an arbitrary one. The simplex left in this._wx/wy/wz on return matches
-    // that best reduction (re-run once more below to restore it, since each seed attempt
-    // overwrites the shared arrays in turn).
-    _seedTetrahedron(support) {
-        let bestDistSq = Infinity, bestSet = -1;
-        for (let s = 0; s < GJK.SEED_DIRECTION_SETS.length; s++) {
-            this._clear();
-            const dirs = GJK.SEED_DIRECTION_SETS[s];
-            for (let i = 0; i < 4; i++) {
-                const d = dirs[i];
-                this._newDir4.set(d[0], d[1], d[2]);
-                support.supportInto(this._newW, this._newDir4, this._newA, this._newB);
-                this._push(this._newW, this._newA, this._newB);
-            }
-            const result = this._simplexTetrahedron();
-            if (result.containsOrigin) return { overlapping: true, simplex: this };
-            const distSq = result.closest.x * result.closest.x + result.closest.y * result.closest.y + result.closest.z * result.closest.z;
-            if (distSq < bestDistSq) { bestDistSq = distSq; bestSet = s; }
-        }
-        // Re-run the best set to restore its simplex/direction/closest as the live state -
-        // cheap (4 support queries) relative to how rarely this whole path (seed-doesn't-enclose)
-        // is hit, and keeps _seedTetrahedron's inner loop simple rather than snapshotting state
-        // for every candidate on every iteration.
-        this._clear();
-        const bestDirs = GJK.SEED_DIRECTION_SETS[bestSet];
+        const dirs = GJK.SEED_DIRECTION_SETS[s];
         for (let i = 0; i < 4; i++) {
-            const d = bestDirs[i];
+            const d = dirs[i];
             this._newDir4.set(d[0], d[1], d[2]);
             support.supportInto(this._newW, this._newDir4, this._newA, this._newB);
             this._push(this._newW, this._newA, this._newB);
         }
-        const finalResult = this._simplexTetrahedron();
-        return { overlapping: false, direction: finalResult.direction, closest: finalResult.closest };
+        const result = this._simplexTetrahedron();
+        if (result.containsOrigin) return { overlapping: true, simplex: this };
+        const distSq = result.closest.x * result.closest.x + result.closest.y * result.closest.y + result.closest.z * result.closest.z;
+        if (distSq < bestDistSq) { bestDistSq = distSq; bestSet = s; }
+    }
+    // Re-run the best set to restore its simplex/direction/closest as the live state.
+    this._clear();
+    const bestDirs = GJK.SEED_DIRECTION_SETS[bestSet];
+    for (let i = 0; i < 4; i++) {
+        const d = bestDirs[i];
+        this._newDir4.set(d[0], d[1], d[2]);
+        support.supportInto(this._newW, this._newDir4, this._newA, this._newB);
+        this._push(this._newW, this._newA, this._newB);
+    }
+    const finalResult = this._simplexTetrahedron();
+    return { overlapping: false, direction: finalResult.direction, closest: finalResult.closest };
+};
+
+// True iff the origin is strictly inside the Minkowski difference (real penetration), false if it
+// merely lies on the boundary (exact touch). The support function's farthest extent along every
+// direction must be strictly positive for strict interiority; at an exact touch there's a
+// separating direction (the contact normal) where it's ~0.
+proto._originStrictlyInside = function (support) {
+    const margin = GJK.OVERLAP_DISTANCE_EPSILON;
+    // The collapsed search direction is numerically along the contact normal - test it first, both signs.
+    if (this._closest.lengthSquared() > 1e-20) {
+        const l = Math.sqrt(this._closest.lengthSquared());
+        this._probeDir.set(this._closest.x / l, this._closest.y / l, this._closest.z / l);
+        if (!this._supportExceeds(support, this._probeDir, margin)) return false;
+        this._probeDir.set(-this._probeDir.x, -this._probeDir.y, -this._probeDir.z);
+        if (!this._supportExceeds(support, this._probeDir, margin)) return false;
+    }
+    for (let a = 0; a < GJK.INTERIOR_PROBE_DIRS.length; a++) {
+        const d = GJK.INTERIOR_PROBE_DIRS[a];
+        this._probeDir.set(d[0], d[1], d[2]);
+        if (!this._supportExceeds(support, this._probeDir, margin)) return false;
+    }
+    return true;
+};
+
+// support(dir).dir > margin? (margin scaled by |dir| so the comparison is a true distance along dir.)
+proto._supportExceeds = function (support, dir, margin) {
+    support.supportInto(this._probeW, dir);
+    const along = this._probeW.x * dir.x + this._probeW.y * dir.y + this._probeW.z * dir.z;
+    const len = Math.sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+    return along > margin * len;
+};
+
+
+// ==== src/collision/Simplex.js ====
+// Simplex reduction: closest point to the origin for a 2/3/4-point simplex, with explicit
+// degenerate fallbacks (never NaN, never a discard) - the flush-contact fix.
+var proto = GJK.prototype;
+
+// Dispatches by point count; a 4-point simplex either encloses the origin or reduces to a triangle.
+proto._doSimplex = function () {
+    if (this._count === 2) return this._simplexLine();
+    if (this._count === 3) return this._simplexTriangle();
+    return this._simplexTetrahedron();
+};
+
+// Closest point on segment AB to the origin. Degenerate (coincident A/B) falls back to A.
+proto._simplexLine = function () {
+    const ax = this._wx[0], ay = this._wy[0], az = this._wz[0];
+    const bx = this._wx[1], by = this._wy[1], bz = this._wz[1];
+    const abx = bx - ax, aby = by - ay, abz = bz - az;
+    const lenSq = abx * abx + aby * aby + abz * abz;
+
+    let t;
+    if (lenSq < 1e-20) t = 0;
+    else {
+        t = -(ax * abx + ay * aby + az * abz) / lenSq;
+        t = t < 0 ? 0 : (t > 1 ? 1 : t);
     }
 
-    // True iff the origin is STRICTLY inside the Minkowski difference (real penetration), false if it
-    // merely lies on the boundary (exact touch). The support function reaches farthest along any
-    // direction d to the point with the largest d.w; the origin is strictly interior iff that
-    // farthest extent is strictly positive along EVERY direction (support(d).d > margin for all d).
-    // At an exact touch there is a separating direction (the contact normal) where support(d).d is
-    // ~0 - the shapes meet exactly there with no overlap to spare. Probing a fixed spread of
-    // directions plus, crucially, both signs of the last search direction (which points along the
-    // near-degenerate contact normal) reliably catches that zero. The margin is a small absolute
-    // extent, well below any contact depth the solver cares about but above numerical touch noise.
-    _originStrictlyInside(support) {
-        const margin = GJK.OVERLAP_DISTANCE_EPSILON;
-        // The collapsed search direction is (numerically) along the contact normal - the most likely
-        // separating axis - so test it first, both signs.
-        if (this._closest.lengthSquared() > 1e-20) {
-            const l = Math.sqrt(this._closest.lengthSquared());
-            this._probeDir.set(this._closest.x / l, this._closest.y / l, this._closest.z / l);
-            if (!this._supportExceeds(support, this._probeDir, margin)) return false;
-            this._probeDir.set(-this._probeDir.x, -this._probeDir.y, -this._probeDir.z);
-            if (!this._supportExceeds(support, this._probeDir, margin)) return false;
-        }
-        for (let a = 0; a < GJK.INTERIOR_PROBE_DIRS.length; a++) {
-            const d = GJK.INTERIOR_PROBE_DIRS[a];
-            this._probeDir.set(d[0], d[1], d[2]);
-            if (!this._supportExceeds(support, this._probeDir, margin)) return false;
-        }
-        return true;
-    }
+    const closest = new Vector3(ax + abx * t, ay + aby * t, az + abz * t);
+    if (t <= 0) this._reduceTo([0]);
+    else if (t >= 1) this._reduceTo([1]);
 
-    // support(dir).dir > margin ? (dir need not be unit; margin is scaled by |dir| so the comparison
-    // is a true distance along dir.)
-    _supportExceeds(support, dir, margin) {
-        support.supportInto(this._probeW, dir);
-        const along = this._probeW.x * dir.x + this._probeW.y * dir.y + this._probeW.z * dir.z;
-        const len = Math.sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
-        return along > margin * len;
-    }
+    // Origin exactly on the segment -> direction is (0,0,0), reported as a zero-distance touch by run().
+    const dir = new Vector3(-closest.x, -closest.y, -closest.z);
+    return { containsOrigin: false, direction: dir, closest: closest };
+};
 
-    // Builds the SEPARATED return value from the current simplex's closest point to the origin.
-    // The witness points (pointA, pointB) are recovered via the simplex's barycentric weights
-    // applied to the stored world support points - never re-queried, so they are exactly consistent
-    // with the reported distance.
-    // `forcedNormal`, if given, is used directly instead of deriving one from `this._closest` -
-    // only the immediate "first support point IS the origin" case in run() passes this, since
-    // there the probe direction itself is the exact, known-correct contact normal.
-    _separatedResult(support, forcedNormal) {
-        const bary = this._barycentricOfClosest();
-        const pointA = new Vector3(), pointB = new Vector3();
-        for (let i = 0; i < this._count; i++) {
-            pointA.x += bary[i] * this._ax[i]; pointA.y += bary[i] * this._ay[i]; pointA.z += bary[i] * this._az[i];
-            pointB.x += bary[i] * this._bx[i]; pointB.y += bary[i] * this._by[i]; pointB.z += bary[i] * this._bz[i];
-        }
-        const dist = Math.sqrt(this._closest.x * this._closest.x + this._closest.y * this._closest.y + this._closest.z * this._closest.z);
-        let normal;
-        if (forcedNormal) {
-            normal = new Vector3().copy(forcedNormal).normalizeInPlace();
-        } else if (dist > 1e-12) {
-            normal = new Vector3(this._closest.x / dist, this._closest.y / dist, this._closest.z / dist);
-        } else {
-            // Exact touching: the origin lies ON the simplex, so `closest` itself carries no
-            // direction. This is the degenerate case the flush-contact fix (plan.md, Bug
-            // reference) exists for - fall back to a normal recoverable from the simplex's own
-            // geometry rather than a fixed axis, which would be wrong for a touching pair whose
-            // true contact plane isn't horizontal.
-            normal = new Vector3();
-            this._degenerateTouchingNormalInto(normal);
-        }
-        return { overlapping: false, distance: dist, normal: normal, pointA: pointA, pointB: pointB };
-    }
+proto._simplexTriangle = function () {
+    const ax = this._wx[0], ay = this._wy[0], az = this._wz[0];
+    const bx = this._wx[1], by = this._wy[1], bz = this._wz[1];
+    const cx = this._wx[2], cy = this._wy[2], cz = this._wz[2];
+    const abx = bx - ax, aby = by - ay, abz = bz - az;
+    const acx = cx - ax, acy = cy - ay, acz = cz - az;
+    const nx = aby * acz - abz * acy, ny = abz * acx - abx * acz, nz = abx * acy - aby * acx;
+    const nLenSq = nx * nx + ny * ny + nz * nz;
 
-    // Recovers a normal for a zero-distance (exact touching) simplex. A 3-point simplex through
-    // the origin has a well-defined plane normal - use it. A 2-point (segment through the origin)
-    // or 1-point simplex has no unique perpendicular in 3D, so fall back to the shared
-    // findOrthogonal() convention (least-aligned cardinal axis) rather than inventing one - this
-    // never produces NaN, matching the bug-reference discipline, even though it is not always the
-    // physically true contact normal for that degenerate case.
-    _degenerateTouchingNormalInto(out) {
-        if (this._count === 3) {
-            const abx = this._wx[1] - this._wx[0], aby = this._wy[1] - this._wy[0], abz = this._wz[1] - this._wz[0];
-            const acx = this._wx[2] - this._wx[0], acy = this._wy[2] - this._wy[0], acz = this._wz[2] - this._wz[0];
-            out.x = aby * acz - abz * acy; out.y = abz * acx - abx * acz; out.z = abx * acy - aby * acx;
-            const lenSq = out.x * out.x + out.y * out.y + out.z * out.z;
-            if (lenSq > 1e-20) { out.scaleInPlace(1 / Math.sqrt(lenSq)); return; }
-        }
-        this._scratchRef.set(this._wx[0], this._wy[0], this._wz[0]);
-        out.findOrthogonal(this._scratchRef);
-    }
+    if (nLenSq < 1e-20) return this._degenerateTriangleFallback(); // three (near-)collinear points
 
-    // Barycentric weights of `this._closest` with respect to the current simplex (1, 2, or 3
-    // points - a 4-point simplex never reaches here because a tetrahedron enclosing the origin
-    // returns containsOrigin=true in _doSimplex before this is called). Degenerate simplices (a
-    // zero-length edge, a zero-area triangle) fall back explicitly rather than dividing by zero -
-    // this IS the flush-contact fix (plan.md, Bug reference).
-    _barycentricOfClosest() {
-        if (this._count === 1) return [1];
-        if (this._count === 2) {
-            const abx = this._wx[1] - this._wx[0], aby = this._wy[1] - this._wy[0], abz = this._wz[1] - this._wz[0];
-            const lenSq = abx * abx + aby * aby + abz * abz;
-            if (lenSq < 1e-20) return [1, 0]; // degenerate (coincident points): fall back to the first
-            const apx = this._closest.x - this._wx[0], apy = this._closest.y - this._wy[0], apz = this._closest.z - this._wz[0];
-            let t = (apx * abx + apy * aby + apz * abz) / lenSq;
-            t = t < 0 ? 0 : (t > 1 ? 1 : t);
-            return [1 - t, t];
-        }
-        // count === 3: barycentric of a point already known to be IN the triangle's plane (it came
-        // from _closestOnTriangle), via the standard area-ratio method.
-        const v0x = this._wx[1] - this._wx[0], v0y = this._wy[1] - this._wy[0], v0z = this._wz[1] - this._wz[0];
-        const v1x = this._wx[2] - this._wx[0], v1y = this._wy[2] - this._wy[0], v1z = this._wz[2] - this._wz[0];
-        const v2x = this._closest.x - this._wx[0], v2y = this._closest.y - this._wy[0], v2z = this._closest.z - this._wz[0];
-        const d00 = v0x * v0x + v0y * v0y + v0z * v0z;
-        const d01 = v0x * v1x + v0y * v1y + v0z * v1z;
-        const d11 = v1x * v1x + v1y * v1y + v1z * v1z;
-        const d20 = v2x * v0x + v2y * v0y + v2z * v0z;
-        const d21 = v2x * v1x + v2y * v1y + v2z * v1z;
-        const denom = d00 * d11 - d01 * d01;
-        if (Math.abs(denom) < 1e-20) return [1 / 3, 1 / 3, 1 / 3]; // degenerate (collinear/zero-area): even split, never NaN
-        const v = (d11 * d20 - d01 * d21) / denom;
-        const w = (d00 * d21 - d01 * d20) / denom;
-        const u = 1 - v - w;
-        return [u, v, w];
-    }
+    const closest = GJK._closestPointOnTriangleToOrigin(ax, ay, az, bx, by, bz, cx, cy, cz, nx, ny, nz, nLenSq);
+    const dir = new Vector3(-closest.x, -closest.y, -closest.z);
 
-    // Reduces the simplex to its closest feature to the origin and reports whether the origin is
-    // enclosed. Dispatches by current point count (line/triangle/tetrahedron), each with an
-    // explicit degenerate fallback - see the header note on the flush-contact bug.
-    _doSimplex() {
-        if (this._count === 2) return this._simplexLine();
-        if (this._count === 3) return this._simplexTriangle();
-        return this._simplexTetrahedron();
-    }
+    if (closest.onEdge !== null) this._reduceTo(closest.onEdge);
+    return { containsOrigin: false, direction: dir, closest: new Vector3(closest.x, closest.y, closest.z) };
+};
 
-    // Closest point on segment AB to the origin. Degenerate (coincident A/B) falls back to A
-    // rather than a 0/0 division - the 2-point half of the flush-contact fix.
-    _simplexLine() {
-        const ax = this._wx[0], ay = this._wy[0], az = this._wz[0];
-        const bx = this._wx[1], by = this._wy[1], bz = this._wz[1];
-        const abx = bx - ax, aby = by - ay, abz = bz - az;
+// Zero-area triangle: pick whichever of its three edges (as a 2-point simplex) is truly closest
+// to the origin, tested directly.
+proto._degenerateTriangleFallback = function () {
+    const pts = [
+        [this._wx[0], this._wy[0], this._wz[0]],
+        [this._wx[1], this._wy[1], this._wz[1]],
+        [this._wx[2], this._wy[2], this._wz[2]]
+    ];
+    const edges = [[0, 1], [1, 2], [2, 0]];
+    let best = null, bestDistSq = Infinity, bestIdx = null;
+    for (let e = 0; e < 3; e++) {
+        const p0 = pts[edges[e][0]], p1 = pts[edges[e][1]];
+        const abx = p1[0] - p0[0], aby = p1[1] - p0[1], abz = p1[2] - p0[2];
         const lenSq = abx * abx + aby * aby + abz * abz;
-
-        let t;
-        if (lenSq < 1e-20) t = 0;
-        else {
-            t = -(ax * abx + ay * aby + az * abz) / lenSq;
-            t = t < 0 ? 0 : (t > 1 ? 1 : t);
-        }
-
-        const closest = new Vector3(ax + abx * t, ay + aby * t, az + abz * t);
-        if (t <= 0) this._reduceTo([0]);
-        else if (t >= 1) this._reduceTo([1]);
-        // else both points stay: closest feature is the segment's interior.
-
-        // If the origin lies exactly on the segment, `direction` comes back (0,0,0) - see the
-        // class header on why run() reports that directly as a zero-distance touch.
-        const dir = new Vector3(-closest.x, -closest.y, -closest.z);
-        return { containsOrigin: false, direction: dir, closest: closest };
+        let t = lenSq < 1e-20 ? 0 : (-(p0[0] * abx + p0[1] * aby + p0[2] * abz) / lenSq);
+        t = t < 0 ? 0 : (t > 1 ? 1 : t);
+        const cx = p0[0] + abx * t, cy = p0[1] + aby * t, cz = p0[2] + abz * t;
+        const dSq = cx * cx + cy * cy + cz * cz;
+        if (dSq < bestDistSq) { bestDistSq = dSq; best = [cx, cy, cz]; bestIdx = t <= 0 ? [edges[e][0]] : (t >= 1 ? [edges[e][1]] : edges[e]); }
     }
+    this._reduceTo(bestIdx);
+    const dir = new Vector3(-best[0], -best[1], -best[2]);
+    return { containsOrigin: false, direction: dir, closest: new Vector3(best[0], best[1], best[2]) };
+};
 
-    _simplexTriangle() {
-        const ax = this._wx[0], ay = this._wy[0], az = this._wz[0];
-        const bx = this._wx[1], by = this._wy[1], bz = this._wz[1];
-        const cx = this._wx[2], cy = this._wy[2], cz = this._wz[2];
+proto._simplexTetrahedron = function () {
+    // The 4 distinct faces of tetrahedron {0,1,2,3}, each with its opposite vertex.
+    const idx = [[0, 1, 2, 3], [0, 1, 3, 2], [0, 2, 3, 1], [1, 2, 3, 0]];
+    for (let f = 0; f < 4; f++) {
+        const [ia, ib, ic, id] = idx[f];
+        const ax = this._wx[ia], ay = this._wy[ia], az = this._wz[ia];
+        const bx = this._wx[ib], by = this._wy[ib], bz = this._wz[ib];
+        const cx = this._wx[ic], cy = this._wy[ic], cz = this._wz[ic];
+        const dx = this._wx[id], dy = this._wy[id], dz = this._wz[id];
         const abx = bx - ax, aby = by - ay, abz = bz - az;
         const acx = cx - ax, acy = cy - ay, acz = cz - az;
-        // Triangle normal via cross(ab, ac).
-        const nx = aby * acz - abz * acy, ny = abz * acx - abx * acz, nz = abx * acy - aby * acx;
+        let nx = aby * acz - abz * acy, ny = abz * acx - abx * acz, nz = abx * acy - aby * acx;
         const nLenSq = nx * nx + ny * ny + nz * nz;
+        if (nLenSq < 1e-20) continue; // degenerate face: another face decides
 
-        if (nLenSq < 1e-20) {
-            // Degenerate: three (near-)collinear points, zero-area triangle. THIS is the flush-
-            // contact bug from plan.md - fixed by falling back to the closest of the three edges
-            // explicitly instead of discarding. Try each edge as a 2-point simplex and keep the
-            // best (closest-to-origin) result.
-            return this._degenerateTriangleFallback();
-        }
-
-        const closest = GJK._closestPointOnTriangleToOrigin(ax, ay, az, bx, by, bz, cx, cy, cz, nx, ny, nz, nLenSq);
-        // If the origin lies exactly on this triangle (face, edge, or vertex), `dir` comes back
-        // (0,0,0) - see the class header on why run() reports that directly as a zero-distance
-        // touch rather than escalating.
-        const dir = new Vector3(-closest.x, -closest.y, -closest.z);
-
-        if (closest.onEdge !== null) {
-            // Closest feature is an edge or vertex - reduce the simplex accordingly.
-            this._reduceTo(closest.onEdge);
-        }
-        return { containsOrigin: false, direction: dir, closest: new Vector3(closest.x, closest.y, closest.z) };
-    }
-
-    // Degenerate-triangle fallback: pick whichever of the three edges (as a 2-point simplex) is
-    // truly closest to the origin, by testing each directly. Never returns NaN, never discards.
-    _degenerateTriangleFallback() {
-        const pts = [
-            [this._wx[0], this._wy[0], this._wz[0]],
-            [this._wx[1], this._wy[1], this._wz[1]],
-            [this._wx[2], this._wy[2], this._wz[2]]
-        ];
-        const edges = [[0, 1], [1, 2], [2, 0]];
-        let best = null, bestDistSq = Infinity, bestIdx = null;
-        for (let e = 0; e < 3; e++) {
-            const p0 = pts[edges[e][0]], p1 = pts[edges[e][1]];
-            const abx = p1[0] - p0[0], aby = p1[1] - p0[1], abz = p1[2] - p0[2];
-            const lenSq = abx * abx + aby * aby + abz * abz;
-            let t = lenSq < 1e-20 ? 0 : (-(p0[0] * abx + p0[1] * aby + p0[2] * abz) / lenSq);
-            t = t < 0 ? 0 : (t > 1 ? 1 : t);
-            const cx = p0[0] + abx * t, cy = p0[1] + aby * t, cz = p0[2] + abz * t;
-            const dSq = cx * cx + cy * cy + cz * cz;
-            if (dSq < bestDistSq) { bestDistSq = dSq; best = [cx, cy, cz]; bestIdx = t <= 0 ? [edges[e][0]] : (t >= 1 ? [edges[e][1]] : edges[e]); }
-        }
-        this._reduceTo(bestIdx);
-        const dir = new Vector3(-best[0], -best[1], -best[2]);
-        return { containsOrigin: false, direction: dir, closest: new Vector3(best[0], best[1], best[2]) };
-    }
-
-    _simplexTetrahedron() {
-        // Test the origin against each of the four faces. If it's outside a face (on the far side
-        // from the fourth point), the closest feature is on/beyond that face - reduce to a triangle
-        // and recurse into the triangle case. If the origin is on the inside of all four faces, it
-        // is enclosed - GJK terminates with overlap.
-        // The 4 distinct faces of tetrahedron {0,1,2,3}, each listed with its opposite vertex:
-        // {0,1,2} opp 3, {0,1,3} opp 2, {0,2,3} opp 1, {1,2,3} opp 0. (A prior version had a typo
-        // here - [0,2,1,3] instead of [0,1,3,2] - which duplicated the {0,1,2} face with reversed
-        // winding and NEVER TESTED the real {0,1,3} face at all. That silently let the enclosure
-        // test pass tetrahedra that were not actually enclosing on all four true faces.)
-        const idx = [[0, 1, 2, 3], [0, 1, 3, 2], [0, 2, 3, 1], [1, 2, 3, 0]]; // (face..., opposite point)
-        for (let f = 0; f < 4; f++) {
-            const [ia, ib, ic, id] = idx[f];
-            const ax = this._wx[ia], ay = this._wy[ia], az = this._wz[ia];
-            const bx = this._wx[ib], by = this._wy[ib], bz = this._wz[ib];
-            const cx = this._wx[ic], cy = this._wy[ic], cz = this._wz[ic];
-            const dx = this._wx[id], dy = this._wy[id], dz = this._wz[id];
-            const abx = bx - ax, aby = by - ay, abz = bz - az;
-            const acx = cx - ax, acy = cy - ay, acz = cz - az;
-            let nx = aby * acz - abz * acy, ny = abz * acx - abx * acz, nz = abx * acy - aby * acx;
-            const nLenSq = nx * nx + ny * ny + nz * nz;
-            if (nLenSq < 1e-20) continue; // degenerate (collinear) face: skip, another face decides
-            // Orient the normal away from the fourth (opposite) point.
-            const toD = (dx - ax) * nx + (dy - ay) * ny + (dz - az) * nz;
-            if (toD > 0) { nx = -nx; ny = -ny; nz = -nz; }
-            const toOriginRaw = -ax * nx - ay * ny - az * nz; // (origin - a) . n, UNNORMALIZED
-            // Compare the actual signed DISTANCE (toOriginRaw / |n|), not the raw dot product -
-            // |n| scales with the face's own size, so a fixed raw-dot epsilon means a different
-            // real-world tolerance for every pair of shapes. This is what made an exactly-touching
-            // pair (the origin sitting exactly on a Minkowski-difference face, by construction -
-            // not numerical error) misclassify as enclosed: the unnormalized epsilon was far
-            // smaller than the coordinate magnitudes involved.
-            const signedDist = toOriginRaw / Math.sqrt(nLenSq);
-            // The threshold is NEGATIVE, not zero: a face the origin sits exactly ON does not
-            // count as enclosure, only a face it is STRICTLY behind by a real margin does. This
-            // matters for the seed tetrahedron above (four diverse directions, not grown
-            // incrementally): an exactly-touching pair still produces a seed tetrahedron with two
-            // faces passing exactly through the origin (the touching plane, seen from two
-            // different angles) - accepting signedDist===0 as "inside" would misreport that as
-            // overlap. Requiring a real negative margin is what keeps the exact-touching boundary
-            // on the separated side while still finding every GENUINE overlap: a real overlap's
-            // seed tetrahedron (built from four directions spanning different octants, so it is
-            // never confined to a single touching plane the way incremental growth can get stuck
-            // in) has every face strictly negative once the shapes interpenetrate at all.
-            if (signedDist > -1e-9) {
-                // Origin is outside (or exactly on) this face - reduce to the face's triangle and
-                // recurse.
-                this._reduceTo([ia, ib, ic]);
-                return this._simplexTriangle();
-            }
-        }
-        // Inside every face by the epsilon above. Defense in depth before trusting this as genuine
-        // overlap: confirm the tetrahedron itself is not near-degenerate (all four points nearly
-        // coplanar) - a flat tetrahedron can pass every per-face test at once without the origin
-        // being genuinely surrounded in 3D.
-        const v0x = this._wx[1] - this._wx[0], v0y = this._wy[1] - this._wy[0], v0z = this._wz[1] - this._wz[0];
-        const v1x = this._wx[2] - this._wx[0], v1y = this._wy[2] - this._wy[0], v1z = this._wz[2] - this._wz[0];
-        const v2x = this._wx[3] - this._wx[0], v2y = this._wy[3] - this._wy[0], v2z = this._wz[3] - this._wz[0];
-        const cxv = v1y * v2z - v1z * v2y, cyv = v1z * v2x - v1x * v2z, czv = v1x * v2y - v1y * v2x;
-        const volume6 = Math.abs(v0x * cxv + v0y * cyv + v0z * czv); // 6x tetrahedron volume
-        // Threshold relative to the tetrahedron's own extent, not an absolute constant - the same
-        // reasoning as the normalized signedDist above: an absolute epsilon means a different
-        // real-world tolerance for every shape scale.
-        const extentSq = Math.max(v0x*v0x+v0y*v0y+v0z*v0z, v1x*v1x+v1y*v1y+v1z*v1z, v2x*v2x+v2y*v2y+v2z*v2z);
-        if (volume6 * volume6 < 1e-12 * extentSq * extentSq * extentSq) {
-            // Degenerate tetrahedron: fall back to the touching-plane triangle (the first three
-            // points, which is where the origin actually sits) rather than reporting overlap.
-            this._reduceTo([0, 1, 2]);
+        // Orient the normal away from the opposite point.
+        const toD = (dx - ax) * nx + (dy - ay) * ny + (dz - az) * nz;
+        if (toD > 0) { nx = -nx; ny = -ny; nz = -nz; }
+        const toOriginRaw = -ax * nx - ay * ny - az * nz;
+        // Signed DISTANCE (not raw dot) - |n| scales with the face's own size, so a raw-dot epsilon
+        // gives a different real-world tolerance per shape pair.
+        const signedDist = toOriginRaw / Math.sqrt(nLenSq);
+        // Threshold is negative, not zero: a face the origin sits exactly ON (an exact touch) must
+        // not count as enclosure, only strictly-behind does.
+        if (signedDist > -1e-9) {
+            this._reduceTo([ia, ib, ic]);
             return this._simplexTriangle();
         }
-        return { containsOrigin: true, direction: null, closest: null };
+    }
+    // Inside every face. Confirm the tetrahedron isn't itself near-degenerate (near-coplanar
+    // points can pass every per-face test without genuinely surrounding the origin in 3D).
+    const v0x = this._wx[1] - this._wx[0], v0y = this._wy[1] - this._wy[0], v0z = this._wz[1] - this._wz[0];
+    const v1x = this._wx[2] - this._wx[0], v1y = this._wy[2] - this._wy[0], v1z = this._wz[2] - this._wz[0];
+    const v2x = this._wx[3] - this._wx[0], v2y = this._wy[3] - this._wy[0], v2z = this._wz[3] - this._wz[0];
+    const cxv = v1y * v2z - v1z * v2y, cyv = v1z * v2x - v1x * v2z, czv = v1x * v2y - v1y * v2x;
+    const volume6 = Math.abs(v0x * cxv + v0y * cyv + v0z * czv);
+    const extentSq = Math.max(v0x*v0x+v0y*v0y+v0z*v0z, v1x*v1x+v1y*v1y+v1z*v1z, v2x*v2x+v2y*v2y+v2z*v2z);
+    if (volume6 * volume6 < 1e-12 * extentSq * extentSq * extentSq) {
+        this._reduceTo([0, 1, 2]);
+        return this._simplexTriangle();
+    }
+    return { containsOrigin: true, direction: null, closest: null };
+};
+
+// Closest point on triangle ABC to the origin, given its (non-unit) normal N and |N|^2. Returns
+// { x,y,z, onEdge: null|[indices] } - onEdge non-null means the closest feature is a vertex/edge.
+GJK._closestPointOnTriangleToOrigin = function (ax, ay, az, bx, by, bz, cx, cy, cz, nx, ny, nz, nLenSq) {
+    const abx = bx - ax, aby = by - ay, abz = bz - az;
+    const acx = cx - ax, acy = cy - ay, acz = cz - az;
+    const apx = -ax, apy = -ay, apz = -az;
+
+    const d1 = abx * apx + aby * apy + abz * apz;
+    const d2 = acx * apx + acy * apy + acz * apz;
+    if (d1 <= 0 && d2 <= 0) return { x: ax, y: ay, z: az, onEdge: [0] };
+
+    const bpx = -bx, bpy = -by, bpz = -bz;
+    const d3 = abx * bpx + aby * bpy + abz * bpz;
+    const d4 = acx * bpx + acy * bpy + acz * bpz;
+    if (d3 >= 0 && d4 <= d3) return { x: bx, y: by, z: bz, onEdge: [1] };
+
+    const vc = d1 * d4 - d3 * d2;
+    if (vc <= 0 && d1 >= 0 && d3 <= 0) {
+        const t = d1 / (d1 - d3);
+        return { x: ax + abx * t, y: ay + aby * t, z: az + abz * t, onEdge: [0, 1] };
     }
 
-    // Closest point on triangle ABC to the origin, given its (non-unit) normal N and |N|^2.
-    // Returns { x,y,z, onEdge: null|[indices] } - onEdge non-null means the closest feature is a
-    // vertex/edge (indices into the CURRENT 3-point simplex), so the caller reduces to it.
-    static _closestPointOnTriangleToOrigin(ax, ay, az, bx, by, bz, cx, cy, cz, nx, ny, nz, nLenSq) {
-        // Edge/vertex Voronoi region tests (Ericson 5.1.5), inlined for the origin as query point.
-        const abx = bx - ax, aby = by - ay, abz = bz - az;
-        const acx = cx - ax, acy = cy - ay, acz = cz - az;
-        const apx = -ax, apy = -ay, apz = -az; // origin - a
+    const cpx = -cx, cpy = -cy, cpz = -cz;
+    const d5 = abx * cpx + aby * cpy + abz * cpz;
+    const d6 = acx * cpx + acy * cpy + acz * cpz;
+    if (d6 >= 0 && d5 <= d6) return { x: cx, y: cy, z: cz, onEdge: [2] };
 
-        const d1 = abx * apx + aby * apy + abz * apz;
-        const d2 = acx * apx + acy * apy + acz * apz;
-        if (d1 <= 0 && d2 <= 0) return { x: ax, y: ay, z: az, onEdge: [0] };
-
-        const bpx = -bx, bpy = -by, bpz = -bz;
-        const d3 = abx * bpx + aby * bpy + abz * bpz;
-        const d4 = acx * bpx + acy * bpy + acz * bpz;
-        if (d3 >= 0 && d4 <= d3) return { x: bx, y: by, z: bz, onEdge: [1] };
-
-        const vc = d1 * d4 - d3 * d2;
-        if (vc <= 0 && d1 >= 0 && d3 <= 0) {
-            const t = d1 / (d1 - d3);
-            return { x: ax + abx * t, y: ay + aby * t, z: az + abz * t, onEdge: [0, 1] };
-        }
-
-        const cpx = -cx, cpy = -cy, cpz = -cz;
-        const d5 = abx * cpx + aby * cpy + abz * cpz;
-        const d6 = acx * cpx + acy * cpy + acz * cpz;
-        if (d6 >= 0 && d5 <= d6) return { x: cx, y: cy, z: cz, onEdge: [2] };
-
-        const vb = d5 * d2 - d1 * d6;
-        if (vb <= 0 && d2 >= 0 && d6 <= 0) {
-            const t = d2 / (d2 - d6);
-            return { x: ax + acx * t, y: ay + acy * t, z: az + acz * t, onEdge: [0, 2] };
-        }
-
-        const va = d3 * d6 - d5 * d4;
-        if (va <= 0 && (d4 - d3) >= 0 && (d5 - d6) >= 0) {
-            const t = (d4 - d3) / ((d4 - d3) + (d5 - d6));
-            return { x: bx + (cx - bx) * t, y: by + (cy - by) * t, z: bz + (cz - bz) * t, onEdge: [1, 2] };
-        }
-
-        // Interior: project the origin onto the triangle's plane along its normal.
-        // proj = origin - ((origin - a) . n_hat) n_hat ; with origin = 0 and n_hat = n/|n|:
-        //      = -( (-a).n / |n|^2 ) n = (a.n / |n|^2) n
-        const k = (ax * nx + ay * ny + az * nz) / nLenSq;
-        return { x: nx * k, y: ny * k, z: nz * k, onEdge: null };
+    const vb = d5 * d2 - d1 * d6;
+    if (vb <= 0 && d2 >= 0 && d6 <= 0) {
+        const t = d2 / (d2 - d6);
+        return { x: ax + acx * t, y: ay + acy * t, z: az + acz * t, onEdge: [0, 2] };
     }
-}
 
-ActionPhysics.GJK = GJK;
+    const va = d3 * d6 - d5 * d4;
+    if (va <= 0 && (d4 - d3) >= 0 && (d5 - d6) >= 0) {
+        const t = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        return { x: bx + (cx - bx) * t, y: by + (cy - by) * t, z: bz + (cz - bz) * t, onEdge: [1, 2] };
+    }
+
+    // Interior: project the origin onto the triangle's plane along its normal.
+    const k = (ax * nx + ay * ny + az * nz) / nLenSq;
+    return { x: nx * k, y: ny * k, z: nz * k, onEdge: null };
+};
+
+
+// ==== src/collision/Run.js ====
+// The main GJK loop, plus building the SEPARATED result from a converged simplex.
+var proto = GJK.prototype;
+
+/**
+ * Runs GJK for the pair of placed shapes wrapped by `support` (a MinkowskiSupport). Returns:
+ *   { overlapping: true,  simplex: this }                            -> hand to EPA
+ *   { overlapping: false, distance, normal, pointA, pointB }         -> separated
+ * `normal` points from B to A (world space). maxIterations guards non-convergence; hitting it
+ * returns the best answer found so far, reported honestly as separated.
+ */
+proto.run = function (support, maxIterations) {
+    maxIterations = maxIterations || 64;
+    this._clear();
+
+    // Seed a tetrahedron from diverse directions rather than growing one incrementally - see
+    // Seeding.js for why. If no seed set encloses, its best reduction becomes the incremental
+    // loop's starting point below.
+    let seeded = this._seedTetrahedron(support);
+    if (seeded.overlapping) return seeded;
+    this._dir.copy(seeded.direction);
+    this._closest.copy(seeded.closest);
+
+    if (this._dir.lengthSquared() < 1e-20) {
+        // Origin lies on the Minkowski-difference boundary - either an exact touch or a shallow
+        // penetration the seed tetrahedra couldn't enclose. Disambiguate via strict interiority.
+        return this._originStrictlyInside(support) ? { overlapping: true, simplex: this } : this._separatedResult(support);
+    }
+
+    for (let iter = 0; iter < maxIterations; iter++) {
+        support.supportInto(this._newW, this._dir, this._newA, this._newB);
+
+        // Standard GJK termination (Ericson 5.4): no progress if the new support doesn't project
+        // further along `dir` than the simplex already does.
+        const newAlong = this._newW.x * this._dir.x + this._newW.y * this._dir.y + this._newW.z * this._dir.z;
+        let bestAlong = -Infinity;
+        for (let k = 0; k < this._count; k++) {
+            const along = this._wx[k] * this._dir.x + this._wy[k] * this._dir.y + this._wz[k] * this._dir.z;
+            if (along > bestAlong) bestAlong = along;
+        }
+        if (newAlong <= bestAlong + 1e-10) {
+            // Stall: could mean separated, or the origin already on/inside the boundary with the
+            // search direction collapsed toward zero. Disambiguate by the closest distance: near
+            // zero means enclosed/touching, hand to the strict-interior check.
+            const closestDistSq = this._closest.x * this._closest.x + this._closest.y * this._closest.y + this._closest.z * this._closest.z;
+            if (closestDistSq < GJK.OVERLAP_DISTANCE_EPSILON * GJK.OVERLAP_DISTANCE_EPSILON) {
+                return this._originStrictlyInside(support) ? { overlapping: true, simplex: this } : this._separatedResult(support);
+            }
+            return this._separatedResult(support);
+        }
+
+        this._push(this._newW, this._newA, this._newB);
+
+        const result = this._doSimplex();
+        if (result.containsOrigin) return { overlapping: true, simplex: this };
+        this._dir.copy(result.direction);
+        this._closest.copy(result.closest);
+
+        if (this._dir.lengthSquared() < 1e-20) {
+            return this._originStrictlyInside(support) ? { overlapping: true, simplex: this } : this._separatedResult(support);
+        }
+    }
+    // Iteration cap reached without clean termination - report the current simplex honestly as
+    // separated rather than pretending overlap.
+    return this._separatedResult(support);
+};
+
+// Builds the SEPARATED return value from the current simplex's closest point to the origin.
+// Witness points are recovered via barycentric weights applied to the stored world support
+// points, never re-queried, so they stay exactly consistent with the reported distance.
+proto._separatedResult = function (support, forcedNormal) {
+    const bary = this._barycentricOfClosest();
+    const pointA = new Vector3(), pointB = new Vector3();
+    for (let i = 0; i < this._count; i++) {
+        pointA.x += bary[i] * this._ax[i]; pointA.y += bary[i] * this._ay[i]; pointA.z += bary[i] * this._az[i];
+        pointB.x += bary[i] * this._bx[i]; pointB.y += bary[i] * this._by[i]; pointB.z += bary[i] * this._bz[i];
+    }
+    const dist = Math.sqrt(this._closest.x * this._closest.x + this._closest.y * this._closest.y + this._closest.z * this._closest.z);
+    let normal;
+    if (forcedNormal) {
+        normal = new Vector3().copy(forcedNormal).normalizeInPlace();
+    } else if (dist > 1e-12) {
+        normal = new Vector3(this._closest.x / dist, this._closest.y / dist, this._closest.z / dist);
+    } else {
+        // Exact touching: `closest` carries no direction. Recover a normal from the simplex's own
+        // geometry instead of a fixed axis.
+        normal = new Vector3();
+        this._degenerateTouchingNormalInto(normal);
+    }
+    return { overlapping: false, distance: dist, normal: normal, pointA: pointA, pointB: pointB };
+};
+
+// Recovers a normal for a zero-distance (exact touching) simplex. A 3-point simplex through the
+// origin has a well-defined plane normal; a 2- or 1-point simplex falls back to findOrthogonal()
+// (never NaN, even though not always the true contact normal for that degenerate case).
+proto._degenerateTouchingNormalInto = function (out) {
+    if (this._count === 3) {
+        const abx = this._wx[1] - this._wx[0], aby = this._wy[1] - this._wy[0], abz = this._wz[1] - this._wz[0];
+        const acx = this._wx[2] - this._wx[0], acy = this._wy[2] - this._wy[0], acz = this._wz[2] - this._wz[0];
+        out.x = aby * acz - abz * acy; out.y = abz * acx - abx * acz; out.z = abx * acy - aby * acx;
+        const lenSq = out.x * out.x + out.y * out.y + out.z * out.z;
+        if (lenSq > 1e-20) { out.scaleInPlace(1 / Math.sqrt(lenSq)); return; }
+    }
+    this._scratchRef.set(this._wx[0], this._wy[0], this._wz[0]);
+    out.findOrthogonal(this._scratchRef);
+};
+
+// Barycentric weights of `this._closest` w.r.t. the current simplex (1-3 points). Degenerate
+// simplices fall back explicitly rather than dividing by zero.
+proto._barycentricOfClosest = function () {
+    if (this._count === 1) return [1];
+    if (this._count === 2) {
+        const abx = this._wx[1] - this._wx[0], aby = this._wy[1] - this._wy[0], abz = this._wz[1] - this._wz[0];
+        const lenSq = abx * abx + aby * aby + abz * abz;
+        if (lenSq < 1e-20) return [1, 0];
+        const apx = this._closest.x - this._wx[0], apy = this._closest.y - this._wy[0], apz = this._closest.z - this._wz[0];
+        let t = (apx * abx + apy * aby + apz * abz) / lenSq;
+        t = t < 0 ? 0 : (t > 1 ? 1 : t);
+        return [1 - t, t];
+    }
+    // count === 3: barycentric of a point already known to be in the triangle's plane.
+    const v0x = this._wx[1] - this._wx[0], v0y = this._wy[1] - this._wy[0], v0z = this._wz[1] - this._wz[0];
+    const v1x = this._wx[2] - this._wx[0], v1y = this._wy[2] - this._wy[0], v1z = this._wz[2] - this._wz[0];
+    const v2x = this._closest.x - this._wx[0], v2y = this._closest.y - this._wy[0], v2z = this._closest.z - this._wz[0];
+    const d00 = v0x * v0x + v0y * v0y + v0z * v0z;
+    const d01 = v0x * v1x + v0y * v1y + v0z * v1z;
+    const d11 = v1x * v1x + v1y * v1y + v1z * v1z;
+    const d20 = v2x * v0x + v2y * v0y + v2z * v0z;
+    const d21 = v2x * v1x + v2y * v1y + v2z * v1z;
+    const denom = d00 * d11 - d01 * d01;
+    if (Math.abs(denom) < 1e-20) return [1 / 3, 1 / 3, 1 / 3];
+    const v = (d11 * d20 - d01 * d21) / denom;
+    const w = (d00 * d21 - d01 * d20) / denom;
+    const u = 1 - v - w;
+    return [u, v, w];
+};
 
 
 // ==== src/collision/EPA.js ====
 /**
  * EPA (Expanding Polytope Algorithm): penetration depth, normal, and contact points from a GJK
- * simplex that already encloses the origin. GJK proves overlap; EPA measures how deep.
+ * simplex that already encloses the origin (van den Bergen, "Collision Detection in Interactive
+ * 3D Environments").
  *
- * Written from the algorithm (van den Bergen, "Collision Detection in Interactive 3D
- * Environments"; the standard EPA formulation), not from a prior implementation - same reasoning
- * as GJK.js: narrowphase is the highest-risk component, and the one place a structural anchor to
- * the predecessor would be worst to carry over.
+ * Produces: signed distance (>= 0, a penetration depth), a world normal B->A, and witness points
+ * on each shape's surface. Assumes the input simplex is a genuine origin-enclosing tetrahedron.
  *
- * Produces: signed distance (always >= 0 here — a positive PENETRATION depth, matching the
- * Narrowphase contract's convention where positive = overlapping), a world-space normal pointing
- * from B to A, and witness points on each shape's surface. May assume: the input simplex is a
- * genuine tetrahedron (4 points) that encloses the origin - GJK.run() only ever returns
- * `overlapping: true` from its `_simplexTetrahedron` path, which never produces anything else.
+ * The result always re-queries the live polytope's closest alive face at the end (see Expand.js) -
+ * a face's distance is only meaningful while alive, so tracking "smallest distance ever seen"
+ * across iterations would pick up stale, later-invalidated faces.
  *
- * BUG FIX CARRIED FROM THE PREDECESSOR (plan.md, Bug reference / Collision detection):
- * "EPA accepted garbage on the iteration cap." Its stable-exit test required
- * `closest_face_distance > EPSILON`, but a resting/shallow contact sits BELOW epsilon, so it never
- * exited early, ran to the iteration cap, and returned whatever the LAST iteration's polytope
- * state happened to be - not the best one found. The fix here is structural: the closest face
- * found across every iteration is tracked independently of the loop's current state, and the
- * final return always reads from that tracked best - never from "whatever the polytope looks like
- * when the loop happens to end." A resting contact (depth near zero) converges immediately because
- * there is nothing left to expand, not because of a lucky exit-epsilon comparison.
+ * See InitialTetrahedron.js (completing GJK's simplex into a full tetrahedron) and Expand.js (the
+ * main expansion loop + result extraction).
  */
 class EPA {
     constructor() {
-        // Polytope vertices, parallel arrays like GJK's simplex storage (w = Minkowski diff point,
-        // a/b = world witness points on each shape). Grows as EPA expands the polytope; capacity
-        // starts generous and grows geometrically to stay allocation-light across many calls.
+        // Polytope vertices, parallel arrays like GJK's (w = Minkowski diff point, a/b = world
+        // witness points). Capacity grows geometrically to stay allocation-light across calls.
         this._capacity = 64;
         this._wx = new Float64Array(this._capacity); this._wy = new Float64Array(this._capacity); this._wz = new Float64Array(this._capacity);
         this._ax = new Float64Array(this._capacity); this._ay = new Float64Array(this._capacity); this._az = new Float64Array(this._capacity);
         this._bx = new Float64Array(this._capacity); this._by = new Float64Array(this._capacity); this._bz = new Float64Array(this._capacity);
         this._vertexCount = 0;
 
-        // Faces: triangle index triples plus their (outward) normal and distance-to-origin, kept
-        // in parallel arrays. A face is "alive" while faceAlive[i] is truthy; removed faces
-        // (replaced during expansion) are marked dead rather than spliced out, to avoid shifting
-        // every later index on every removal.
+        // Faces: triangle index triples + outward normal + distance-to-origin. Removed faces are
+        // marked dead (faceAlive) rather than spliced out, to avoid reindexing on every removal.
         this._faceCapacity = 128;
         this._faceA = new Int32Array(this._faceCapacity);
         this._faceB = new Int32Array(this._faceCapacity);
@@ -4759,14 +4920,9 @@ class EPA {
         return i;
     }
 
-    // Adds a face from three vertex indices, computing its outward normal and origin distance.
-    // "Outward" here means away from the polytope's own centroid - correct as long as the
-    // polytope is convex and the origin is inside it (true by construction: EPA only ever starts
-    // from a GJK tetrahedron that already encloses the origin, and every subsequent expansion
-    // stays convex around that same enclosed origin). Returns the new face's index, or -1 if the
-    // three points are degenerate (collinear / zero area) - the caller skips a degenerate face
-    // rather than adding a face with an undefined normal (same discipline as GJK's own degenerate
-    // fallbacks: never propagate a NaN).
+    // Adds a face from three vertex indices, oriented outward from `centroidHint`. Returns the new
+    // face's index, or -1 if the three points are degenerate (collinear/zero area) - skipped
+    // rather than added with an undefined normal.
     _addFace(ia, ib, ic, centroidHint) {
         const ax = this._wx[ia], ay = this._wy[ia], az = this._wz[ia];
         const bx = this._wx[ib], by = this._wy[ib], bz = this._wz[ib];
@@ -4775,17 +4931,15 @@ class EPA {
         const acx = cx - ax, acy = cy - ay, acz = cz - az;
         let nx = aby * acz - abz * acy, ny = abz * acx - abx * acz, nz = abx * acy - aby * acx;
         const nLenSq = nx * nx + ny * ny + nz * nz;
-        if (nLenSq < 1e-20) return -1; // degenerate: skip, never add a face with no real normal
+        if (nLenSq < 1e-20) return -1;
 
         const invLen = 1 / Math.sqrt(nLenSq);
         nx *= invLen; ny *= invLen; nz *= invLen;
 
-        // Orient outward: away from the hint point (the polytope's centroid, or the 4th
-        // tetrahedron vertex on initial construction).
         const toHint = (centroidHint.x - ax) * nx + (centroidHint.y - ay) * ny + (centroidHint.z - az) * nz;
         if (toHint > 0) { nx = -nx; ny = -ny; nz = -nz; }
 
-        const dist = ax * nx + ay * ny + az * nz; // (a - origin) . n_hat = distance from origin to the face's plane
+        const dist = ax * nx + ay * ny + az * nz;
 
         if (this._faceCount >= this._faceCapacity) this._growFaces();
         const fi = this._faceCount++;
@@ -4795,320 +4949,267 @@ class EPA {
         this._faceAlive[fi] = 1;
         return fi;
     }
-
-    /**
-     * Expands `simplex` (a GJK instance whose _wx/_wy/_wz/_ax.../_bx... hold exactly 4 points that
-     * enclose the origin) into the true penetration depth and normal.
-     *
-     * Returns { distance, normal, pointA, pointB } - distance is a non-negative penetration depth
-     * (plan.md's positive = overlapping convention), normal points from B to A (same convention
-     * GJK's separated result uses), pointA/pointB are witness points on each shape's own surface
-     * recovered from the winning face's barycentric weights.
-     *
-     * maxIterations guards non-convergence on pathological input. Per the header's bug-fix note,
-     * hitting the cap returns the best (closest-to-origin) face tracked across the WHOLE run, not
-     * whatever face is live when the loop happens to stop.
-     */
-    // Completes a full, non-degenerate tetrahedron (4 points, real volume) in this._wx.. from the
-    // GJK simplex's `_count` points (1..4), adding Minkowski support points as needed. Returns true
-    // on success (4 vertices are in place, indices 0..3), false if the contact is genuinely flat
-    // (no volume obtainable - an exact touch). Standard EPA preamble (van den Bergen).
-    _buildInitialTetrahedron(support, simplex) {
-        this._vertexCount = 0;
-        const n = simplex._count !== undefined ? simplex._count : 4;
-        for (let i = 0; i < n; i++) {
-            this._pushVertex(
-                { x: simplex._wx[i], y: simplex._wy[i], z: simplex._wz[i] },
-                { x: simplex._ax[i], y: simplex._ay[i], z: simplex._az[i] },
-                { x: simplex._bx[i], y: simplex._by[i], z: simplex._bz[i] }
-            );
-        }
-        // A small set of probe directions to grow dimensionality with; each is tried in +/- form.
-        const AXES = [[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [0, 1, 1], [1, 0, 1]];
-
-        // 1 point -> 2: add a support along any axis that gives a distinct point.
-        if (this._vertexCount === 1) {
-            for (let a = 0; a < AXES.length && this._vertexCount < 2; a++) {
-                for (let s = -1; s <= 1 && this._vertexCount < 2; s += 2) {
-                    this._dirScratch.set(AXES[a][0] * s, AXES[a][1] * s, AXES[a][2] * s);
-                    support.supportInto(this._newW, this._dirScratch, this._newA, this._newB);
-                    if (this._distinctFrom(0)) this._pushVertex(this._newW, this._newA, this._newB);
-                }
-            }
-            if (this._vertexCount < 2) return false;
-        }
-        // 2 points -> 3: add a support perpendicular to the segment, giving a non-collinear point.
-        if (this._vertexCount === 2) {
-            const ex = this._wx[1] - this._wx[0], ey = this._wy[1] - this._wy[0], ez = this._wz[1] - this._wz[0];
-            for (let a = 0; a < AXES.length && this._vertexCount < 3; a++) {
-                // direction = axis component perpendicular to the edge
-                let dx = AXES[a][0], dy = AXES[a][1], dz = AXES[a][2];
-                const dot = (dx * ex + dy * ey + dz * ez) / (ex * ex + ey * ey + ez * ez + 1e-30);
-                dx -= dot * ex; dy -= dot * ey; dz -= dot * ez;
-                if (dx * dx + dy * dy + dz * dz < 1e-12) continue;
-                for (let s = -1; s <= 1 && this._vertexCount < 3; s += 2) {
-                    this._dirScratch.set(dx * s, dy * s, dz * s);
-                    support.supportInto(this._newW, this._dirScratch, this._newA, this._newB);
-                    if (this._notCollinear(0, 1)) this._pushVertex(this._newW, this._newA, this._newB);
-                }
-            }
-            if (this._vertexCount < 3) return false;
-        }
-        // 3 points -> 4: add support along the triangle normal (both sides) for a point off-plane.
-        if (this._vertexCount === 3) {
-            const ax = this._wx[0], ay = this._wy[0], az = this._wz[0];
-            const abx = this._wx[1] - ax, aby = this._wy[1] - ay, abz = this._wz[1] - az;
-            const acx = this._wx[2] - ax, acy = this._wy[2] - ay, acz = this._wz[2] - az;
-            let nx = aby * acz - abz * acy, ny = abz * acx - abx * acz, nz = abx * acy - aby * acx;
-            const nl = Math.sqrt(nx * nx + ny * ny + nz * nz);
-            if (nl < 1e-12) return false; // triangle itself degenerate
-            nx /= nl; ny /= nl; nz /= nl;
-            for (let s = -1; s <= 1 && this._vertexCount < 4; s += 2) {
-                this._dirScratch.set(nx * s, ny * s, nz * s);
-                support.supportInto(this._newW, this._dirScratch, this._newA, this._newB);
-                if (this._offPlane(0, 1, 2)) this._pushVertex(this._newW, this._newA, this._newB);
-            }
-            if (this._vertexCount < 4) return false;
-        }
-        return this._vertexCount >= 4;
-    }
-
-    // Is this._newW distinct (beyond epsilon) from stored vertex i?
-    _distinctFrom(i) {
-        const dx = this._newW.x - this._wx[i], dy = this._newW.y - this._wy[i], dz = this._newW.z - this._wz[i];
-        return dx * dx + dy * dy + dz * dz > 1e-10;
-    }
-    // Is this._newW non-collinear with stored vertices i, j?
-    _notCollinear(i, j) {
-        const ex = this._wx[j] - this._wx[i], ey = this._wy[j] - this._wy[i], ez = this._wz[j] - this._wz[i];
-        const fx = this._newW.x - this._wx[i], fy = this._newW.y - this._wy[i], fz = this._newW.z - this._wz[i];
-        const cx = ey * fz - ez * fy, cy = ez * fx - ex * fz, cz = ex * fy - ey * fx;
-        return cx * cx + cy * cy + cz * cz > 1e-12;
-    }
-    // Is this._newW off the plane through stored vertices i, j, k (real tetra volume)?
-    _offPlane(i, j, k) {
-        const ax = this._wx[i], ay = this._wy[i], az = this._wz[i];
-        const abx = this._wx[j] - ax, aby = this._wy[j] - ay, abz = this._wz[j] - az;
-        const acx = this._wx[k] - ax, acy = this._wy[k] - ay, acz = this._wz[k] - az;
-        const nx = aby * acz - abz * acy, ny = abz * acx - abx * acz, nz = abx * acy - aby * acx;
-        const dx = this._newW.x - ax, dy = this._newW.y - ay, dz = this._newW.z - az;
-        const vol = dx * nx + dy * ny + dz * nz;
-        return vol * vol > 1e-14;
-    }
-
-    // Fallback for a genuinely flat (zero-volume) contact: report zero depth, using the simplex's
-    // first witness points and its search normal. The solver treats zero depth as non-penetrating.
-    _zeroDepthResult(simplex) {
-        const pointA = new Vector3(simplex._ax[0], simplex._ay[0], simplex._az[0]);
-        const pointB = new Vector3(simplex._bx[0], simplex._by[0], simplex._bz[0]);
-        let nx = 0, ny = 1, nz = 0;
-        if (simplex._closest && simplex._closest.lengthSquared && simplex._closest.lengthSquared() > 1e-20) {
-            const l = Math.sqrt(simplex._closest.lengthSquared());
-            nx = simplex._closest.x / l; ny = simplex._closest.y / l; nz = simplex._closest.z / l;
-        }
-        return { distance: 0, normal: new Vector3(nx, ny, nz), pointA: pointA, pointB: pointB };
-    }
-
-    run(support, simplex, maxIterations) {
-        maxIterations = maxIterations || 64;
-        this._vertexCount = 0;
-        this._faceCount = 0;
-
-        // GJK may hand over fewer than 4 points: its enclosure/stall paths can confirm overlap from
-        // a 1-, 2-, or 3-point simplex (a small shape shallowly inside a much larger one, where the
-        // seed tetrahedra never enclosed the origin). EPA needs a full, origin-enclosing tetrahedron
-        // to start, so complete one first from whatever GJK provided. Reading _wx[3] unconditionally
-        // when only 3 points exist read stale array slots and crashed (undefined support point) -
-        // this preamble is the fix.
-        if (!this._buildInitialTetrahedron(support, simplex)) {
-            // Could not form a non-degenerate enclosing tetrahedron (true exact touch, or numerically
-            // flat contact): depth is zero along the best direction available. Report a zero-depth
-            // contact using the simplex's first witness points and the search normal - the solver's
-            // C<=0 guard treats a zero-depth contact as non-penetrating, which is correct here.
-            return this._zeroDepthResult(simplex);
-        }
-        const idx = [0, 1, 2, 3];
-        // Centroid of the 4 seed points, used to orient each face's normal outward.
-        const cx = (this._wx[idx[0]] + this._wx[idx[1]] + this._wx[idx[2]] + this._wx[idx[3]]) / 4;
-        const cy = (this._wy[idx[0]] + this._wy[idx[1]] + this._wy[idx[2]] + this._wy[idx[3]]) / 4;
-        const cz = (this._wz[idx[0]] + this._wz[idx[1]] + this._wz[idx[2]] + this._wz[idx[3]]) / 4;
-        const centroid = { x: cx, y: cy, z: cz };
-
-        // The 4 faces of the seed tetrahedron - same enumeration GJK.js uses (and the same one
-        // whose typo caused GJK's own hardest bug: verify all 4 DISTINCT faces are present).
-        this._addFace(idx[0], idx[1], idx[2], centroid);
-        this._addFace(idx[0], idx[1], idx[3], centroid);
-        this._addFace(idx[0], idx[2], idx[3], centroid);
-        this._addFace(idx[1], idx[2], idx[3], centroid);
-
-        for (let iter = 0; iter < maxIterations; iter++) {
-            const face = this._closestAliveFace();
-            const faceDist = this._faceDist[face];
-
-            // Expand along the closest face's own normal - the direction most likely to find the
-            // true surface next.
-            this._dirScratch.set(this._faceNx[face], this._faceNy[face], this._faceNz[face]);
-            support.supportInto(this._newW, this._dirScratch, this._newA, this._newB);
-
-            const newDist = this._newW.x * this._faceNx[face] + this._newW.y * this._faceNy[face] + this._newW.z * this._faceNz[face];
-
-            // Converged: the new support point does not extend past the closest face's own plane
-            // by more than a small margin. This is checked against the closest face's distance
-            // DIRECTLY (not a fixed epsilon independent of scale) - see the header's bug-fix note:
-            // the predecessor's bug was exactly a fixed-epsilon exit test failing for shallow
-            // contacts. Comparing the new point's extent to the face's own already-converged
-            // distance means a resting contact (whose closest face sits near-zero) still detects
-            // "no more progress" correctly, because both sides of the comparison scale together.
-            if (newDist - faceDist < 1e-6) break;
-
-            this._expandAt(this._newW, this._newA, this._newB, centroid);
-        }
-
-        // The closest ALIVE face, read fresh right here rather than tracked across iterations.
-        // This IS the actual fix for the predecessor's bug (plan.md, Bug reference: "returned
-        // whatever the final iteration produced" instead of the converged answer) - a face's own
-        // distance value is only meaningful while it is still alive; a face expansion replaces
-        // wrong-but-smaller-looking faces with new ones as the polytope refines toward the true
-        // surface, so tracking "smallest distance ever seen across iterations" (tried and reverted
-        // - see git history) picks up STALE distances from faces that were later proven invalid
-        // and removed. Re-querying the live polytope's actual closest alive face, whether the loop
-        // converged cleanly or hit the iteration cap, is the only way to get the CURRENT answer -
-        // exactly the "return the converged result, never the last one" rule, applied correctly.
-        return this._resultFromFace(this._closestAliveFace());
-    }
-
-    // Finds the living face with the smallest distance-to-origin. Linear scan - EPA's polytope
-    // stays small (tens of faces) for the shape pairs this engine targets, and a scan here is far
-    // simpler to trust than a priority-queue structure for that size.
-    _closestAliveFace() {
-        let best = -1, bestDist = Infinity;
-        for (let i = 0; i < this._faceCount; i++) {
-            if (!this._faceAlive[i]) continue;
-            if (this._faceDist[i] < bestDist) { bestDist = this._faceDist[i]; best = i; }
-        }
-        return best;
-    }
-
-    // Adds `newPoint` to the polytope and re-triangulates: every alive face visible from the new
-    // point (the point is on the OUTER side of the face's plane) is removed, and the boundary loop
-    // of the resulting hole is re-closed with new faces to the new point (the standard EPA
-    // horizon-edge expansion).
-    _expandAt(newW, newA, newB, centroid) {
-        const newIdx = this._pushVertex(newW, newA, newB);
-
-        // Collect the horizon: edges shared by exactly one visible face and one non-visible face.
-        // Represented as [fromIndex, toIndex] pairs, deduplicated by removing a pair the moment
-        // its reverse is seen (a shared internal edge between two visible faces cancels out).
-        const horizonA = [], horizonB = [];
-        function edgeKey(a, b) { return a < b ? a + ',' + b : b + ',' + a; }
-        const edgeSeen = new Map(); // key -> { from, to }
-
-        for (let i = 0; i < this._faceCount; i++) {
-            if (!this._faceAlive[i]) continue;
-            const a = this._faceA[i], b = this._faceB[i], c = this._faceC[i];
-            const nx = this._faceNx[i], ny = this._faceNy[i], nz = this._faceNz[i];
-            const visible = (newW.x - this._wx[a]) * nx + (newW.y - this._wy[a]) * ny + (newW.z - this._wz[a]) * nz > 1e-10;
-            if (!visible) continue;
-
-            this._faceAlive[i] = 0;
-            const edges = [[a, b], [b, c], [c, a]];
-            for (let e = 0; e < 3; e++) {
-                const from = edges[e][0], to = edges[e][1];
-                const key = edgeKey(from, to);
-                if (edgeSeen.has(key)) {
-                    edgeSeen.delete(key); // shared with another visible face: internal, cancels out
-                } else {
-                    edgeSeen.set(key, { from: from, to: to });
-                }
-            }
-        }
-
-        edgeSeen.forEach(function (e) { horizonA.push(e.from); horizonB.push(e.to); });
-
-        for (let i = 0; i < horizonA.length; i++) {
-            this._addFace(horizonA[i], horizonB[i], newIdx, centroid);
-        }
-    }
-
-    // Recovers { distance, normal, pointA, pointB } from a chosen face - barycentric weights of
-    // the face's own closest point to the origin (projected onto the triangle's plane, then
-    // expressed in area-ratio barycentric form), applied to the face's three world witness points.
-    // Same degenerate-fallback discipline as GJK's own barycentric routine: never divide by zero,
-    // always a valid (if approximate) geometric answer.
-    _resultFromFace(face) {
-        const ia = this._faceA[face], ib = this._faceB[face], ic = this._faceC[face];
-        const nx = this._faceNx[face], ny = this._faceNy[face], nz = this._faceNz[face];
-        const dist = this._faceDist[face];
-
-        // Closest point on the face's plane to the origin. The plane is {x : x.n_hat = dist}, so
-        // the closest point on it to the origin is dist * n_hat (that point's own dot with n_hat
-        // is dist by construction, and it is the minimal-length point satisfying that).
-        const ax = this._wx[ia], ay = this._wy[ia], az = this._wz[ia];
-        const closestX = nx * dist, closestY = ny * dist, closestZ = nz * dist;
-
-        const bx = this._wx[ib], by = this._wy[ib], bz = this._wz[ib];
-        const cx = this._wx[ic], cy = this._wy[ic], cz = this._wz[ic];
-        const v0x = bx - ax, v0y = by - ay, v0z = bz - az;
-        const v1x = cx - ax, v1y = cy - ay, v1z = cz - az;
-        const v2x = closestX - ax, v2y = closestY - ay, v2z = closestZ - az;
-        const d00 = v0x * v0x + v0y * v0y + v0z * v0z;
-        const d01 = v0x * v1x + v0y * v1y + v0z * v1z;
-        const d11 = v1x * v1x + v1y * v1y + v1z * v1z;
-        const d20 = v2x * v0x + v2y * v0y + v2z * v0z;
-        const d21 = v2x * v1x + v2y * v1y + v2z * v1z;
-        const denom = d00 * d11 - d01 * d01;
-        let u, v, w;
-        if (Math.abs(denom) < 1e-20) {
-            u = 1 / 3; v = 1 / 3; w = 1 / 3; // degenerate face: even split, never NaN
-        } else {
-            v = (d11 * d20 - d01 * d21) / denom;
-            w = (d00 * d21 - d01 * d20) / denom;
-            u = 1 - v - w;
-        }
-
-        const pointA = new Vector3(
-            u * this._ax[ia] + v * this._ax[ib] + w * this._ax[ic],
-            u * this._ay[ia] + v * this._ay[ib] + w * this._ay[ic],
-            u * this._az[ia] + v * this._az[ib] + w * this._az[ic]
-        );
-        const pointB = new Vector3(
-            u * this._bx[ia] + v * this._bx[ib] + w * this._bx[ic],
-            u * this._by[ia] + v * this._by[ib] + w * this._by[ic],
-            u * this._bz[ia] + v * this._bz[ib] + w * this._bz[ic]
-        );
-
-        // The face's own "outward from the polytope's interior" normal points from A's side
-        // toward B's side of the Minkowski difference A-B (verified against GJK's own separated-
-        // result convention, which points from B to A - a real, sign-only bug caught by comparing
-        // the two detectors' normals directly on identical geometry, not by any test that only
-        // checked axis alignment). Negated here so EPA's returned normal matches GJK's: B to A,
-        // the direction the solver actually pushes body A along.
-        return {
-            distance: Math.max(0, dist), // clamp: a face passing fractionally behind the origin from float noise still reports a valid non-negative depth
-            normal: new Vector3(-nx, -ny, -nz),
-            pointA: pointA,
-            pointB: pointB
-        };
-    }
 }
 
 ActionPhysics.EPA = EPA;
 
 
-// ==== src/collision/ContactDetails.js ====
+// ==== src/collision/InitialTetrahedron.js ====
+// Completes a full, non-degenerate tetrahedron from GJK's simplex (which may hand over as few as
+// 1 point - its enclosure/stall paths can confirm overlap from a lower-dimensional simplex when a
+// small shape sits shallowly inside a much larger one). EPA needs a real 4-point tetrahedron to
+// start, so this grows one dimension at a time by adding Minkowski support points.
+var proto = EPA.prototype;
+
+proto._buildInitialTetrahedron = function (support, simplex) {
+    this._vertexCount = 0;
+    const n = simplex._count !== undefined ? simplex._count : 4;
+    for (let i = 0; i < n; i++) {
+        this._pushVertex(
+            { x: simplex._wx[i], y: simplex._wy[i], z: simplex._wz[i] },
+            { x: simplex._ax[i], y: simplex._ay[i], z: simplex._az[i] },
+            { x: simplex._bx[i], y: simplex._by[i], z: simplex._bz[i] }
+        );
+    }
+    const AXES = [[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [0, 1, 1], [1, 0, 1]];
+
+    // 1 point -> 2: add a support along any axis that gives a distinct point.
+    if (this._vertexCount === 1) {
+        for (let a = 0; a < AXES.length && this._vertexCount < 2; a++) {
+            for (let s = -1; s <= 1 && this._vertexCount < 2; s += 2) {
+                this._dirScratch.set(AXES[a][0] * s, AXES[a][1] * s, AXES[a][2] * s);
+                support.supportInto(this._newW, this._dirScratch, this._newA, this._newB);
+                if (this._distinctFrom(0)) this._pushVertex(this._newW, this._newA, this._newB);
+            }
+        }
+        if (this._vertexCount < 2) return false;
+    }
+    // 2 points -> 3: add a support perpendicular to the segment.
+    if (this._vertexCount === 2) {
+        const ex = this._wx[1] - this._wx[0], ey = this._wy[1] - this._wy[0], ez = this._wz[1] - this._wz[0];
+        for (let a = 0; a < AXES.length && this._vertexCount < 3; a++) {
+            let dx = AXES[a][0], dy = AXES[a][1], dz = AXES[a][2];
+            const dot = (dx * ex + dy * ey + dz * ez) / (ex * ex + ey * ey + ez * ez + 1e-30);
+            dx -= dot * ex; dy -= dot * ey; dz -= dot * ez;
+            if (dx * dx + dy * dy + dz * dz < 1e-12) continue;
+            for (let s = -1; s <= 1 && this._vertexCount < 3; s += 2) {
+                this._dirScratch.set(dx * s, dy * s, dz * s);
+                support.supportInto(this._newW, this._dirScratch, this._newA, this._newB);
+                if (this._notCollinear(0, 1)) this._pushVertex(this._newW, this._newA, this._newB);
+            }
+        }
+        if (this._vertexCount < 3) return false;
+    }
+    // 3 points -> 4: add support along the triangle normal (both sides).
+    if (this._vertexCount === 3) {
+        const ax = this._wx[0], ay = this._wy[0], az = this._wz[0];
+        const abx = this._wx[1] - ax, aby = this._wy[1] - ay, abz = this._wz[1] - az;
+        const acx = this._wx[2] - ax, acy = this._wy[2] - ay, acz = this._wz[2] - az;
+        let nx = aby * acz - abz * acy, ny = abz * acx - abx * acz, nz = abx * acy - aby * acx;
+        const nl = Math.sqrt(nx * nx + ny * ny + nz * nz);
+        if (nl < 1e-12) return false; // triangle itself degenerate
+        nx /= nl; ny /= nl; nz /= nl;
+        for (let s = -1; s <= 1 && this._vertexCount < 4; s += 2) {
+            this._dirScratch.set(nx * s, ny * s, nz * s);
+            support.supportInto(this._newW, this._dirScratch, this._newA, this._newB);
+            if (this._offPlane(0, 1, 2)) this._pushVertex(this._newW, this._newA, this._newB);
+        }
+        if (this._vertexCount < 4) return false;
+    }
+    return this._vertexCount >= 4;
+};
+
+proto._distinctFrom = function (i) {
+    const dx = this._newW.x - this._wx[i], dy = this._newW.y - this._wy[i], dz = this._newW.z - this._wz[i];
+    return dx * dx + dy * dy + dz * dz > 1e-10;
+};
+proto._notCollinear = function (i, j) {
+    const ex = this._wx[j] - this._wx[i], ey = this._wy[j] - this._wy[i], ez = this._wz[j] - this._wz[i];
+    const fx = this._newW.x - this._wx[i], fy = this._newW.y - this._wy[i], fz = this._newW.z - this._wz[i];
+    const cx = ey * fz - ez * fy, cy = ez * fx - ex * fz, cz = ex * fy - ey * fx;
+    return cx * cx + cy * cy + cz * cz > 1e-12;
+};
+proto._offPlane = function (i, j, k) {
+    const ax = this._wx[i], ay = this._wy[i], az = this._wz[i];
+    const abx = this._wx[j] - ax, aby = this._wy[j] - ay, abz = this._wz[j] - az;
+    const acx = this._wx[k] - ax, acy = this._wy[k] - ay, acz = this._wz[k] - az;
+    const nx = aby * acz - abz * acy, ny = abz * acx - abx * acz, nz = abx * acy - aby * acx;
+    const dx = this._newW.x - ax, dy = this._newW.y - ay, dz = this._newW.z - az;
+    const vol = dx * nx + dy * ny + dz * nz;
+    return vol * vol > 1e-14;
+};
+
+// Fallback for a genuinely flat (zero-volume) contact: zero depth, using the simplex's first
+// witness points and search normal. The solver's C<=0 guard treats zero depth as non-penetrating.
+proto._zeroDepthResult = function (simplex) {
+    const pointA = new Vector3(simplex._ax[0], simplex._ay[0], simplex._az[0]);
+    const pointB = new Vector3(simplex._bx[0], simplex._by[0], simplex._bz[0]);
+    let nx = 0, ny = 1, nz = 0;
+    if (simplex._closest && simplex._closest.lengthSquared && simplex._closest.lengthSquared() > 1e-20) {
+        const l = Math.sqrt(simplex._closest.lengthSquared());
+        nx = simplex._closest.x / l; ny = simplex._closest.y / l; nz = simplex._closest.z / l;
+    }
+    return { distance: 0, normal: new Vector3(nx, ny, nz), pointA: pointA, pointB: pointB };
+};
+
+
+// ==== src/collision/Expand.js ====
+// The main EPA expansion loop: grow the polytope toward the true Minkowski-difference surface,
+// then extract distance/normal/witness points from the winning face.
+var proto = EPA.prototype;
+
 /**
- * ContactDetails: one contact point between a specific pair of primitive shapes, in the sign
- * convention plan.md establishes for the whole narrowphase: signed distance NEGATIVE when
- * separated, POSITIVE when overlapping. GJK's separated result and EPA's overlapping result both
- * report a non-negative magnitude of their own (gap vs. depth) - normalizing the sign here is the
- * one place that distinction gets collapsed into a single number the rest of the pipeline can
- * treat uniformly (a manifold, a solver row, all just read `signedDistance`).
- *
- * pointOnA / pointOnB are the witness points on each shape's own surface (not the same point once
- * penetrating - that gap IS the depth). `point` is their midpoint, the conventional single contact
- * location a solver/manifold keys off; normal points from B to A, matching GJK/EPA's own
- * convention so no stage has to remember a sign flip.
+ * Expands `simplex` (a GJK instance whose 4 points enclose the origin) into penetration depth and
+ * normal. maxIterations guards non-convergence; hitting the cap still returns the live polytope's
+ * closest alive face, never a stale one.
  */
+proto.run = function (support, simplex, maxIterations) {
+    maxIterations = maxIterations || 64;
+    this._vertexCount = 0;
+    this._faceCount = 0;
+
+    if (!this._buildInitialTetrahedron(support, simplex)) {
+        // No non-degenerate enclosing tetrahedron obtainable (exact touch or numerically flat) -
+        // report zero depth, which the solver treats as non-penetrating.
+        return this._zeroDepthResult(simplex);
+    }
+    const idx = [0, 1, 2, 3];
+    const cx = (this._wx[idx[0]] + this._wx[idx[1]] + this._wx[idx[2]] + this._wx[idx[3]]) / 4;
+    const cy = (this._wy[idx[0]] + this._wy[idx[1]] + this._wy[idx[2]] + this._wy[idx[3]]) / 4;
+    const cz = (this._wz[idx[0]] + this._wz[idx[1]] + this._wz[idx[2]] + this._wz[idx[3]]) / 4;
+    const centroid = { x: cx, y: cy, z: cz };
+
+    // The 4 faces of the seed tetrahedron.
+    this._addFace(idx[0], idx[1], idx[2], centroid);
+    this._addFace(idx[0], idx[1], idx[3], centroid);
+    this._addFace(idx[0], idx[2], idx[3], centroid);
+    this._addFace(idx[1], idx[2], idx[3], centroid);
+
+    for (let iter = 0; iter < maxIterations; iter++) {
+        const face = this._closestAliveFace();
+        const faceDist = this._faceDist[face];
+
+        this._dirScratch.set(this._faceNx[face], this._faceNy[face], this._faceNz[face]);
+        support.supportInto(this._newW, this._dirScratch, this._newA, this._newB);
+
+        const newDist = this._newW.x * this._faceNx[face] + this._newW.y * this._faceNy[face] + this._newW.z * this._faceNz[face];
+
+        // Converged: the new support doesn't extend past the closest face's own plane by more than
+        // a small margin, compared relative to the face's own distance (not a fixed epsilon) so
+        // shallow contacts converge correctly too.
+        if (newDist - faceDist < 1e-6) break;
+
+        this._expandAt(this._newW, this._newA, this._newB, centroid);
+    }
+
+    // Re-query the live polytope's actual closest alive face - the only way to get the current
+    // answer, whether the loop converged or hit the cap.
+    return this._resultFromFace(this._closestAliveFace());
+};
+
+// Linear scan for the living face with the smallest distance-to-origin - the polytope stays small
+// (tens of faces) for this engine's shape pairs.
+proto._closestAliveFace = function () {
+    let best = -1, bestDist = Infinity;
+    for (let i = 0; i < this._faceCount; i++) {
+        if (!this._faceAlive[i]) continue;
+        if (this._faceDist[i] < bestDist) { bestDist = this._faceDist[i]; best = i; }
+    }
+    return best;
+};
+
+// Adds `newPoint` and re-triangulates: every alive face visible from it is removed, and the
+// resulting hole's horizon is re-closed with new faces to the new point.
+proto._expandAt = function (newW, newA, newB, centroid) {
+    const newIdx = this._pushVertex(newW, newA, newB);
+
+    // Horizon: edges shared by exactly one visible face and one non-visible face. A shared
+    // internal edge between two visible faces is seen twice and cancels out.
+    const horizonA = [], horizonB = [];
+    function edgeKey(a, b) { return a < b ? a + ',' + b : b + ',' + a; }
+    const edgeSeen = new Map();
+
+    for (let i = 0; i < this._faceCount; i++) {
+        if (!this._faceAlive[i]) continue;
+        const a = this._faceA[i], b = this._faceB[i], c = this._faceC[i];
+        const nx = this._faceNx[i], ny = this._faceNy[i], nz = this._faceNz[i];
+        const visible = (newW.x - this._wx[a]) * nx + (newW.y - this._wy[a]) * ny + (newW.z - this._wz[a]) * nz > 1e-10;
+        if (!visible) continue;
+
+        this._faceAlive[i] = 0;
+        const edges = [[a, b], [b, c], [c, a]];
+        for (let e = 0; e < 3; e++) {
+            const from = edges[e][0], to = edges[e][1];
+            const key = edgeKey(from, to);
+            if (edgeSeen.has(key)) edgeSeen.delete(key);
+            else edgeSeen.set(key, { from: from, to: to });
+        }
+    }
+
+    edgeSeen.forEach(function (e) { horizonA.push(e.from); horizonB.push(e.to); });
+
+    for (let i = 0; i < horizonA.length; i++) {
+        this._addFace(horizonA[i], horizonB[i], newIdx, centroid);
+    }
+};
+
+// Recovers { distance, normal, pointA, pointB } from a face - barycentric weights of the face's
+// own closest point to the origin, applied to its three world witness points.
+proto._resultFromFace = function (face) {
+    const ia = this._faceA[face], ib = this._faceB[face], ic = this._faceC[face];
+    const nx = this._faceNx[face], ny = this._faceNy[face], nz = this._faceNz[face];
+    const dist = this._faceDist[face];
+
+    // The plane is {x : x.n_hat = dist}, so dist*n_hat is the closest point on it to the origin.
+    const ax = this._wx[ia], ay = this._wy[ia], az = this._wz[ia];
+    const closestX = nx * dist, closestY = ny * dist, closestZ = nz * dist;
+
+    const bx = this._wx[ib], by = this._wy[ib], bz = this._wz[ib];
+    const cx = this._wx[ic], cy = this._wy[ic], cz = this._wz[ic];
+    const v0x = bx - ax, v0y = by - ay, v0z = bz - az;
+    const v1x = cx - ax, v1y = cy - ay, v1z = cz - az;
+    const v2x = closestX - ax, v2y = closestY - ay, v2z = closestZ - az;
+    const d00 = v0x * v0x + v0y * v0y + v0z * v0z;
+    const d01 = v0x * v1x + v0y * v1y + v0z * v1z;
+    const d11 = v1x * v1x + v1y * v1y + v1z * v1z;
+    const d20 = v2x * v0x + v2y * v0y + v2z * v0z;
+    const d21 = v2x * v1x + v2y * v1y + v2z * v1z;
+    const denom = d00 * d11 - d01 * d01;
+    let u, v, w;
+    if (Math.abs(denom) < 1e-20) {
+        u = 1 / 3; v = 1 / 3; w = 1 / 3;
+    } else {
+        v = (d11 * d20 - d01 * d21) / denom;
+        w = (d00 * d21 - d01 * d20) / denom;
+        u = 1 - v - w;
+    }
+
+    const pointA = new Vector3(
+        u * this._ax[ia] + v * this._ax[ib] + w * this._ax[ic],
+        u * this._ay[ia] + v * this._ay[ib] + w * this._ay[ic],
+        u * this._az[ia] + v * this._az[ib] + w * this._az[ic]
+    );
+    const pointB = new Vector3(
+        u * this._bx[ia] + v * this._bx[ib] + w * this._bx[ic],
+        u * this._by[ia] + v * this._by[ib] + w * this._by[ic],
+        u * this._bz[ia] + v * this._bz[ib] + w * this._bz[ic]
+    );
+
+    // The face's own outward normal points A-side to B-side of the Minkowski difference A-B;
+    // negated here to match GJK's convention (B to A).
+    return {
+        distance: Math.max(0, dist),
+        normal: new Vector3(-nx, -ny, -nz),
+        pointA: pointA,
+        pointB: pointB
+    };
+};
+
+
+// ==== src/collision/ContactDetails.js ====
+// One contact point between a primitive shape pair. signedDistance: negative = separated,
+// positive = overlapping. normal points B to A. pointOnA/pointOnB are witness points on each
+// shape's surface; `point` is their midpoint.
 class ContactDetails {
     constructor() {
         this.point = new Vector3();
@@ -5116,39 +5217,23 @@ class ContactDetails {
         this.pointOnB = new Vector3();
         this.normal = new Vector3();
         this.signedDistance = 0;
-        // Set by the manifold once matched against a previous tick's point (warm-start data -
-        // see plan.md's component list: "ContactManifold (4-point cap, dedup, warm-start data)").
-        // ContactDetails itself never reads or writes this; it exists here purely as a place to
-        // carry the value across the manifold's point-matching step without a second parallel
-        // array. Owned entirely by the solver once it exists (Rule 2: one owner per concern).
+        // Warm-start data, set by the manifold on match.
         this.normalLambda = 0;
         this.tangentLambda1 = 0;
         this.tangentLambda2 = 0;
 
-        // Body-LOCAL anchor offsets for pointOnA/pointOnB, set once by the manifold when this
-        // point is created (ContactManifold._addPoint / update()'s new-point path) - NOT
-        // recomputed by copy()/setFromGJKSeparated/setFromEPA, which only carry the world-space
-        // geometry a fresh narrowphase result reports. The solver reads these every SUBSTEP to
-        // recompute the contact's CURRENT gap from the bodies' current positions (see Solver.js's
-        // class header and _solvePoint) - using the world-space pointOnA/pointOnB directly would
-        // read a value frozen at the tick's single narrowphase pass, stale by the time later
-        // substeps have already moved the bodies. This is the mechanism, not signedDistance, that
-        // the solver actually corrects against.
+        // Body-local anchors, set once at point creation, re-read every substep to recompute the
+        // live gap (see Solver's PositionSolve.js) - not recomputed on refresh/copy.
         this.localAnchorA = new Vector3();
         this.localAnchorB = new Vector3();
 
-        // Contact-relative normal velocity captured just before this substep's position solve (which
-        // is about to zero it), so the velocity pass can apply restitution: bounce restores a
-        // fraction of the speed the body was APPROACHING at, which is gone by the time the solve
-        // finishes. Written each substep by the solver; not warm-start state.
+        // Contact-relative normal velocity just before this substep's position solve, for
+        // restitution. Written each substep by the solver.
         this._preSolveNormalVel = 0;
     }
 
-    // Derives localAnchorA/localAnchorB from the CURRENT pointOnA/pointOnB and the given bodies'
-    // CURRENT transforms. Called once, at the moment this point is created in a manifold (never
-    // on a re-matched/refreshed point, which keeps its ORIGINAL anchors - that persistence across
-    // ticks is what lets the solver see a growing gap as a body drifts, rather than the anchor
-    // re-snapping to zero gap every tick).
+    // Derives local anchors from current pointOnA/pointOnB + body transforms. Called once, at
+    // point creation - never on a re-matched point (which keeps its original anchors).
     setLocalAnchors(bodyA, bodyB) {
         const invRotA = ContactDetails._scratchQuat.copy(bodyA.rotation).invert();
         Vector3.subInto(this.localAnchorA, this.pointOnA, bodyA.position);
@@ -5160,8 +5245,6 @@ class ContactDetails {
         return this;
     }
 
-    // Current world position of localAnchorA/B, written into out. Used by the solver every
-    // substep to find each anchor's LIVE position without re-running narrowphase.
     currentAnchorAInto(out, bodyA) {
         out.copy(this.localAnchorA);
         bodyA.rotation.transformVectorInPlace(out);
@@ -5176,8 +5259,7 @@ class ContactDetails {
         return out;
     }
 
-    // Fills this from a GJK separated result (`{distance, normal, pointA, pointB}`, distance is a
-    // non-negative GAP). signedDistance becomes negative - separated, per plan.md's convention.
+    // GJK separated result (distance = non-negative gap) -> negative signedDistance.
     setFromGJKSeparated(gjkResult) {
         this.pointOnA.copy(gjkResult.pointA);
         this.pointOnB.copy(gjkResult.pointB);
@@ -5187,8 +5269,7 @@ class ContactDetails {
         return this;
     }
 
-    // Fills this from an EPA result (`{distance, normal, pointA, pointB}`, distance is a
-    // non-negative penetration DEPTH). signedDistance becomes positive - overlapping.
+    // EPA result (distance = non-negative depth) -> positive signedDistance.
     setFromEPA(epaResult) {
         this.pointOnA.copy(epaResult.pointA);
         this.pointOnB.copy(epaResult.pointB);
@@ -5222,238 +5303,241 @@ ActionPhysics.ContactDetails = ContactDetails;
 
 // ==== src/collision/ContactManifold.js ====
 /**
- * ContactManifold: the persistent contact state for one pair of primitive shapes, across ticks.
+ * ContactManifold: persistent contact state for one pair of primitive shapes, across ticks.
  *
- * Owns point lifetime ENTIRELY (plan.md, component 5 and Rule 1/2). Narrowphase (via update())
- * only ever ADDS or REFRESHES points from this tick's GJK/EPA result; only the manifold itself
- * REMOVES a point, and only between ticks (never mid-substep - see the bug reference below).
- * Everywhere else assumes a manifold's point set is stable for the duration of a tick.
+ * Owns point lifetime entirely. Narrowphase (via update(), called once per TICK, never per
+ * substep) only ever adds or refreshes points from that tick's GJK/EPA result; only the manifold
+ * itself removes a point, and only from update() - never mid-substep, which previously retired
+ * points still mid-correction (not actually separated), emptying manifolds and dropping bodies.
  *
- * BUG FIX CARRIED FROM THE PREDECESSOR (plan.md, Bug reference / Contact management):
- * "Refreshing manifolds mid-tick emptied them." Re-running a staleness cull once per SUBSTEP
- * retired points that were merely mid-correction - not actually separated, just still being
- * resolved by the solver's own position projection within the same tick. 38 of 1210 manifolds
- * emptied, dropping bodies onto their neighbours. The fix here is structural: update() (called
- * once per TICK by narrowphase, never per substep) is the only place points are added or pruned.
- * The solver, wherever it substeps within a tick, reads and writes lambda/geometry on the SAME
- * point objects without ever adding, removing, or re-matching them mid-tick.
+ * PERSISTENCE / WARM-START: up to MAX_POINTS points. Each update() matches this tick's result
+ * against existing points by proximity in bodyA-local space (a contact feature's position relative
+ * to A's own frame stays close between ticks even as A moves). A match refreshes geometry on the
+ * EXISTING point object, preserving its accumulated lambda for the solver's warm start.
  *
- * PERSISTENCE / WARM-START: a manifold holds up to 4 points (MAX_POINTS). Each update() call
- * matches this tick's narrowphase result against the existing points (by proximity in LOCAL space
- * relative to body A - world position drifts as A moves, but a contact feature's position
- * relative to A's own frame stays close between ticks unless the contact point itself is sliding).
- * A match copies the new geometry (point/normal/signedDistance) onto the EXISTING point object,
- * preserving its accumulated lambda for the solver's warm start; no match adds a new point (via
- * the 4-point reduction below if already full).
+ * See Update.js (the per-tick match/add/remove) and Reduction.js (4-point cap reduction).
  */
 class ContactManifold {
-    static MAX_POINTS = 4;
-    // A matched point's local-space (body-A-relative) position must stay within this distance of
-    // where it was last tick to count as "the same contact" rather than a new one. Chosen as a
-    // fraction of a typical contact's own scale rather than an absolute constant - see update()'s
-    // matching call for how this get scaled by the manifold's own point spread.
-    static MATCH_DISTANCE = 0.05;
-    // Signed-distance half-width of the exact-touch band where GJK/EPA's normal is treated as
-    // ambiguous and a warm-matched point keeps its established normal instead (see update()). Sized
-    // a little above the numerical noise of a flush contact, well below any real overlap depth the
-    // solver needs to resolve - inside this band the shapes are touching to within a fraction of a
-    // millimetre and the normal genuinely cannot be recovered reliably from a single query.
-    static EXACT_TOUCH_BAND = 0.001;
-
     constructor(bodyA, bodyB) {
         this.bodyA = bodyA;
         this.bodyB = bodyB;
         this.points = []; // ContactDetails[], length 0..MAX_POINTS
-        // Local-space (relative to bodyA's CURRENT transform at match time) anchor for each point,
-        // parallel to `points` - used only for next-tick matching, recomputed every update().
+        // Local-space (bodyA-relative, at match time) anchor per point, parallel to `points` -
+        // used only for next-tick matching, recomputed every update().
         this._localAnchors = [];
     }
 
     get pointCount() { return this.points.length; }
-
-    // Called once per TICK (never per substep - see the class header). `newContacts` is this
-    // tick's narrowphase result for this body pair: an array of ContactDetails, typically length 1
-    // (one primitive pair -> one GJK/EPA contact) but the manifold accepts any count so a caller
-    // batching multiple sub-contacts (e.g. a multi-triangle mesh region) works the same way.
-    //
-    // Points not re-confirmed this tick (no incoming contact matched them, or the match exceeded
-    // MATCH_DISTANCE, or signedDistance separated past REMOVE_DISTANCE) are removed HERE - this is
-    // the manifold's one removal path, and it only ever runs from this method.
-    update(newContacts) {
-        const matched = new Array(newContacts.length).fill(false);
-
-        // Match each existing point against the best (closest, in bodyA-local space) unmatched
-        // incoming contact. A match refreshes the existing point's geometry in place, keeping its
-        // accumulated lambda - this IS the warm start.
-        for (let i = this.points.length - 1; i >= 0; i--) {
-            const existing = this.points[i];
-            const existingLocal = this._localAnchors[i];
-            let bestJ = -1, bestDistSq = ContactManifold.MATCH_DISTANCE * ContactManifold.MATCH_DISTANCE;
-            for (let j = 0; j < newContacts.length; j++) {
-                if (matched[j]) continue;
-                const localCandidate = ContactManifold._toLocal(this.bodyA, newContacts[j].pointOnA);
-                const dx = localCandidate.x - existingLocal.x, dy = localCandidate.y - existingLocal.y, dz = localCandidate.z - existingLocal.z;
-                const distSq = dx * dx + dy * dy + dz * dz;
-                if (distSq < bestDistSq) { bestDistSq = distSq; bestJ = j; }
-            }
-            if (bestJ === -1) {
-                // Not re-confirmed this tick: remove. This is the ONLY place a point is removed -
-                // never mid-substep, never from a separate staleness sweep (plan.md, Bug
-                // reference). A point that genuinely separated simply stops being reported by
-                // narrowphase and is pruned here, on the very next tick's update() call.
-                this.points.splice(i, 1);
-                this._localAnchors.splice(i, 1);
-                continue;
-            }
-            matched[bestJ] = true;
-            // Save the accumulated lambda BEFORE copy() overwrites it - copy() pulls every field
-            // from newContacts[bestJ], whose lambda fields are always zero (a fresh ContactDetails
-            // narrowphase just produced this tick, with no solver history of its own). Losing this
-            // ordering was an early, self-inflicted version of this bug: `existing` and
-            // `this.points[i]` are the SAME object, so reading "the prior value" AFTER copy() just
-            // reads back the zero that was already written - this is why the values are captured
-            // into locals first.
-            const keepNormalLambda = existing.normalLambda;
-            const keepTangentLambda1 = existing.tangentLambda1;
-            const keepTangentLambda2 = existing.tangentLambda2;
-            // Preserve the ESTABLISHED contact normal across an exact-touch refresh. At a signed
-            // distance within EXACT_TOUCH_BAND of zero (shapes touching flush, neither clearly
-            // separated nor clearly overlapping), GJK/EPA's normal is genuinely ambiguous - the
-            // origin sits ON the Minkowski-difference boundary, so the recovered direction can flip
-            // to a diagonal face normal (a box resting flush reports (0.707,0,0.707) instead of the
-            // true (0,1,0) for one tick). A persistent contact's normal does NOT actually change
-            // tick to tick, so trusting a single ambiguous tick's normal over the one this point
-            // has carried while it was unambiguously resolving is the wrong call: it makes the
-            // constraint briefly point sideways, the body sinks through, and the next (recovered)
-            // tick ejects it back out - a permanent penetrate-then-launch limit cycle. This is the
-            // manifold owning contact identity across ticks (its documented job), not a solver-side
-            // governor. Outside the band (a real gap or a real overlap), the fresh normal is
-            // trustworthy and is taken as-is.
-            const keepNormal = Math.abs(newContacts[bestJ].signedDistance) < ContactManifold.EXACT_TOUCH_BAND
-                ? ContactManifold._scratchNormal.copy(existing.normal)
-                : null;
-            existing.copy(newContacts[bestJ]); // geometry refreshed
-            existing.normalLambda = keepNormalLambda; // warm start restored
-            existing.tangentLambda1 = keepTangentLambda1;
-            existing.tangentLambda2 = keepTangentLambda2;
-            if (keepNormal) existing.normal.copy(keepNormal); // established normal kept through the ambiguous band
-            this._localAnchors[i] = ContactManifold._toLocal(this.bodyA, existing.pointOnA);
-        }
-
-        // Any incoming contact not matched to an existing point is genuinely new.
-        for (let j = 0; j < newContacts.length; j++) {
-            if (matched[j]) continue;
-            this._addPoint(newContacts[j]);
-        }
-    }
-
-    _addPoint(contact) {
-        const point = contact.clone();
-        point.normalLambda = 0; point.tangentLambda1 = 0; point.tangentLambda2 = 0; // fresh point: no warm-start data yet
-        // Local anchors are set ONCE here, at creation - see ContactDetails.setLocalAnchors and
-        // Solver.js's class header for why the solver needs these (recomputing the contact's
-        // CURRENT gap every substep) rather than reusing the single signedDistance this tick's
-        // narrowphase pass measured before any substep moved the bodies.
-        point.setLocalAnchors(this.bodyA, this.bodyB);
-        const local = ContactManifold._toLocal(this.bodyA, point.pointOnA);
-
-        if (this.points.length < ContactManifold.MAX_POINTS) {
-            this.points.push(point);
-            this._localAnchors.push(local);
-            return;
-        }
-
-        // Already at the cap: reduce. Standard 4-point manifold reduction (Bullet, Box2D use the
-        // same idea) - always KEEP the deepest point (it matters most for the solver), and among
-        // the remaining candidates (the new point plus the 3 non-deepest existing ones) keep
-        // whichever 3 form the LARGEST-AREA quadrilateral with the deepest point. Maximizing area
-        // keeps the manifold spread out (good torque resistance - a box resting on a corner-only
-        // manifold rocks; a box resting on 4 spread corners doesn't), rather than collapsing onto
-        // whichever points happen to be deepest overall.
-        this._reduceToFour(point, local);
-    }
-
-    _reduceToFour(candidatePoint, candidateLocal) {
-        // Find the deepest point among the 4 existing + the candidate (deepest = largest
-        // signedDistance, i.e. most overlapping - the point the solver most needs to resolve).
-        let deepestIdx = -1, deepestVal = candidatePoint.signedDistance;
-        for (let i = 0; i < this.points.length; i++) {
-            if (this.points[i].signedDistance > deepestVal) { deepestVal = this.points[i].signedDistance; deepestIdx = i; }
-        }
-        const deepestIsCandidate = deepestIdx === -1;
-        const deepestPoint = deepestIsCandidate ? candidatePoint : this.points[deepestIdx];
-
-        // Candidate set: every point EXCEPT the deepest (which is locked in), evaluated by which
-        // combination of 3 maximizes the quadrilateral area with the deepest point as the 4th
-        // corner. With exactly 4 existing + 1 candidate - 1 deepest = 4 remaining candidates for 3
-        // slots, there are exactly 4 possible triples (each omitting one candidate) - enumerate
-        // all 4 directly rather than a general combinatorial search.
-        const pool = [];
-        for (let i = 0; i < this.points.length; i++) if (i !== deepestIdx) pool.push({ point: this.points[i], local: this._localAnchors[i] });
-        if (!deepestIsCandidate) pool.push({ point: candidatePoint, local: candidateLocal });
-        // pool now has exactly 4 entries (3 existing non-deepest + the candidate, when the
-        // candidate isn't itself deepest) - or 4 existing non-deepest entries (when the candidate
-        // IS deepest, so all 4 existing points are "remaining" and the candidate is locked in).
-
-        let bestOmit = 0, bestArea = -1;
-        for (let omit = 0; omit < pool.length; omit++) {
-            const tri = [];
-            for (let i = 0; i < pool.length; i++) if (i !== omit) tri.push(pool[i]);
-            const area = ContactManifold._quadArea(deepestPoint.point, tri[0].point.point, tri[1].point.point, tri[2].point.point);
-            if (area > bestArea) { bestArea = area; bestOmit = omit; }
-        }
-
-        const kept = [];
-        for (let i = 0; i < pool.length; i++) if (i !== bestOmit) kept.push(pool[i]);
-
-        this.points = deepestIsCandidate ? [candidatePoint] : [deepestPoint];
-        this._localAnchors = deepestIsCandidate ? [candidateLocal] : [this._localAnchors[deepestIdx]];
-        for (let i = 0; i < kept.length; i++) { this.points.push(kept[i].point); this._localAnchors.push(kept[i].local); }
-    }
-
-    // Rough quadrilateral area for the 4 candidate corners (order doesn't need to be a proper
-    // convex hull walk here - the sum of the two diagonal-split triangle areas is a fine proxy for
-    // "how spread out is this point set", which is all the reduction heuristic needs).
-    static _quadArea(a, b, c, d) {
-        return ContactManifold._triArea(a, b, c) + ContactManifold._triArea(a, c, d);
-    }
-
-    static _triArea(a, b, c) {
-        const abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z;
-        const acx = c.x - a.x, acy = c.y - a.y, acz = c.z - a.z;
-        const cx = aby * acz - abz * acy, cy = abz * acx - abx * acz, cz = abx * acy - aby * acx;
-        return 0.5 * Math.sqrt(cx * cx + cy * cy + cz * cz);
-    }
-
-    // World point -> bodyA-local space, for next-tick matching. Allocation kept minimal (one
-    // Vector3 per call) - matching runs once per tick per manifold, not in a hot per-substep loop.
-    static _toLocal(bodyA, worldPoint) {
-        const rel = Vector3.subInto(new Vector3(), worldPoint, bodyA.position);
-        const invRot = new Quaternion().copy(bodyA.rotation).invert();
-        invRot.transformVectorInPlace(rel);
-        return rel;
-    }
 }
 
+ContactManifold.MAX_POINTS = 4;
+// Base match distance (floor for a resting/slow contact) - see Update.js's _matchDistance, which
+// widens this by the contact point's own tangential travel per tick, the same shape
+// SpeculativeMargin.js already uses for the broadphase/narrowphase gap.
+ContactManifold.MATCH_DISTANCE = 0.05;
+// Signed-distance half-width of the exact-touch band where GJK/EPA's normal is ambiguous and a
+// warm-matched point keeps its established normal instead (see Update.js).
+ContactManifold.EXACT_TOUCH_BAND = 0.001;
+
 ContactManifold._scratchNormal = new Vector3();
+ContactManifold._scratchRA = new Vector3();
+ContactManifold._scratchRB = new Vector3();
+ContactManifold._scratchInvRot = new Quaternion();
+// Transient-comparison scratch for _toLocal - see Update.js's matching loop.
+ContactManifold._scratchLocal = new Vector3();
 
 ActionPhysics.ContactManifold = ContactManifold;
 
 
+// ==== src/collision/Update.js ====
+// Per-tick manifold update: match existing points against this tick's narrowphase result, warm-
+// start matched points, add genuinely new ones, remove unconfirmed ones. Fires contact lifecycle
+// events (speculativeContact, contact, endContact, endAllContact) on both bodies as state changes.
+var proto = ContactManifold.prototype;
+
+proto.update = function (newContacts, dt) {
+    const hadPointsBefore = this.points.length > 0;
+    const matched = new Array(newContacts.length).fill(false);
+
+    // Match each existing point against the best (closest, in bodyA-local space) unmatched
+    // incoming contact.
+    for (let i = this.points.length - 1; i >= 0; i--) {
+        const existing = this.points[i];
+        const existingLocal = this._localAnchors[i];
+        const matchDist = this._matchDistance(existing, dt);
+        let bestJ = -1, bestDistSq = matchDist * matchDist;
+        for (let j = 0; j < newContacts.length; j++) {
+            if (matched[j]) continue;
+            const localCandidate = ContactManifold._toLocal(this.bodyA, newContacts[j].pointOnA, ContactManifold._scratchLocal);
+            const dx = localCandidate.x - existingLocal.x, dy = localCandidate.y - existingLocal.y, dz = localCandidate.z - existingLocal.z;
+            const distSq = dx * dx + dy * dy + dz * dz;
+            if (distSq < bestDistSq) { bestDistSq = distSq; bestJ = j; }
+        }
+        if (bestJ === -1) {
+            // Not re-confirmed this tick: remove. The only removal path - never mid-substep.
+            this.points.splice(i, 1);
+            this._localAnchors.splice(i, 1);
+            this._emitBoth('endContact', existing);
+            continue;
+        }
+        matched[bestJ] = true;
+        // Capture lambda BEFORE copy() overwrites it - copy() pulls every field from
+        // newContacts[bestJ], whose lambda is always zero (a fresh ContactDetails has no solver
+        // history). `existing` and `this.points[i]` are the same object, so reading "prior value"
+        // after copy() would just read back the zero just written.
+        const keepNormalLambda = existing.normalLambda;
+        const keepTangentLambda1 = existing.tangentLambda1;
+        const keepTangentLambda2 = existing.tangentLambda2;
+        // Preserve the established normal through an exact-touch refresh: within EXACT_TOUCH_BAND
+        // of zero signed distance, GJK/EPA's recovered normal is genuinely ambiguous (can flip to a
+        // diagonal face normal for one tick), and a persistent contact's true normal doesn't
+        // actually change tick to tick - trusting the ambiguous tick over the established one causes
+        // a penetrate-then-launch limit cycle. Outside the band the fresh normal is trustworthy.
+        const keepNormal = Math.abs(newContacts[bestJ].signedDistance) < ContactManifold.EXACT_TOUCH_BAND
+            ? ContactManifold._scratchNormal.copy(existing.normal)
+            : null;
+        const wasOverlapping = existing.signedDistance >= 0;
+        existing.copy(newContacts[bestJ]);
+        existing.normalLambda = keepNormalLambda;
+        existing.tangentLambda1 = keepTangentLambda1;
+        existing.tangentLambda2 = keepTangentLambda2;
+        if (keepNormal) existing.normal.copy(keepNormal);
+        ContactManifold._toLocal(this.bodyA, existing.pointOnA, existingLocal);
+        if (!wasOverlapping && existing.signedDistance >= 0) this._emitBoth('contact', existing);
+    }
+
+    // Any incoming contact not matched to an existing point is genuinely new.
+    for (let j = 0; j < newContacts.length; j++) {
+        if (matched[j]) continue;
+        if (newContacts[j].signedDistance < 0) {
+            if (!this._speculativeAllowed(newContacts[j])) continue; // vetoed by a listener
+            this._addPoint(newContacts[j]);
+            this._emitBoth('speculativeContact', newContacts[j]);
+        } else {
+            this._addPoint(newContacts[j]);
+            this._emitBoth('contact', newContacts[j]);
+        }
+    }
+
+    if (hadPointsBefore && this.points.length === 0) this._emitBoth('endAllContact', null);
+};
+
+// Match tolerance for one existing point: the base floor (MATCH_DISTANCE, for a resting/slow
+// contact) widened by how far the contact point itself travels across each body's surface this
+// tick - the tangential relative velocity at the contact, times dt. Without this, a fast-sliding
+// or fast-rolling contact's point genuinely moves several tenths of a metre per tick in bodyA-
+// local space, blows past a fixed-radius match, and the manifold is destroyed and rebuilt from
+// scratch every tick - warm-start (accumulated lambda) never survives a single tick for exactly
+// the contacts that need it most. Same shape as SpeculativeMargin.js's own base+dynamic split.
+proto._matchDistance = function (point, dt) {
+    if (!dt) return ContactManifold.MATCH_DISTANCE;
+    const bodyA = this.bodyA, bodyB = this.bodyB;
+    point.currentAnchorAInto(ContactManifold._scratchRA, bodyA);
+    point.currentAnchorBInto(ContactManifold._scratchRB, bodyB);
+    const rax = ContactManifold._scratchRA.x - bodyA.position.x, ray = ContactManifold._scratchRA.y - bodyA.position.y, raz = ContactManifold._scratchRA.z - bodyA.position.z;
+    const rbx = ContactManifold._scratchRB.x - bodyB.position.x, rby = ContactManifold._scratchRB.y - bodyB.position.y, rbz = ContactManifold._scratchRB.z - bodyB.position.z;
+    const wa = bodyA.angular_velocity, va = bodyA.linear_velocity;
+    const wb = bodyB.angular_velocity, vb = bodyB.linear_velocity;
+    const vax = va.x + (wa.y * raz - wa.z * ray), vay = va.y + (wa.z * rax - wa.x * raz), vaz = va.z + (wa.x * ray - wa.y * rax);
+    const vbx = vb.x + (wb.y * rbz - wb.z * rby), vby = vb.y + (wb.z * rbx - wb.x * rbz), vbz = vb.z + (wb.x * rby - wb.y * rbx);
+    const relx = vbx - vax, rely = vby - vay, relz = vbz - vaz;
+    const n = point.normal;
+    const vdotn = relx * n.x + rely * n.y + relz * n.z;
+    const tx = relx - vdotn * n.x, ty = rely - vdotn * n.y, tz = relz - vdotn * n.z;
+    const tangentialSpeed = Math.sqrt(tx * tx + ty * ty + tz * tz);
+    return ContactManifold.MATCH_DISTANCE + tangentialSpeed * dt;
+};
+
+// A speculativeContact listener on either body may veto the point before it's added.
+proto._speculativeAllowed = function (contact) {
+    return this.bodyA._speculativeVeto(contact, this.bodyB) !== false &&
+        this.bodyB._speculativeVeto(contact, this.bodyA) !== false;
+};
+
+proto._emitBoth = function (event, contact) {
+    this.bodyA.emit(event, { contact: contact, other: this.bodyB });
+    this.bodyB.emit(event, { contact: contact, other: this.bodyA });
+};
+
+// World point -> bodyA-local space, for next-tick matching. Writes into `out` (caller-owned - pass
+// a scratch Vector3 for a transient comparison, or a fresh one to store long-term, e.g. into
+// this._localAnchors).
+ContactManifold._toLocal = function (bodyA, worldPoint, out) {
+    Vector3.subInto(out, worldPoint, bodyA.position);
+    ContactManifold._scratchInvRot.copy(bodyA.rotation).invert();
+    ContactManifold._scratchInvRot.transformVectorInPlace(out);
+    return out;
+};
+
+
+// ==== src/collision/Reduction.js ====
+// Adding a point, and the 4-point manifold cap reduction: always keep the deepest point, and among
+// the rest keep whichever 3 form the largest-area quadrilateral with it - maximizing spread gives
+// better torque resistance (a corner-only manifold rocks; 4 spread corners don't).
+var proto = ContactManifold.prototype;
+
+proto._addPoint = function (contact) {
+    const point = contact.clone();
+    point.normalLambda = 0; point.tangentLambda1 = 0; point.tangentLambda2 = 0; // fresh: no warm-start data
+    point.setLocalAnchors(this.bodyA, this.bodyB);
+    const local = ContactManifold._toLocal(this.bodyA, point.pointOnA, new Vector3());
+
+    if (this.points.length < ContactManifold.MAX_POINTS) {
+        this.points.push(point);
+        this._localAnchors.push(local);
+        return;
+    }
+    this._reduceToFour(point, local);
+};
+
+proto._reduceToFour = function (candidatePoint, candidateLocal) {
+    // Deepest = largest signedDistance (most overlapping), the point the solver most needs.
+    let deepestIdx = -1, deepestVal = candidatePoint.signedDistance;
+    for (let i = 0; i < this.points.length; i++) {
+        if (this.points[i].signedDistance > deepestVal) { deepestVal = this.points[i].signedDistance; deepestIdx = i; }
+    }
+    const deepestIsCandidate = deepestIdx === -1;
+    const deepestPoint = deepestIsCandidate ? candidatePoint : this.points[deepestIdx];
+
+    // Remaining candidates for the 3 non-deepest slots: exactly 4 of them (4 existing + candidate,
+    // minus the deepest), so there are exactly 4 possible triples - enumerate directly.
+    const pool = [];
+    for (let i = 0; i < this.points.length; i++) if (i !== deepestIdx) pool.push({ point: this.points[i], local: this._localAnchors[i] });
+    if (!deepestIsCandidate) pool.push({ point: candidatePoint, local: candidateLocal });
+
+    let bestOmit = 0, bestArea = -1;
+    for (let omit = 0; omit < pool.length; omit++) {
+        const tri = [];
+        for (let i = 0; i < pool.length; i++) if (i !== omit) tri.push(pool[i]);
+        const area = ContactManifold._quadArea(deepestPoint.point, tri[0].point.point, tri[1].point.point, tri[2].point.point);
+        if (area > bestArea) { bestArea = area; bestOmit = omit; }
+    }
+
+    const kept = [];
+    for (let i = 0; i < pool.length; i++) if (i !== bestOmit) kept.push(pool[i]);
+
+    this.points = deepestIsCandidate ? [candidatePoint] : [deepestPoint];
+    this._localAnchors = deepestIsCandidate ? [candidateLocal] : [this._localAnchors[deepestIdx]];
+    for (let i = 0; i < kept.length; i++) { this.points.push(kept[i].point); this._localAnchors.push(kept[i].local); }
+};
+
+// Rough quad area via the two diagonal-split triangles - a fine proxy for "how spread out", not a
+// proper convex-hull-ordered area.
+ContactManifold._quadArea = function (a, b, c, d) {
+    return ContactManifold._triArea(a, b, c) + ContactManifold._triArea(a, c, d);
+};
+
+ContactManifold._triArea = function (a, b, c) {
+    const abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z;
+    const acx = c.x - a.x, acy = c.y - a.y, acz = c.z - a.z;
+    const cx = aby * acz - abz * acy, cy = abz * acx - abx * acz, cz = abx * acy - aby * acx;
+    return 0.5 * Math.sqrt(cx * cx + cy * cy + cz * cz);
+};
+
+
 // ==== src/collision/ContactManifoldList.js ====
-/**
- * ContactManifoldList: the full set of active ContactManifolds, keyed by body pair.
- *
- * One manifold per (bodyA, bodyB) pair — a pair with multiple candidate primitive contacts
- * (e.g. a compound body touching another shape at two of its children) accumulates all of THAT
- * tick's contacts into the SAME manifold via update(), since the manifold's own 4-point cap and
- * matching already do the right thing with several new points at once.
- *
- * Same ownership discipline as ContactManifold itself: refresh() is called once per TICK by
- * narrowphase, never per substep. A manifold that ends the tick with zero points (nothing matched,
- * nothing new) is removed from the list here — this is the ONE place a manifold itself is retired,
- * mirroring ContactManifold's own "only update() removes a point" rule one level up.
- */
+// Active ContactManifolds, keyed by canonical body-pair id. One manifold per pair; refresh() runs
+// once per tick, prunes any manifold left with zero points.
 class ContactManifoldList {
     constructor() {
         this._manifolds = new Map(); // "idA:idB" (idA < idB) -> ContactManifold
@@ -5463,10 +5547,8 @@ class ContactManifoldList {
         return bodyA.id < bodyB.id ? bodyA.id + ':' + bodyB.id : bodyB.id + ':' + bodyA.id;
     }
 
-    // Returns the existing manifold for (bodyA, bodyB), creating one if this is a new pair. The
-    // returned manifold's bodyA/bodyB are stored in a CANONICAL order (lower id first) so a
-    // pair's local-space matching anchor (ContactManifold._toLocal uses bodyA) stays consistent
-    // regardless of which order a caller happens to pass the two bodies in from tick to tick.
+    // Canonical body order (lower id = bodyA) so local-space matching stays consistent regardless
+    // of caller argument order.
     getOrCreate(bodyA, bodyB) {
         const key = ContactManifoldList._key(bodyA, bodyB);
         let m = this._manifolds.get(key);
@@ -5479,26 +5561,17 @@ class ContactManifoldList {
         return m;
     }
 
-    // Applies this tick's contacts (grouped by body pair) to their manifolds, then drops any
-    // manifold left with zero points. `contactsByPair` is a Map from "idA:idB" key (matching
-    // _key's own canonical ordering) to an array of ContactDetails for that pair this tick. A pair
-    // with a manifold but no entry in `contactsByPair` this tick (nothing detected at all) is
-    // treated the same as an entry with an empty array - both result in every existing point
-    // failing to match and the manifold being pruned.
-    refresh(contactsByPair) {
+    // contactsByPair: key -> ContactDetails[] for this tick. A pair with no entry is treated as empty.
+    // dt: this tick's timestep, used to size the match-distance tolerance (see Update.js).
+    refresh(contactsByPair, dt) {
         for (const [key, manifold] of this._manifolds) {
             const contacts = contactsByPair.get(key) || [];
-            manifold.update(contacts);
+            manifold.update(contacts, dt);
             if (manifold.pointCount === 0) this._manifolds.delete(key);
         }
-        // New pairs (a key present in contactsByPair but with no manifold yet) are created by the
-        // caller via getOrCreate() before calling refresh() - see Narrowphase's own dispatch loop,
-        // which must look up/create the manifold to know where to route each contact in the first
-        // place. refresh() only ever prunes and updates EXISTING manifolds; getOrCreate() is the
-        // sole entry point for new ones, keeping "one owner" for manifold creation too.
+        // New pairs are created via getOrCreate() by the caller before refresh() runs.
     }
 
-    // All manifolds with at least one point, for the solver to iterate.
     values() {
         return this._manifolds.values();
     }
@@ -5512,325 +5585,805 @@ ActionPhysics.ContactManifoldList = ContactManifoldList;
 // ==== src/phases/NarrowPhase.js ====
 /**
  * NarrowPhase: dispatch layer tying Midphase's primitive-shape pairs through GJK/EPA into
- * ContactDetails, and routing them into the right ContactManifold.
- *
- * Produces: contacts with accurate point, normal, signed distance (plan.md, Narrowphase contract).
- * May assume the pair is worth testing (a broadphase/midphase candidate). Must never cull contacts
- * for staleness, clamp depth, or second-guess its own math - that discipline lives entirely in
- * GJK/EPA/ContactDetails already; this file only wires them together and routes results into
- * manifolds. It owns exactly one thing of its own: one MinkowskiSupport/GJK/EPA instance PER
- * BODY-PAIR SLOT (reused across ticks for that slot, never shared across different pairs live at
- * the same time), and grouping this tick's contacts by canonical pair key before handing them to
- * ContactManifoldList.refresh().
+ * ContactDetails, routed into ContactManifoldList. See PairTest.js (per-pair GJK/EPA + tick
+ * dispatch), SpeculativeMargin.js (how far ahead a contact is reported), GeometryRefresh.js
+ * (per-substep contact geometry re-measure).
  */
 class NarrowPhase {
-    // Base speculative margin (metres): a contact is reported once its signed distance is within
-    // this of touching, even while still SEPARATED, so a manifold point exists BEFORE overlap
-    // occurs. This is the whole mechanism of speculative contacts (plan.md, "Continuous collision /
-    // speculative contacts" and the derived-velocity fix): the solver's non-penetration constraint,
-    // evaluated every substep against the body's PREDICTED position, needs a point already present
-    // to stop the body AT touch instead of first letting it dig in and then digging it back out
-    // (the deep-correction -> large derived velocity failure the base margin prevents). Per-pair,
-    // the base is widened by how far the pair can actually close in one tick (|v_rel| * dt) so a
-    // fast body's contact is still caught a full tick ahead - see step().
-    static SPECULATIVE_BASE = 0.02;
-
     constructor() {
         this.manifolds = new ContactManifoldList();
-        this._dt = 1 / 60; // set each tick by step(); the fallback only matters if step() is never called
-        // Scratch GJK/EPA instances, reused across every pair tested this tick. Safe because
-        // narrowphase runs pairs one at a time (never two GJK.run() calls interleaved) - see
-        // plan.md's scratch-memory rule: per-stage arena, not a global shared across unrelated
-        // algorithms. These belong to NarrowPhase alone.
+        this._dt = 1 / 60; // set each tick by step()
+        // Scratch GJK/EPA, reused across every pair tested this tick - safe since pairs run
+        // one at a time, never interleaved.
         this._gjk = new GJK();
         this._epa = new EPA();
-        this._contactPool = []; // reused ContactDetails objects, grown as needed, never shrunk
+        // Reused across every GJK/EPA-fallback pair this tick, rebound per pair via setSides() -
+        // see PairTest.js.
+        this._support = new MinkowskiSupport({ shape: null, position: new Vector3(), rotation: new Quaternion() }, { shape: null, position: new Vector3(), rotation: new Quaternion() });
+        this._contactPool = []; // reused ContactDetails, grown as needed, never shrunk
         this._poolIndex = 0;
+        this._pairResultScratch = []; // reused per-pair contact list, see PairTest.js
+    }
+}
+
+// Base speculative margin (metres) - see SpeculativeMargin.js.
+NarrowPhase.SPECULATIVE_BASE = 0.02;
+
+ActionPhysics.NarrowPhase = NarrowPhase;
+
+
+// ==== src/phases/SphereSphere.js ====
+// Closed-form sphere-sphere: no GJK, no EPA, no shared epsilon/iteration budget with any other
+// pair type. Own tunable margin (SphereSphere.DEGENERATE_EPSILON), independent of GJK.js/EPA.js.
+const SphereSphere = {};
+
+// True iff both placed shapes are bare SphereShapes (not a compound/mesh child wrapping one).
+SphereSphere.applies = function (placedA, placedB) {
+    return placedA.shape instanceof SphereShape && placedB.shape instanceof SphereShape;
+};
+
+// Below this center-to-center distance the separating direction is undefined (coincident
+// centers) - falls back to a fixed axis rather than dividing by ~0.
+SphereSphere.DEGENERATE_EPSILON = 1e-9;
+
+SphereSphere.test = function (placedA, placedB, out) {
+    const ax = placedA.position.x, ay = placedA.position.y, az = placedA.position.z;
+    const bx = placedB.position.x, by = placedB.position.y, bz = placedB.position.z;
+    const dx = bx - ax, dy = by - ay, dz = bz - az;
+    const distSq = dx * dx + dy * dy + dz * dz;
+    const dist = Math.sqrt(distSq);
+    const ra = placedA.shape.radius, rb = placedB.shape.radius;
+
+    let nx, ny, nz;
+    if (dist > SphereSphere.DEGENERATE_EPSILON) {
+        // normal points B -> A, matching GJK/EPA's own convention.
+        nx = -dx / dist; ny = -dy / dist; nz = -dz / dist;
+    } else {
+        nx = 0; ny = 1; nz = 0;
     }
 
-    _nextPooledContact() {
-        if (this._poolIndex >= this._contactPool.length) this._contactPool.push(new ContactDetails());
-        return this._contactPool[this._poolIndex++];
+    out.pointOnA.set(ax - nx * ra, ay - ny * ra, az - nz * ra);
+    out.pointOnB.set(bx + nx * rb, by + ny * rb, bz + nz * rb);
+    out.normal.set(nx, ny, nz);
+    out.signedDistance = (ra + rb) - dist; // positive = overlapping, matching the pipeline convention
+    Vector3.addInto(out.point, out.pointOnA, out.pointOnB).scaleInPlace(0.5);
+    return out;
+};
+
+
+// ==== src/phases/SphereBox.js ====
+// Closed-form sphere-box: closest point on an oriented box to the sphere center, clamped per-axis
+// in the box's local frame. Own epsilon, no shared GJK/EPA state.
+const SphereBox = {};
+
+SphereBox.applies = function (placedA, placedB) {
+    return (placedA.shape instanceof SphereShape && placedB.shape instanceof BoxShape) ||
+        (placedA.shape instanceof BoxShape && placedB.shape instanceof SphereShape);
+};
+
+// Below this distance from the box surface to the sphere center, the surface normal is undefined
+// (center exactly on/past every face at once - only reachable at the box's own center) - falls
+// back to a fixed axis rather than dividing by ~0.
+SphereBox.DEGENERATE_EPSILON = 1e-9;
+
+SphereBox.test = function (placedA, placedB, out) {
+    const sphereFirst = placedA.shape instanceof SphereShape;
+    const spherePlaced = sphereFirst ? placedA : placedB;
+    const boxPlaced = sphereFirst ? placedB : placedA;
+    const sphere = spherePlaced.shape, box = boxPlaced.shape;
+
+    // Sphere center in the box's local frame.
+    const invRot = SphereBox._scratchQuat.copy(boxPlaced.rotation).invert();
+    const local = SphereBox._scratchV1;
+    local.copy(spherePlaced.position).subInPlace(boxPlaced.position);
+    invRot.transformVectorInPlace(local);
+
+    // Closest point on the box to that center, clamped per axis; also track whether the center is
+    // strictly inside (all three axes already within their half-extent - deep penetration).
+    const hw = box.halfWidth, hh = box.halfHeight, hd = box.halfDepth;
+    const insideX = local.x > -hw && local.x < hw;
+    const insideY = local.y > -hh && local.y < hh;
+    const insideZ = local.z > -hd && local.z < hd;
+    const inside = insideX && insideY && insideZ;
+
+    const closest = SphereBox._scratchV2;
+    let localNx = 0, localNy = 0, localNz = 0, penetration = 0;
+    if (inside) {
+        // Center is inside the box: push out along whichever axis has the LEAST penetration
+        // (the standard box-interior-point resolution - the shortest way out).
+        const px = hw - Math.abs(local.x), py = hh - Math.abs(local.y), pz = hd - Math.abs(local.z);
+        if (px <= py && px <= pz) { localNx = local.x >= 0 ? 1 : -1; penetration = px; closest.set(local.x >= 0 ? hw : -hw, local.y, local.z); }
+        else if (py <= pz) { localNy = local.y >= 0 ? 1 : -1; penetration = py; closest.set(local.x, local.y >= 0 ? hh : -hh, local.z); }
+        else { localNz = local.z >= 0 ? 1 : -1; penetration = pz; closest.set(local.x, local.y, local.z >= 0 ? hd : -hd); }
+    } else {
+        closest.set(
+            Math.max(-hw, Math.min(hw, local.x)),
+            Math.max(-hh, Math.min(hh, local.y)),
+            Math.max(-hd, Math.min(hd, local.z))
+        );
     }
 
-    // Runs narrowphase for one tick: broadphase pairs in, manifolds refreshed out.
-    //   broadphasePairs: [[bodyA, bodyB], ...] from SAPBroadphase.computePairs()
-    //   midphase: a Midphase instance (expands compound/mesh pairs to primitives)
-    //   dt: this tick's timestep, used to size the per-pair speculative margin (how far the pair
-    //       can close in one tick). Optional; falls back to the last value / 1/60 if omitted.
-    step(broadphasePairs, midphase, dt) {
-        if (dt) this._dt = dt;
-        this._poolIndex = 0;
-        const contactsByPair = new Map(); // canonical "idA:idB" key -> ContactDetails[]
+    const dx = local.x - closest.x, dy = local.y - closest.y, dz = local.z - closest.z;
+    const distSq = dx * dx + dy * dy + dz * dz;
+    const dist = Math.sqrt(distSq);
 
-        for (let p = 0; p < broadphasePairs.length; p++) {
-            const bodyA = broadphasePairs[p][0], bodyB = broadphasePairs[p][1];
-            const primitivePairs = midphase.expandPair(bodyA, bodyB);
-            const key = bodyA.id < bodyB.id ? bodyA.id + ':' + bodyB.id : bodyB.id + ':' + bodyA.id;
-            const margin = this._speculativeMargin(bodyA, bodyB);
+    let worldNx, worldNy, worldNz;
+    if (inside) {
+        // Normal already chosen above (box-local axis of least penetration).
+        SphereBox._scratchV1.set(localNx, localNy, localNz);
+        boxPlaced.rotation.transformVectorInPlace(SphereBox._scratchV1);
+    } else if (dist > SphereBox.DEGENERATE_EPSILON) {
+        SphereBox._scratchV1.set(dx / dist, dy / dist, dz / dist);
+        boxPlaced.rotation.transformVectorInPlace(SphereBox._scratchV1);
+    } else {
+        SphereBox._scratchV1.set(0, 1, 0);
+        boxPlaced.rotation.transformVectorInPlace(SphereBox._scratchV1);
+    }
+    worldNx = SphereBox._scratchV1.x; worldNy = SphereBox._scratchV1.y; worldNz = SphereBox._scratchV1.z;
+    // Normal points sphere-side -> box-side in this local derivation; flip to A->B then to B->A
+    // (the pipeline convention) based on which placed side is actually the sphere.
+    if (!sphereFirst) { worldNx = -worldNx; worldNy = -worldNy; worldNz = -worldNz; }
 
-            for (let i = 0; i < primitivePairs.length; i++) {
-                const contact = this._testPrimitivePair(primitivePairs[i].a, primitivePairs[i].b);
-                // signedDistance: positive = overlapping, negative = separated by that gap (plan.md
-                // convention). Report the contact while overlapping OR within the speculative
-                // margin of touching; drop it only once the gap exceeds the margin - too far this
-                // tick for the pair to reach, so no manifold point is warranted. This is the ONE
-                // place narrowphase decides a pair is "not worth a manifold entry" (see
-                // _testPrimitivePair) and it is a distance-vs-margin test, never a staleness or
-                // depth-quality judgement (Rule 1: narrowphase reports geometry, it does not
-                // second-guess the solver's use of it).
+    const worldClosest = SphereBox._scratchV3;
+    worldClosest.copy(closest);
+    boxPlaced.rotation.transformVectorInPlace(worldClosest);
+    worldClosest.addInPlace(boxPlaced.position);
+
+    const signedDistance = inside ? (sphere.radius + penetration) : (sphere.radius - dist);
+
+    const pointOnSphere = SphereBox._scratchV4;
+    // Point on the sphere's own surface, along the normal from the box back toward the sphere.
+    const towardSphereX = sphereFirst ? worldNx : -worldNx, towardSphereY = sphereFirst ? worldNy : -worldNy, towardSphereZ = sphereFirst ? worldNz : -worldNz;
+    pointOnSphere.set(
+        spherePlaced.position.x - towardSphereX * sphere.radius,
+        spherePlaced.position.y - towardSphereY * sphere.radius,
+        spherePlaced.position.z - towardSphereZ * sphere.radius
+    );
+
+    if (sphereFirst) {
+        out.pointOnA.copy(pointOnSphere);
+        out.pointOnB.copy(worldClosest);
+    } else {
+        out.pointOnA.copy(worldClosest);
+        out.pointOnB.copy(pointOnSphere);
+    }
+    out.normal.set(worldNx, worldNy, worldNz);
+    out.signedDistance = signedDistance;
+    Vector3.addInto(out.point, out.pointOnA, out.pointOnB).scaleInPlace(0.5);
+    return out;
+};
+
+SphereBox._scratchQuat = new Quaternion();
+SphereBox._scratchV1 = new Vector3();
+SphereBox._scratchV2 = new Vector3();
+SphereBox._scratchV3 = new Vector3();
+SphereBox._scratchV4 = new Vector3();
+
+
+// ==== src/phases/BoxBox.js ====
+// Closed-form box-box: 15-axis SAT (3+3 face normals, 9 edge-cross axes) picks the minimum-
+// penetration separating axis, then either clips the incident face against the reference face's
+// side planes (face contact, up to 4 points) or takes the closest points between the two
+// contributing edges (edge-edge contact, 1 point). Own epsilon, no shared GJK/EPA state.
+const BoxBox = {};
+
+BoxBox.applies = function (placedA, placedB) {
+    return placedA.shape instanceof BoxShape && placedB.shape instanceof BoxShape;
+};
+
+// SAT tie-break: an edge-edge axis only wins over the best face axis if it beats it by more than
+// this fraction of the face overlap - guards the classic SAT jitter case of two boxes resting
+// face-to-face, where an edge axis can numerically tie a face axis and flip the contact type
+// (4-point face manifold vs 1-point edge manifold) tick to tick. 0.25 (not the much tighter 0.005
+// first tried): a real reproduction - two boxes stacked with a real few-degrees relative tilt from
+// asymmetric loading - showed the edge axis beating the face axis by as much as 6% (ratio 0.94) at
+// genuinely small positive (overlapping) depths, well outside a 0.5% margin, and each such flip
+// injected a real torque kick (a 4-point resting manifold collapsing to 1 stray point for a handful
+// of ticks, repeatedly, over the whole run) that accumulated into unbounded rotation over time - not
+// a one-off transient. Edge-edge is only EVER the geometrically correct answer for a genuine corner/
+// edge-first collision (see box-box/corner-drop), which separates from a face contact by a much
+// wider margin than 25% of the face overlap - this loses nothing there while fixing the flicker.
+BoxBox.RELATIVE_TOLERANCE = 0.25;
+// Absolute floor under the tie-break margin above - at near-zero overlap (exact touch, sd ~ 0)
+// RELATIVE_TOLERANCE * faceOverlap itself vanishes to ~0, so plain float noise between the face
+// and edge overlap sums (they differ only by each absR epsilon's rounding) would otherwise win the
+// edge branch essentially at random - producing a spurious 1-point edge contact instead of the
+// correct 4-point face manifold for a flat box resting on a much larger box (e.g. the ground).
+BoxBox.ABSOLUTE_TOLERANCE = 1e-6;
+// Edge-cross axes below this squared length are near-parallel edges (degenerate axis, direction
+// undefined) - skipped rather than normalizing a near-zero vector.
+BoxBox.PARALLEL_EPSILON = 1e-9;
+// How far apart (along the chosen SAT axis) a still-separated pair is trusted to report a
+// speculative contact via face clipping / edge closest-points, rather than falling through to
+// GJK/EPA. Deliberately generous (not tied to any one pair's speculative margin, which depends on
+// relative velocity and isn't known here) - a face/edge SAT axis stays geometrically meaningful
+// well past any margin PairTest.step would actually keep, so the real filtering happens there; this
+// just bounds it so a wildly separated pair doesn't run the clip machinery for nothing.
+BoxBox.SEPARATED_AXIS_LIMIT = 1.0;
+
+// out: array to push ContactDetails into (pooled via nextContact()). Returns out.
+BoxBox.test = function (placedA, placedB, out, nextContact) {
+    const a = placedA.shape, b = placedB.shape;
+    const posA = placedA.position, posB = placedB.position;
+    const rotA = placedA.rotation, rotB = placedB.rotation;
+
+    const ax = BoxBox._axesA, bx = BoxBox._axesB;
+    ax[0].set(1, 0, 0); rotA.transformVectorInPlace(ax[0]);
+    ax[1].set(0, 1, 0); rotA.transformVectorInPlace(ax[1]);
+    ax[2].set(0, 0, 1); rotA.transformVectorInPlace(ax[2]);
+    bx[0].set(1, 0, 0); rotB.transformVectorInPlace(bx[0]);
+    bx[1].set(0, 1, 0); rotB.transformVectorInPlace(bx[1]);
+    bx[2].set(0, 0, 1); rotB.transformVectorInPlace(bx[2]);
+
+    const halfA = BoxBox._halfA, halfB = BoxBox._halfB;
+    halfA[0] = a.halfWidth; halfA[1] = a.halfHeight; halfA[2] = a.halfDepth;
+    halfB[0] = b.halfWidth; halfB[1] = b.halfHeight; halfB[2] = b.halfDepth;
+
+    const d = BoxBox._d;
+    Vector3.subInto(d, posB, posA);
+
+    // R[i][j] = ax[i] . bx[j]; absR adds a small epsilon (standard SAT robustness fix so a
+    // near-parallel pair of face axes doesn't zero out a projected extent).
+    const R = BoxBox._R, absR = BoxBox._absR;
+    for (let i = 0; i < 3; i++) {
+        for (let j = 0; j < 3; j++) {
+            R[i][j] = ax[i].dot(bx[j]);
+            absR[i][j] = Math.abs(R[i][j]) + 1e-9;
+        }
+    }
+
+    const dA = [d.dot(ax[0]), d.dot(ax[1]), d.dot(ax[2])];
+    const dB = [d.dot(bx[0]), d.dot(bx[1]), d.dot(bx[2])];
+
+    // Track the axis of LEAST overlap across all 15 candidates, whether or not any individual
+    // axis is actually separating (overlap < 0) - a negative-overlap axis here just means the
+    // boxes are apart along it, and its magnitude is the gap, which the caller (PairTest.step)
+    // compares against the speculative margin exactly like SphereSphere/SphereBox's separated
+    // case. Bailing out early on the first negative axis (the classic SAT boolean-overlap test)
+    // would silently drop every speculative box-box contact - no more overlap tests, no early return.
+    let minOverlap = Infinity;
+    let bestAxisType = -1; // 0 = face of A, 1 = face of B
+    let bestI = -1, bestSign = 1;
+
+    // Face axes of A (3).
+    for (let i = 0; i < 3; i++) {
+        const ra = halfA[i];
+        const rb = halfB[0] * absR[i][0] + halfB[1] * absR[i][1] + halfB[2] * absR[i][2];
+        const overlap = ra + rb - Math.abs(dA[i]);
+        if (overlap < minOverlap) { minOverlap = overlap; bestAxisType = 0; bestI = i; bestSign = dA[i] >= 0 ? 1 : -1; }
+    }
+    // Face axes of B (3). bestSign here is the OPPOSITE test to A's: d = posB - posA, so d.dot(bx[j])
+    // >= 0 means A sits on B's -bx[j] side - B's reference face (the one facing A) is the -bx[j]
+    // face, sign -1. (For A's own axes above, d points the other way, so the un-flipped sign is
+    // already correct there.)
+    for (let j = 0; j < 3; j++) {
+        const rb = halfB[j];
+        const ra = halfA[0] * absR[0][j] + halfA[1] * absR[1][j] + halfA[2] * absR[2][j];
+        const overlap = ra + rb - Math.abs(dB[j]);
+        if (overlap < minOverlap) { minOverlap = overlap; bestAxisType = 1; bestI = j; bestSign = dB[j] >= 0 ? -1 : 1; }
+    }
+
+    const faceOverlap = minOverlap;
+
+    // Edge-edge axes: ax[i] x bx[j], for all 9 combinations.
+    let bestEdgeOverlap = Infinity, bestEdgeI = -1, bestEdgeJ = -1;
+    for (let i = 0; i < 3; i++) {
+        for (let j = 0; j < 3; j++) {
+            const axis = BoxBox._edgeAxis;
+            Vector3.crossInto(axis, ax[i], bx[j]);
+            const axisLenSq = axis.x * axis.x + axis.y * axis.y + axis.z * axis.z;
+            if (axisLenSq < BoxBox.PARALLEL_EPSILON) continue;
+
+            axis.scaleInPlace(1 / Math.sqrt(axisLenSq));
+
+            const dist = Math.abs(d.dot(axis));
+            let ra = 0, rb = 0;
+            for (let k = 0; k < 3; k++) {
+                ra += halfA[k] * Math.abs(ax[k].dot(axis));
+                rb += halfB[k] * Math.abs(bx[k].dot(axis));
+            }
+            const overlap = ra + rb - dist;
+            if (overlap < bestEdgeOverlap) { bestEdgeOverlap = overlap; bestEdgeI = i; bestEdgeJ = j; }
+        }
+    }
+
+    // A negative trueMin just means the boxes are apart along that axis, by that many units - the
+    // SAT distance bound is still valid, and face clipping still produces the right witness
+    // points/gap for a genuinely nearby separated pair (a flat box approaching the ground a hair
+    // above it is the common case: all 4 corners are still equally close, and reporting only ONE of
+    // them, as a single-point GJK/EPA fallback would, hands the solver an off-center speculative
+    // contact - torque from nothing the instant that point is later confirmed as touching). Only
+    // bail to the generic GJK/EPA path when SAT's own numbers stop being geometrically meaningful -
+    // see the footprint-disjoint guard below.
+    let trueMin = Math.min(faceOverlap, bestEdgeI >= 0 ? bestEdgeOverlap : Infinity);
+
+    // Prefer the face axis unless an edge axis is a clearly tighter fit - biases toward face
+    // contacts (4-point manifolds) on ties, which is what keeps resting boxes from flickering
+    // into a 1-point edge manifold every few ticks. Scaled by |faceOverlap| (not faceOverlap itself)
+    // so this works the same whether overlapping or separated - a body with even a hair of
+    // accumulated rotation produces an edge-cross axis (ax[i] x bx[j]) that is numerically almost
+    // exactly a face axis in a new direction (see the box-bridging-two-supports repro this fixes: a
+    // ~0.5 degree tilt on the lower box turned "A's x-axis cross B's z-axis" into an axis 0.008 rad
+    // off pure -Y, i.e. functionally the SAME axis as the Y-face test, not a genuinely different
+    // tighter one) - a fixed absolute epsilon is far too tight to catch that at realistic overlap
+    // magnitudes (~0.1+), and simply DROPPING the possibly-negative faceOverlap's sign (as the old
+    // "only when non-negative" version did) left every separated pair with zero relative tolerance,
+    // which is exactly the case that broke.
+    // The edge branch is only trusted when the boxes are ACTUALLY OVERLAPPING (faceOverlap >= 0).
+    // SAT's own "most negative overlap wins" rule (the same rule that correctly picks the tightest
+    // separating axis while overlapping) means the axis with the LARGEST gap wins while separated -
+    // and an edge-cross axis reports a bigger gap than the true face axis remarkably easily under
+    // even modest relative tilt (two boxes 23 degrees off parallel, mid-fall, still well short of
+    // contact) despite the two boxes plainly still approaching FACE first, not edge first. Taking
+    // that "biggest gap" axis at face value while separated collapses what should still be a
+    // multi-point speculative face contact into a single degenerate edge-closest-point - which is
+    // exactly the wrong shape to warm-start into the real contact one substep later (see the offset-
+    // stack repro this fixes: box0-box1 spiralled from a stable ~13 degree lean into a full 179
+    // degree flip once this kicked in around the tick they came close enough to matter). Once
+    // genuinely overlapping (faceOverlap >= 0), SAT's normal minimum-overlap logic is trustworthy
+    // again - a real corner/edge-first collision (box-box/corner-drop) still needs this branch.
+    const tieBreakMargin = Math.max(BoxBox.RELATIVE_TOLERANCE * Math.abs(faceOverlap), BoxBox.ABSOLUTE_TOLERANCE);
+    if (faceOverlap >= 0 && bestEdgeI >= 0 && bestEdgeOverlap < faceOverlap - tieBreakMargin) {
+        BoxBox._buildEdgeContact(placedA, placedB, ax, bx, halfA, halfB, posA, posB,
+            bestEdgeI, bestEdgeJ, bestEdgeOverlap, out, nextContact);
+        return out;
+    }
+
+    // Face clipping's geometry (project the incident face onto the reference face's extent) only
+    // matches "closest point" once the boxes are far enough apart along OTHER axes that they no
+    // longer face each other at all - bail to GJK/EPA past that point rather than returning a
+    // clipped-away-to-nothing or geometrically-meaningless result.
+    if (faceOverlap < -BoxBox.SEPARATED_AXIS_LIMIT) return null;
+
+    BoxBox._buildFaceContact(placedA, placedB, ax, bx, halfA, halfB, posA, posB,
+        bestAxisType, bestI, bestSign, out, nextContact);
+    return out;
+};
+
+// Edge-edge contact: closest points between the two axis-aligned segments (A's edge i, B's edge
+// j), each a line through its box center along that local axis, clamped to the box's own
+// half-extent on the other two axes (the edge nearest the other box, not just any parallel edge).
+BoxBox._buildEdgeContact = function (placedA, placedB, ax, bx, halfA, halfB, posA, posB, i, j, overlap, out, nextContact) {
+    // Edge i of A: pick the two non-i axes' signs from which side of A the segment nearest B sits on.
+    const d = BoxBox._d; // still B - A from test()
+    const otherA1 = (i + 1) % 3, otherA2 = (i + 2) % 3;
+    const signA1 = d.dot(ax[otherA1]) >= 0 ? 1 : -1;
+    const signA2 = d.dot(ax[otherA2]) >= 0 ? 1 : -1;
+
+    const pA = BoxBox._pA, uA = BoxBox._uA;
+    pA.copy(posA);
+    pA.x += ax[otherA1].x * halfA[otherA1] * signA1 + ax[otherA2].x * halfA[otherA2] * signA2;
+    pA.y += ax[otherA1].y * halfA[otherA1] * signA1 + ax[otherA2].y * halfA[otherA2] * signA2;
+    pA.z += ax[otherA1].z * halfA[otherA1] * signA1 + ax[otherA2].z * halfA[otherA2] * signA2;
+    uA.copy(ax[i]);
+
+    const otherB1 = (j + 1) % 3, otherB2 = (j + 2) % 3;
+    const signB1 = -d.dot(bx[otherB1]) >= 0 ? 1 : -1;
+    const signB2 = -d.dot(bx[otherB2]) >= 0 ? 1 : -1;
+
+    const pB = BoxBox._pB, uB = BoxBox._uB;
+    pB.copy(posB);
+    pB.x += bx[otherB1].x * halfB[otherB1] * signB1 + bx[otherB2].x * halfB[otherB2] * signB2;
+    pB.y += bx[otherB1].y * halfB[otherB1] * signB1 + bx[otherB2].y * halfB[otherB2] * signB2;
+    pB.z += bx[otherB1].z * halfB[otherB1] * signB1 + bx[otherB2].z * halfB[otherB2] * signB2;
+    uB.copy(bx[j]);
+
+    // Closest points between the two infinite lines pA + s*uA and pB + t*uB, clamped to each
+    // edge's own half-extent along i / j respectively (standard segment-segment closest point).
+    const r = BoxBox._segR;
+    Vector3.subInto(r, pA, pB);
+    const uu = uA.dot(uA), uv = uA.dot(uB), vv = uB.dot(uB);
+    const ur = uA.dot(r), vr = uB.dot(r);
+    const denom = uu * vv - uv * uv;
+
+    let s = Math.abs(denom) > 1e-9 ? (uv * vr - vv * ur) / denom : 0;
+    let t = (uv * s + vr) / vv;
+    s = Math.max(-halfA[i], Math.min(halfA[i], s));
+    t = Math.max(-halfB[j], Math.min(halfB[j], t));
+
+    const closestA = BoxBox._closestA, closestB = BoxBox._closestB;
+    closestA.set(pA.x + uA.x * s, pA.y + uA.y * s, pA.z + uA.z * s);
+    closestB.set(pB.x + uB.x * t, pB.y + uB.y * t, pB.z + uB.z * t);
+
+    // Normal: the edge-cross axis, oriented A -> B then flipped to the pipeline's B -> A convention.
+    const normal = BoxBox._contactNormal;
+    Vector3.crossInto(normal, uA, uB);
+    const lenSq = normal.x * normal.x + normal.y * normal.y + normal.z * normal.z;
+    if (lenSq > BoxBox.PARALLEL_EPSILON) normal.scaleInPlace(1 / Math.sqrt(lenSq));
+    else normal.set(0, 1, 0);
+    if (normal.dot(d) < 0) normal.scaleInPlace(-1); // point from A toward B first...
+    normal.scaleInPlace(-1); // ...then flip to B -> A, matching SphereSphere/SphereBox's convention.
+
+    const contact = nextContact();
+    contact.pointOnA.copy(closestA);
+    contact.pointOnB.copy(closestB);
+    contact.normal.copy(normal);
+    contact.signedDistance = overlap;
+    Vector3.addInto(contact.point, closestA, closestB).scaleInPlace(0.5);
+    out.push(contact);
+};
+
+// Face contact: clip the incident face (the face of the non-reference box most anti-parallel to
+// the reference normal) against the reference face's 4 side planes (Sutherland-Hodgman), then keep
+// clipped points at or behind the reference face itself (the actual overlap region).
+BoxBox._buildFaceContact = function (placedA, placedB, ax, bx, halfA, halfB, posA, posB, axisType, i, sign, out, nextContact) {
+    const refIsA = axisType === 0;
+    const refAxes = refIsA ? ax : bx, incAxes = refIsA ? bx : ax;
+    const refHalf = refIsA ? halfA : halfB, incHalf = refIsA ? halfB : halfA;
+    const refPos = refIsA ? posA : posB, incPos = refIsA ? posB : posA;
+
+    const refNormal = BoxBox._refNormal;
+    refNormal.copy(refAxes[i]);
+    refNormal.scaleInPlace(sign);
+
+    // Incident face: the face of the other box whose own outward normal is most anti-parallel to
+    // refNormal (the face "facing into" the reference box) - i.e. minimizing (candidate normal) .
+    // refNormal over the 6 candidate face normals (+/- each local axis).
+    let incFaceIndex = 0, incFaceSign = 1, best = Infinity;
+    for (let k = 0; k < 3; k++) {
+        const dp = incAxes[k].dot(refNormal);
+        if (dp < best) { best = dp; incFaceIndex = k; incFaceSign = 1; }
+        if (-dp < best) { best = -dp; incFaceIndex = k; incFaceSign = -1; }
+    }
+    const incNormal = BoxBox._incNormal;
+    incNormal.copy(incAxes[incFaceIndex]);
+    incNormal.scaleInPlace(incFaceSign);
+
+    // The other two axes of each box, used to build the 4 corners of each face.
+    const refU = (i + 1) % 3, refV = (i + 2) % 3;
+    const incU = (incFaceIndex + 1) % 3, incV = (incFaceIndex + 2) % 3;
+
+    const refCenter = BoxBox._refCenter;
+    refCenter.set(
+        refPos.x + refNormal.x * refHalf[i],
+        refPos.y + refNormal.y * refHalf[i],
+        refPos.z + refNormal.z * refHalf[i]
+    );
+    const incCenter = BoxBox._incCenter;
+    incCenter.set(
+        incPos.x + incNormal.x * incHalf[incFaceIndex],
+        incPos.y + incNormal.y * incHalf[incFaceIndex],
+        incPos.z + incNormal.z * incHalf[incFaceIndex]
+    );
+
+    // Incident face's 4 corners in world space.
+    let poly = BoxBox._polyA;
+    const hu = incHalf[incU], hv = incHalf[incV];
+    const uAxis = incAxes[incU], vAxis = incAxes[incV];
+    for (let c = 0; c < 4; c++) {
+        const su = (c === 0 || c === 3) ? -1 : 1;
+        const sv = (c < 2) ? -1 : 1;
+        poly[c].set(
+            incCenter.x + uAxis.x * hu * su + vAxis.x * hv * sv,
+            incCenter.y + uAxis.y * hu * su + vAxis.y * hv * sv,
+            incCenter.z + uAxis.z * hu * su + vAxis.z * hv * sv
+        );
+    }
+    let polyCount = 4;
+    let clipped = BoxBox._polyB;
+
+    // Clip against the reference face's 4 side planes (Sutherland-Hodgman), each plane running
+    // through the reference face center, normal = +/- refU or +/- refV axis.
+    const sidePlanes = BoxBox._sidePlanes;
+    sidePlanes[0].axis = refAxes[refU]; sidePlanes[0].sign = 1; sidePlanes[0].limit = refHalf[refU];
+    sidePlanes[1].axis = refAxes[refU]; sidePlanes[1].sign = -1; sidePlanes[1].limit = refHalf[refU];
+    sidePlanes[2].axis = refAxes[refV]; sidePlanes[2].sign = 1; sidePlanes[2].limit = refHalf[refV];
+    sidePlanes[3].axis = refAxes[refV]; sidePlanes[3].sign = -1; sidePlanes[3].limit = refHalf[refV];
+
+    for (let p = 0; p < 4; p++) {
+        const plane = sidePlanes[p];
+        const planeAxis = plane.axis, planeSign = plane.sign, limit = plane.limit;
+        let outCount = 0;
+        for (let c = 0; c < polyCount; c++) {
+            const cur = poly[c], next = poly[(c + 1) % polyCount];
+            const curDist = (Vector3.subInto(BoxBox._tmp, cur, refCenter).dot(planeAxis)) * planeSign - limit;
+            const nextDist = (Vector3.subInto(BoxBox._tmp, next, refCenter).dot(planeAxis)) * planeSign - limit;
+            const curInside = curDist <= 0, nextInside = nextDist <= 0;
+            if (curInside) clipped[outCount++].copy(cur);
+            if (curInside !== nextInside) {
+                const t = curDist / (curDist - nextDist);
+                clipped[outCount++].set(
+                    cur.x + (next.x - cur.x) * t,
+                    cur.y + (next.y - cur.y) * t,
+                    cur.z + (next.z - cur.z) * t
+                );
+            }
+        }
+        polyCount = outCount;
+        const swap = poly; poly = clipped; clipped = swap;
+        if (polyCount === 0) return; // fully clipped away - shouldn't happen given overlap > 0, but safe
+    }
+
+    // Keep points at or behind the reference face (actual penetration, depth > 0) AND points just
+    // in front of it (depth < 0: still separated, a genuine speculative contact - see
+    // SEPARATED_AXIS_LIMIT above for why trusting this here, not just at depth ~ 0, is the fix for
+    // a flat box approaching flush: without it, only whichever single corner GJK/EPA's separated
+    // case happens to pick becomes the pre-touch contact, and the OTHER 3 corners get seen as
+    // touching for the first time only on the substep they've already sunk in - reported one
+    // corner at a time instead of all 4 together, which reads as a torque impulse from nothing).
+    const normalAtoB = BoxBox._normalAtoB;
+    normalAtoB.copy(refNormal);
+    if (!refIsA) normalAtoB.scaleInPlace(-1); // refNormal is B's outward normal when B is reference; flip to A->B
+
+    for (let c = 0; c < polyCount; c++) {
+        const pt = poly[c];
+        const rel = Vector3.subInto(BoxBox._tmp, pt, refCenter);
+        const depth = -rel.dot(refNormal); // positive = behind the reference face (penetrating)
+        if (depth < -BoxBox.SEPARATED_AXIS_LIMIT) continue;
+
+        const contact = nextContact();
+        // Project the incident-face point onto the reference face along refNormal for the
+        // reference-side witness point; the incident point itself is the incident-side witness.
+        const onRef = BoxBox._tmp2;
+        onRef.set(pt.x + refNormal.x * depth, pt.y + refNormal.y * depth, pt.z + refNormal.z * depth);
+
+        if (refIsA) { contact.pointOnA.copy(onRef); contact.pointOnB.copy(pt); }
+        else { contact.pointOnA.copy(pt); contact.pointOnB.copy(onRef); }
+
+        // Pipeline convention: normal points B -> A.
+        contact.normal.set(-normalAtoB.x, -normalAtoB.y, -normalAtoB.z);
+        contact.signedDistance = depth;
+        Vector3.addInto(contact.point, contact.pointOnA, contact.pointOnB).scaleInPlace(0.5);
+        out.push(contact);
+    }
+};
+
+// --- scratch state -----------------------------------------------------------------------
+BoxBox._axesA = [new Vector3(), new Vector3(), new Vector3()];
+BoxBox._axesB = [new Vector3(), new Vector3(), new Vector3()];
+BoxBox._halfA = [0, 0, 0];
+BoxBox._halfB = [0, 0, 0];
+BoxBox._d = new Vector3();
+BoxBox._R = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+BoxBox._absR = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+BoxBox._edgeAxis = new Vector3();
+
+BoxBox._pA = new Vector3();
+BoxBox._uA = new Vector3();
+BoxBox._pB = new Vector3();
+BoxBox._uB = new Vector3();
+BoxBox._segR = new Vector3();
+BoxBox._closestA = new Vector3();
+BoxBox._closestB = new Vector3();
+BoxBox._contactNormal = new Vector3();
+
+BoxBox._refNormal = new Vector3();
+BoxBox._incNormal = new Vector3();
+BoxBox._refCenter = new Vector3();
+BoxBox._incCenter = new Vector3();
+BoxBox._normalAtoB = new Vector3();
+BoxBox._tmp = new Vector3();
+BoxBox._tmp2 = new Vector3();
+BoxBox._polyA = [new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3()];
+BoxBox._polyB = [new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3()];
+BoxBox._sidePlanes = [{ axis: null, sign: 1, limit: 0 }, { axis: null, sign: 1, limit: 0 }, { axis: null, sign: 1, limit: 0 }, { axis: null, sign: 1, limit: 0 }];
+
+ActionPhysics.BoxBox = BoxBox;
+
+
+// ==== src/phases/PairTest.js ====
+// Per-tick pair dispatch and GJK/EPA testing for one primitive-shape pair.
+var proto = NarrowPhase.prototype;
+
+proto._nextPooledContact = function () {
+    if (this._poolIndex >= this._contactPool.length) this._contactPool.push(new ContactDetails());
+    return this._contactPool[this._poolIndex++];
+};
+
+// broadphasePairs: [[bodyA, bodyB], ...]. midphase expands compound/mesh pairs to primitives.
+// dt sizes the per-pair speculative margin; optional, falls back to the last value / 1/60.
+proto.step = function (broadphasePairs, midphase, dt) {
+    if (dt) this._dt = dt;
+    this._poolIndex = 0;
+    const contactsByPair = new Map(); // canonical "idA:idB" key -> ContactDetails[]
+
+    for (let p = 0; p < broadphasePairs.length; p++) {
+        const bodyA = broadphasePairs[p][0], bodyB = broadphasePairs[p][1];
+        const primitivePairs = midphase.expandPair(bodyA, bodyB);
+        const key = bodyA.id < bodyB.id ? bodyA.id + ':' + bodyB.id : bodyB.id + ':' + bodyA.id;
+        const margin = this._speculativeMargin(bodyA, bodyB);
+
+        for (let i = 0; i < primitivePairs.length; i++) {
+            const pairContacts = this._testPrimitivePair(primitivePairs[i].a, primitivePairs[i].b);
+            for (let c = 0; c < pairContacts.length; c++) {
+                const contact = pairContacts[c];
+                // signedDistance: positive = overlapping, negative = separated by that gap. Report
+                // while overlapping or within the speculative margin; drop once the gap exceeds it.
                 if (contact.signedDistance < -margin) continue;
                 let list = contactsByPair.get(key);
                 if (!list) { list = []; contactsByPair.set(key, list); }
                 list.push(contact);
             }
-
-            // Ensure a manifold exists for this pair even if this tick found zero contacts for it
-            // yet, so ContactManifoldList.refresh() below has something to prune if the pair was
-            // previously touching and just separated. getOrCreate() is idempotent for an existing
-            // pair.
-            this.manifolds.getOrCreate(bodyA, bodyB);
         }
 
-        this.manifolds.refresh(contactsByPair);
-        return this.manifolds;
+        // Ensure a manifold exists even with zero contacts this tick, so refresh() below can
+        // prune a pair that just separated. Idempotent for an existing pair.
+        this.manifolds.getOrCreate(bodyA, bodyB);
     }
 
-    // Per-pair speculative margin: the base margin widened by how far the two bodies can close
-    // along their relative velocity in one tick (|v_rel| * dt). A slow/resting pair uses ~the base;
-    // a fast approach gets a proportionally larger lookahead so the contact is still reported a full
-    // tick before overlap - which is exactly what lets the solver stop the body at touch rather
-    // than after it has tunnelled partway in. Uses the full relative speed (not the normal
-    // component - narrowphase has no single contact normal yet at this point, and the closing speed
-    // is an upper bound on approach along any normal, so it never UNDER-estimates the needed
-    // lookahead, matching broadphase's own no-false-negatives discipline).
-    _speculativeMargin(bodyA, bodyB) {
-        const dvx = bodyA.linear_velocity.x - bodyB.linear_velocity.x;
-        const dvy = bodyA.linear_velocity.y - bodyB.linear_velocity.y;
-        const dvz = bodyA.linear_velocity.z - bodyB.linear_velocity.z;
-        const relSpeed = Math.sqrt(dvx * dvx + dvy * dvy + dvz * dvz);
-        // Add each body's angular corner speed (|omega|*R): a contact FEATURE on a spinning body
-        // (a corner, an edge) approaches at up to this rate even when the centre barely moves, so a
-        // margin sized only from centre-relative linear speed reports the contact too late for a
-        // tipping body - the corner is already deep. Same reasoning as the broadphase AABB's angular
-        // sweep (RigidBody._recomputeBroadphaseAABB); both stages must look ahead by the same
-        // corner motion or broadphase surfaces the pair and narrowphase then drops it as "too far".
-        const angSpeed = NarrowPhase._angularCornerSpeed(bodyA) + NarrowPhase._angularCornerSpeed(bodyB);
-        return NarrowPhase.SPECULATIVE_BASE + (relSpeed + angSpeed) * this._dt;
+    this.manifolds.refresh(contactsByPair, this._dt);
+    return this.manifolds;
+};
+
+// One or more pooled ContactDetails for one primitive pair, as an array (reused scratch array -
+// copy out before the next call). Dispatches to a closed-form test when one applies (own
+// numerics, no shared epsilon/iteration budget with any other pair type); falls through to
+// GJK/EPA otherwise. Never culls - the caller (step) decides what's worth a manifold entry.
+proto._testPrimitivePair = function (placedA, placedB) {
+    const results = this._pairResultScratch;
+    results.length = 0;
+
+    if (SphereSphere.applies(placedA, placedB)) {
+        results.push(SphereSphere.test(placedA, placedB, this._nextPooledContact()));
+        return results;
+    }
+    if (SphereBox.applies(placedA, placedB)) {
+        results.push(SphereBox.test(placedA, placedB, this._nextPooledContact()));
+        return results;
+    }
+    if (BoxBox.applies(placedA, placedB)) {
+        const self = this;
+        // null = boxes are actually separated - SAT's per-axis numbers aren't a true closest-point
+        // witness once apart, so fall through to GJK/EPA below, same as any pair with no
+        // closed-form test.
+        const boxResult = BoxBox.test(placedA, placedB, results, function () { return self._nextPooledContact(); });
+        if (boxResult !== null) return results;
     }
 
-    // Upper bound on how fast any point on `body` moves purely from its rotation: |omega| times the
-    // body's bounding radius (farthest corner of its tight AABB from centre).
-    static _angularCornerSpeed(body) {
-        const w = body.angular_velocity;
-        const wMag = Math.sqrt(w.x * w.x + w.y * w.y + w.z * w.z);
-        if (wMag === 0) return 0;
-        const aabb = body.getAABB();
-        const ex = (aabb.max.x - aabb.min.x) * 0.5, ey = (aabb.max.y - aabb.min.y) * 0.5, ez = (aabb.max.z - aabb.min.z) * 0.5;
-        return wMag * Math.sqrt(ex * ex + ey * ey + ez * ez);
+    const contact = this._nextPooledContact();
+    const support = this._support.setSides(placedA, placedB);
+    const gjkResult = this._gjk.run(support);
+    if (gjkResult.overlapping) {
+        const epaResult = this._epa.run(support, gjkResult.simplex);
+        contact.setFromEPA(epaResult);
+    } else {
+        contact.setFromGJKSeparated(gjkResult);
     }
+    results.push(contact);
+    return results;
+};
 
-    // Re-measures the GEOMETRY of the contact points already in each manifold against the bodies'
-    // CURRENT (predicted, mid-substep) transforms, in place. The solver calls this once per substep
-    // (see Solver.step's `refresh`), so a contact whose feature moves as a body rotates is solved
-    // against live geometry rather than a frozen tick-start normal/anchor - the fix for the
-    // rotational derived-velocity blow-up on corner contacts.
-    //
-    // This updates geometry ONLY. It never adds, removes, or re-matches points, and never touches
-    // the manifold's point SET or its warm-start lambda - that ownership stays with the manifold's
-    // once-per-tick update() (plan.md's rule against mid-tick manifold churn). A point whose contact
-    // has genuinely separated this substep simply gets a negative signed distance here and the
-    // solver's own C<=0 guard makes it inert; it is not culled mid-tick.
-    //
-    // Only primitive-vs-primitive body pairs are refreshed. A compound/mesh body's contact came
-    // from an expanded child/triangle whose identity this method does not track per point, so those
-    // manifolds keep their tick-start geometry (no regression - that is exactly today's behaviour
-    // for every contact). Re-expanding compounds/meshes per substep is a later optimisation if
-    // rotating compound bodies turn out to need it.
-    refreshManifoldGeometry(manifolds) {
-        for (const manifold of manifolds.values()) {
-            const bodyA = manifold.bodyA, bodyB = manifold.bodyB;
-            if (this._isCompoundOrMesh(bodyA.shape) || this._isCompoundOrMesh(bodyB.shape)) continue;
+proto._isCompoundOrMesh = function (shape) {
+    return (typeof CompoundShape !== 'undefined' && shape instanceof CompoundShape) ||
+        (typeof MeshShape !== 'undefined' && shape instanceof MeshShape);
+};
 
-            const placedA = { shape: bodyA.shape, position: bodyA.position, rotation: bodyA.rotation };
-            const placedB = { shape: bodyB.shape, position: bodyB.position, rotation: bodyB.rotation };
-            const fresh = this._testPrimitivePair(placedA, placedB); // one fresh contact for this pair
 
-            // Update the nearest existing point (in world space) with the fresh geometry, keeping
-            // its warm-start lambda and its persistent local anchors' IDENTITY - only the values
-            // the solver reads live (normal, and the anchors it recomputes C from) are refreshed.
+// ==== src/phases/SpeculativeMargin.js ====
+// How far ahead of actual touch a contact is reported, so the solver's predicted-position
+// non-penetration constraint has a point to work with before overlap happens (the fix for the
+// deep-correction -> large-derived-velocity failure mode).
+var proto = NarrowPhase.prototype;
+
+// Base margin widened by how far the pair can close in one tick along relative velocity, so a
+// fast approach is still caught a full tick ahead of overlap.
+proto._speculativeMargin = function (bodyA, bodyB) {
+    const dvx = bodyA.linear_velocity.x - bodyB.linear_velocity.x;
+    const dvy = bodyA.linear_velocity.y - bodyB.linear_velocity.y;
+    const dvz = bodyA.linear_velocity.z - bodyB.linear_velocity.z;
+    const relSpeed = Math.sqrt(dvx * dvx + dvy * dvy + dvz * dvz);
+    // A rotating body's contact FEATURE (corner/edge) approaches faster than its center moves -
+    // add each body's angular corner speed so a tipping body's corner is still caught in time.
+    const angSpeed = NarrowPhase._angularCornerSpeed(bodyA) + NarrowPhase._angularCornerSpeed(bodyB);
+    return NarrowPhase.SPECULATIVE_BASE + (relSpeed + angSpeed) * this._dt;
+};
+
+// Upper bound on how fast any point on `body` moves purely from rotation: |omega| * bounding radius.
+NarrowPhase._angularCornerSpeed = function (body) {
+    const w = body.angular_velocity;
+    const wMag = Math.sqrt(w.x * w.x + w.y * w.y + w.z * w.z);
+    if (wMag === 0) return 0;
+    const aabb = body.getAABB();
+    const ex = (aabb.max.x - aabb.min.x) * 0.5, ey = (aabb.max.y - aabb.min.y) * 0.5, ez = (aabb.max.z - aabb.min.z) * 0.5;
+    return wMag * Math.sqrt(ex * ex + ey * ey + ez * ez);
+};
+
+
+// ==== src/phases/GeometryRefresh.js ====
+// Per-substep contact geometry refresh: re-measures existing manifold points against the bodies'
+// current (predicted) transforms, called by Solver.step's `refresh`. Updates geometry only - never
+// adds/removes/re-matches points, that stays the manifold's once-per-tick job.
+var proto = NarrowPhase.prototype;
+
+proto.refreshManifoldGeometry = function (manifolds) {
+    for (const manifold of manifolds.values()) {
+        const bodyA = manifold.bodyA, bodyB = manifold.bodyB;
+        // Compound/mesh contacts came from an expanded child/triangle whose per-point identity
+        // isn't tracked here, so those manifolds keep tick-start geometry.
+        if (this._isCompoundOrMesh(bodyA.shape) || this._isCompoundOrMesh(bodyB.shape)) continue;
+
+        const placedA = { shape: bodyA.shape, position: bodyA.position, rotation: bodyA.rotation };
+        const placedB = { shape: bodyB.shape, position: bodyB.position, rotation: bodyB.rotation };
+        const freshList = this._testPrimitivePair(placedA, placedB);
+        if (freshList.length === 0) continue;
+
+        // Match each existing point to its own nearest fresh point (world space) - a multi-point
+        // pair type (BoxBox) reports up to 4 fresh points per tick, one per manifold point, not a
+        // single shared measurement like the other closed-form/GJK-EPA pairs.
+        for (let i = 0; i < manifold.points.length; i++) {
+            const p = manifold.points[i];
             let best = null, bestDistSq = Infinity;
-            for (let i = 0; i < manifold.points.length; i++) {
-                const p = manifold.points[i];
+            for (let f = 0; f < freshList.length; f++) {
+                const fresh = freshList[f];
                 const dx = p.point.x - fresh.point.x, dy = p.point.y - fresh.point.y, dz = p.point.z - fresh.point.z;
                 const d = dx * dx + dy * dy + dz * dz;
-                if (d < bestDistSq) { bestDistSq = d; best = p; }
+                if (d < bestDistSq) { bestDistSq = d; best = fresh; }
             }
             if (!best) continue;
-            best.point.copy(fresh.point);
-            best.pointOnA.copy(fresh.pointOnA);
-            best.pointOnB.copy(fresh.pointOnB);
-            best.signedDistance = fresh.signedDistance;
-            // Keep the ESTABLISHED normal through the exact-touch band, exactly as the manifold's
-            // once-per-tick update() does (ContactManifold.EXACT_TOUCH_BAND) - the per-substep
-            // refresh MUST honour the same rule, or it silently clobbers a good resting normal with
-            // the ambiguous diagonal GJK/EPA returns at signed-distance ~0 every substep, which is
-            // the penetrate-then-launch bug the once-per-tick guard was added to prevent (it bit
-            // spheres hard: a flush sphere kept getting a (-0.71,0,0.71) normal and launched to y=200+).
-            if (Math.abs(fresh.signedDistance) >= ContactManifold.EXACT_TOUCH_BAND) best.normal.copy(fresh.normal);
-            // Re-anchor to the CURRENT geometry so C is measured from where the feature is NOW - the
-            // whole point of refreshing. Persisting stale anchors would defeat it. Lambda is left
+            p.point.copy(best.point);
+            p.pointOnA.copy(best.pointOnA);
+            p.pointOnB.copy(best.pointOnB);
+            p.signedDistance = best.signedDistance;
+            // Keep the established normal through the exact-touch band (ContactManifold.EXACT_TOUCH_BAND)
+            // - the ambiguous diagonal GJK/EPA returns near signed-distance 0 would otherwise clobber a
+            // good resting normal every substep.
+            if (Math.abs(best.signedDistance) >= ContactManifold.EXACT_TOUCH_BAND) p.normal.copy(best.normal);
+            // Re-anchor to current geometry so C is measured from where the feature is now. Lambda
             // untouched (warm start survives).
-            best.setLocalAnchors(bodyA, bodyB);
+            p.setLocalAnchors(bodyA, bodyB);
         }
     }
-
-    _isCompoundOrMesh(shape) {
-        return (typeof CompoundShape !== 'undefined' && shape instanceof CompoundShape) ||
-            (typeof MeshShape !== 'undefined' && shape instanceof MeshShape);
-    }
-
-    // Runs GJK (and EPA if overlapping) for one primitive-shape pair, returning a pooled
-    // ContactDetails. Always returns a filled contact carrying its signed distance (positive =
-    // overlapping, negative = separated gap); the caller (step) decides whether that distance is
-    // within the speculative margin and thus worth a manifold entry. This function itself never
-    // culls - it only measures (Rule 1).
-    _testPrimitivePair(placedA, placedB) {
-        const support = new MinkowskiSupport(placedA, placedB);
-        const gjkResult = this._gjk.run(support);
-        const contact = this._nextPooledContact();
-        if (gjkResult.overlapping) {
-            const epaResult = this._epa.run(support, gjkResult.simplex);
-            contact.setFromEPA(epaResult);
-        } else {
-            contact.setFromGJKSeparated(gjkResult);
-        }
-        return contact;
-    }
-}
-
-ActionPhysics.NarrowPhase = NarrowPhase;
+};
 
 
 // ==== src/solver/Solver.js ====
 /**
- * XPBD solver. One solver, per plan.md ("Solver: XPBD, one solver only") - no PGS fallback exists
- * or is planned. Written from the algorithm (Muller et al., "Detailed Rigid Body Simulation with
- * Extended Position Based Dynamics", 2020; Macklin et al.'s earlier XPBD paper for the compliance
- * formulation) - same reasoning as GJK/EPA: this is stage 6, one of the two stages plan.md names
- * as where the engine is won or lost, and a structural anchor to the predecessor's PGS-shaped
- * implementation would be exactly the wrong thing to carry over.
+ * XPBD solver (Muller et al. 2020 "Detailed Rigid Body Simulation with Extended Position Based
+ * Dynamics"; Macklin et al. for the compliance formulation).
  *
- * THE CENTRAL DESIGN RULE (plan.md, "Solver: XPBD, one solver only" and the pipeline table):
- * velocity is DERIVED from position (v = (x - x_prev) / h) and used RAW - no clamp, no slop, no
- * per-body governor, anywhere in this file. If a body's derived velocity is ever wrong, that is a
- * NARROWPHASE bug (bad contact depth/normal), and the fix belongs there, not here. This is the
- * lesson from Goblin's derived-velocity problem (plan.md's own extended writeup): three clamp
- * variants were tried and each traded one failure for another, because the clamp was never the
- * real fix - a box arriving already 0.089 deep (five substeps of undetected travel) was the bug,
- * and clamping the resulting spin only hid it. Detection quality is what actually prevents that
- * here, not this file.
- *
- * NO POINT-COUNT DIVISOR (plan.md, Bug reference / Solver): each contact point's own accumulated
- * lambda already does the job a divisor was invented to do (stop N-point overcorrection) -
- * removing that compensating term in the predecessor dropped iterations from 15 to 1 and frame
- * cost from 8.43ms to 6.87ms. No division by point count appears anywhere below.
- *
- * SUBSTEPPING: gravity/forces integrate once per substep; each substep runs its own XPBD position
- * solve (a fixed small iteration count per substep, not many iterations of a single big step) -
- * this is the "many small steps" XPBD formulation, not "few steps with many solver iterations."
+ * Velocity is DERIVED from position (v = (x - x_prev) / h), never clamped. Each substep runs:
+ * integrate -> refresh contact geometry -> reset lambdas -> solve positions -> derive velocity ->
+ * solve contact velocity (friction/restitution/rolling). See Integrate.js, Geometry.js,
+ * PositionSolve.js, VelocitySolve.js for each phase.
  */
 class Solver {
     constructor(opts) {
         opts = opts || {};
         this.substeps = opts.substeps || 4;
-        this.iterations = opts.iterations || 1; // position-solve passes PER SUBSTEP
-        // Scratch, owned entirely by the solver (plan.md: per-stage arena, never a shared global).
+        this.iterations = opts.iterations || 1; // position-solve passes per substep
+
         this._rA = new Vector3(); this._rB = new Vector3();
         this._deltaPos = new Vector3();
         this._impulse = new Vector3();
         this._tangent1 = new Vector3(); this._tangent2 = new Vector3();
         this._angularCorrA = new Vector3(); this._angularCorrB = new Vector3();
-        this._tmpDispA = new Vector3(); this._tmpDispB = new Vector3(); this._tmpPrev = new Vector3(); // friction slip scratch
-        this._prevPos = new Map(); // bodyId -> Vector3, this substep's PRE-integration position
-        this._prevRot = new Map(); // bodyId -> Quaternion, this substep's PRE-integration rotation
+        this._tmpDispA = new Vector3(); this._tmpDispB = new Vector3(); this._tmpPrev = new Vector3();
+        this._prevPos = new Map();
+        this._prevRot = new Map();
+        this._preGravityVel = new Map();
+        this._biasDelta = new Map(); // per-body bias-only correction this substep; excluded from derived velocity
+        this._deferredRotation = new Map(); // per-body accumulated small-angle rotation for a multi-point manifold pass
     }
+
+    // Margin widening what counts as "explainable by the body's own velocity" in _solvePoint's
+    // position/velocity split (see PositionSolve.js). 3x covers the ordinary numerical gap for
+    // off-center/rotating contacts without letting a real zero-velocity spawn overlap through.
+    static EXPLAINABLE_MARGIN = 3;
 
     /**
-     * Advances every dynamic body in `bodies` by `dt`, resolving the contacts in `manifolds`
-     * (a ContactManifoldList). Gravity is `gravity` (a Vector3) unless a body overrides it via
-     * RigidBody.gravity. May assume every contact's depth/normal is accurate (Rule 1) - never
-     * re-checks or discounts a contact's own geometry.
-     *
-     * `refresh(manifolds)`, if given, re-measures each existing contact point's geometry (normal,
-     * anchors, depth) against the predicted positions once per substep, before the constraint
-     * solve - the interleaved detect-then-solve that makes rotating/corner contacts stable. It must
-     * only update existing points' geometry, never add/remove/re-match them (that is the manifold's
-     * once-per-tick job). Omitted -> tick-start geometry is reused every substep.
+     * Advances every dynamic body in `bodies` by `dt`, resolving `manifolds` (a ContactManifoldList)
+     * and `constraints` (joints). `refresh(manifolds)`, if given, re-measures each substep's contact
+     * geometry against predicted positions before the solve (see Geometry.js).
      */
-    step(bodies, manifolds, gravity, dt, refresh) {
+    step(bodies, manifolds, gravity, dt, refresh, constraints) {
         const h = dt / this.substeps;
         for (let s = 0; s < this.substeps; s++) {
-            this._substep(bodies, manifolds, gravity, h, refresh);
+            this._substep(bodies, manifolds, gravity, h, refresh, constraints);
         }
     }
 
-    _substep(bodies, manifolds, gravity, h, refresh) {
-        // 1. Integrate velocities (gravity/forces) and predict positions.
-        for (let i = 0; i < bodies.length; i++) {
-            const b = bodies[i];
-            if (b.bodyType !== RigidBody.DYNAMIC) continue;
-            this._prevPos.set(b.id, new Vector3().copy(b.position));
-            this._prevRot.set(b.id, new Quaternion().copy(b.rotation));
+    _substep(bodies, manifolds, gravity, h, refresh, constraints) {
+        this._integrate(bodies, gravity, h);
 
-            const g = b.gravity || gravity;
-            b.linear_velocity.x += g.x * h * b.linear_factor.x;
-            b.linear_velocity.y += g.y * h * b.linear_factor.y;
-            b.linear_velocity.z += g.z * h * b.linear_factor.z;
-
-            // Damping applied to velocity before the position predict, same substep - standard
-            // XPBD ordering (Muller et al. section 3.1).
-            if (b.linear_damping > 0) b.linear_velocity.scaleInPlace(Math.max(0, 1 - b.linear_damping * h));
-            if (b.angular_damping > 0) b.angular_velocity.scaleInPlace(Math.max(0, 1 - b.angular_damping * h));
-
-            b.position.addScaledInPlace(b.linear_velocity, h);
-            Solver._integrateRotation(b.rotation, b.angular_velocity, h);
-            // The world inverse inertia tensor depends on the rotation, which just changed - refresh
-            // it so _effectiveMass and _applyAngularCorrection this substep use the CURRENT
-            // orientation, not the tick-start one. Cheap (one 3x3 similarity transform) and keeps
-            // the angular math consistent with the per-substep geometry refresh below; a fast-
-            // rotating body would otherwise solve against an orientation several substeps stale.
-            b._recomputeWorldInverseInertia();
-        }
-
-        // 1b. Re-measure contact geometry against the just-predicted positions. This is the
-        // interleaved detect-then-solve that keeps rotating/corner contacts stable: without it the
-        // contact's normal and anchors are frozen at tick-start, so a body that rotates fast enough
-        // for its contact CORNER to move between substeps gets solved against stale geometry, its
-        // far corner slams in undetected, and the one-shot correction of the resulting deep overlap
-        // injects a large derived angular velocity (which only grows as the substep shrinks - the
-        // rotational form of the derived-velocity problem). `refresh` re-measures geometry ONLY; it
-        // never adds/removes/re-matches points (that stays the manifold's once-per-tick job). See
-        // step()'s doc and World.step.
         if (refresh) refresh(manifolds);
 
-        // 1c. Capture the pre-solve contact-relative NORMAL velocity, for restitution. It has to be
-        // read here - after gravity integration and geometry refresh, but BEFORE the normal position
-        // solve removes it - because restitution restores a fraction of the velocity the body was
-        // approaching at, which the solve is about to zero.
-        for (const manifold of manifolds.values()) {
-            const bodyA = manifold.bodyA, bodyB = manifold.bodyB;
-            for (let i = 0; i < manifold.points.length; i++) {
-                const p = manifold.points[i];
-                p._preSolveNormalVel = this._contactRelativeNormalVelocity(p, bodyA, bodyB);
-            }
-        }
+        this._resetLambdas(manifolds);
+        this._solvePositions(manifolds, constraints, h);
+        this._deriveVelocities(bodies, h);
+        this._solveContactVelocities(manifolds, gravity, h);
+    }
 
-        // 2. Reset this substep's accumulated lambda to zero (XPBD's lambda is PER-SUBSTEP, reset
-        // every substep, not carried across substeps within a tick - only carried across TICKS via
-        // the manifold's warm start, which primes the solver's FIRST guess but each substep's own
-        // constraint solve still starts its own lambda accumulation at zero for THIS substep's
-        // Lagrange multiplier). See Muller et al. section 3.3.
+    _resetLambdas(manifolds) {
         for (const manifold of manifolds.values()) {
             for (let i = 0; i < manifold.points.length; i++) {
                 manifold.points[i].normalLambda = 0;
@@ -5838,374 +6391,1574 @@ class Solver {
                 manifold.points[i].tangentLambda2 = 0;
             }
         }
+    }
 
-        // 3. Position-level constraint solve: contacts (normal / non-penetration only).
+    _solvePositions(manifolds, constraints, h) {
         for (let iter = 0; iter < this.iterations; iter++) {
             for (const manifold of manifolds.values()) {
                 this._solveManifold(manifold, h);
             }
-        }
-
-        // 4. Derive velocity from the position change - RAW, no clamp (see class header). This
-        // captures the normal solve's effect (a stopped body has ~zero normal velocity here).
-        for (let i = 0; i < bodies.length; i++) {
-            const b = bodies[i];
-            if (b.bodyType !== RigidBody.DYNAMIC) continue;
-            const prevPos = this._prevPos.get(b.id);
-            const prevRot = this._prevRot.get(b.id);
-            b.linear_velocity.x = (b.position.x - prevPos.x) / h;
-            b.linear_velocity.y = (b.position.y - prevPos.y) / h;
-            b.linear_velocity.z = (b.position.z - prevPos.z) / h;
-            Solver._deriveAngularVelocity(b.angular_velocity, prevRot, b.rotation, h);
-        }
-
-        // 5. Friction + restitution, applied in the VELOCITY pass (Muller et al. 2020 sec 3.6). This
-        // is NOT the forbidden derived-velocity clamp (that hid a detection bug by governing the
-        // whole body's velocity); it is the physical contact velocity constraint - friction removes
-        // tangential relative velocity up to the Coulomb limit, restitution restores a fraction of
-        // the pre-solve approach velocity. Both act only at contacts and only on the contact-relative
-        // velocity, which is exactly where they belong.
-        for (const manifold of manifolds.values()) {
-            const bodyA = manifold.bodyA, bodyB = manifold.bodyB;
-            for (let i = 0; i < manifold.points.length; i++) {
-                this._solveContactVelocity(manifold.points[i], bodyA, bodyB, h);
+            if (constraints) {
+                for (let i = 0; i < constraints.length; i++) {
+                    if (constraints[i].enabled) constraints[i].solve(h);
+                }
             }
         }
     }
 
-    // this = this * (0 + w) * h * 0.5, then normalize - standard PBD quaternion integration
-    // (Muller et al.). Written directly rather than via a general quaternion-derivative helper
-    // since it's the one place this exact operation is needed.
-    static _integrateRotation(rotation, angularVelocity, h) {
-        const wx = angularVelocity.x, wy = angularVelocity.y, wz = angularVelocity.z;
-        const qx = rotation.x, qy = rotation.y, qz = rotation.z, qw = rotation.w;
-        const half = h * 0.5;
-        rotation.x = qx + half * (wx * qw + wy * qz - wz * qy);
-        rotation.y = qy + half * (wy * qw + wz * qx - wx * qz);
-        rotation.z = qz + half * (wz * qw + wx * qy - wy * qx);
-        rotation.w = qw + half * (-wx * qx - wy * qy - wz * qz);
-        rotation.normalize();
-    }
-
-    // Derived angular velocity from the rotation delta between prevRot and rotation, into `out`.
-    // omega = 2 * (q_new * conj(q_prev)).xyz / h, sign-corrected so the shorter rotation path is
-    // always taken (a quaternion and its negation represent the same rotation, but the derivative
-    // formula needs a consistent sign to avoid spurious 2x-angle spins).
-    static _deriveAngularVelocity(out, prevRot, rotation, h) {
-        let dqx = rotation.w * (-prevRot.x) + rotation.x * prevRot.w + rotation.y * (-prevRot.z) - rotation.z * (-prevRot.y);
-        let dqy = rotation.w * (-prevRot.y) - rotation.x * (-prevRot.z) + rotation.y * prevRot.w + rotation.z * (-prevRot.x);
-        let dqz = rotation.w * (-prevRot.z) + rotation.x * (-prevRot.y) - rotation.y * (-prevRot.x) + rotation.z * prevRot.w;
-        let dqw = rotation.w * prevRot.w - rotation.x * (-prevRot.x) - rotation.y * (-prevRot.y) - rotation.z * (-prevRot.z);
-        if (dqw < 0) { dqx = -dqx; dqy = -dqy; dqz = -dqz; } // shorter path
-        out.x = 2 * dqx / h; out.y = 2 * dqy / h; out.z = 2 * dqz / h;
-    }
-
     _solveManifold(manifold, h) {
         const bodyA = manifold.bodyA, bodyB = manifold.bodyB;
-        for (let i = 0; i < manifold.points.length; i++) {
-            this._solvePoint(manifold.points[i], bodyA, bodyB, h);
+        const n = manifold.points.length;
+        if (n <= 1) {
+            if (n === 1) this._solvePoint(manifold.points[0], bodyA, bodyB, h);
+            return;
+        }
+        for (let i = 0; i < n; i++) {
+            this._solvePoint(manifold.points[i], bodyA, bodyB, h, null, true);
         }
     }
 
-    // One XPBD position-constraint solve for a single contact point.
-    //
-    // C is recomputed HERE, every call, from the bodies' CURRENT positions via each point's fixed
-    // local anchor offsets (ContactDetails.currentAnchorAInto/B) - never read directly from
-    // point.signedDistance, which is a snapshot from this TICK's single narrowphase pass, already
-    // stale by the second substep. Reusing that stale value was a real bug caught while building
-    // this file: a resting box's true overlap grows a little each substep as gravity keeps pulling
-    // it down, but a stale, constant C applied every substep with no correction ever making it
-    // smaller (because "smaller" was never re-measured) still gets a FRESH deltaLambda each call -
-    // the same one, over and over - overcorrecting the box upward well past resting, tick after
-    // tick, with nothing to signal "this is done" because the signal (C actually shrinking as the
-    // real overlap resolves) never arrived. Recomputing C live is what makes convergence within a
-    // tick's substeps possible at all: each correction actually reduces the NEXT measured C.
-    //
-    // Compliance is 0 here (rigid, infinitely stiff contact) - plan.md's own open question
-    // ("whether compliance is ever non-zero in practice") is left open; 0 is the correct default
-    // for a contact that should not be springy.
-    _solvePoint(point, bodyA, bodyB, h) {
-        point.currentAnchorAInto(this._rA, bodyA);
-        point.currentAnchorBInto(this._rB, bodyB);
-        const nx = point.normal.x, ny = point.normal.y, nz = point.normal.z;
-        // normal points from B to A (matching GJK/EPA's own convention - verified directly
-        // against GJK's separated-result normal after finding and fixing a real sign bug in EPA's
-        // own output, see EPA.js). C = (anchorB - anchorA) . normal is positive exactly when B's
-        // anchor has moved PAST A's anchor in the normal's own direction - i.e. penetrating.
-        const C = (this._rB.x - this._rA.x) * nx + (this._rB.y - this._rA.y) * ny + (this._rB.z - this._rA.z) * nz;
-        // SPECULATIVE CONTACT (plan.md, "Continuous collision / speculative contacts"): this guard,
-        // combined with the point being detected BEFORE overlap (narrowphase's speculative margin),
-        // IS the speculative mechanism - no separate code path. The point is created while still
-        // separated (negative signedDistance), so it already exists in the manifold. Then every
-        // substep the position predict (Solver._substep step 1) moves the body forward FIRST, and C
-        // is re-measured HERE against that predicted position. If the predicted motion overshot the
-        // touching plane, C > 0 and the constraint pulls the body back to exactly touch (C = 0) -
-        // never deeper, because C is the live overshoot, not a whole tick's accumulated penetration.
-        // If the predicted motion did NOT reach touch (C <= 0, still a real gap), there is nothing
-        // to correct this substep: a non-penetration contact only ever PUSHES APART, it never pulls
-        // a separated pair together across a gap. That is the entire fix for the derived-velocity
-        // problem: Δx per substep is now just the small overshoot beyond touch, so derived velocity
-        // v = Δx/h stays small, with no clamp anywhere (the central design rule holds).
-        if (C <= 0) return;
-
-        // rA/rB for the effective-mass and angular-correction math are offsets from each body's
-        // CENTER (not the anchor's world position itself) - overwrite _rA/_rB in place now that C
-        // has been read from their anchor positions above.
-        Vector3.subInto(this._rA, this._rA, bodyA.position);
-        Vector3.subInto(this._rB, this._rB, bodyB.position);
-
-        // Effective inverse mass along the normal: w = 1/mA + 1/mB + (rA x n)·I_A^-1·(rA x n) +
-        // (rB x n)·I_B^-1·(rB x n) - the standard generalized inverse mass for a linear+angular
-        // constraint (Muller et al. section 3.2, eq. 8).
-        const wSum = this._effectiveMass(bodyA, bodyB, this._rA, this._rB, nx, ny, nz);
-        if (wSum < 1e-12) return; // both bodies effectively immovable along this normal - nothing to solve
-
-        // XPBD Lagrange multiplier update, rigid (compliance-free) contact: deltaLambda =
-        // -C / wSum (alpha/h^2 term drops out entirely when compliance is 0 - Muller et al. eq 4).
-        // Sign note for this file's convention: C > 0 means penetrating (guarded above), so
-        // deltaLambda < 0, and _applyPositionalCorrection's verified pairing turns a NEGATIVE
-        // deltaLambda into a push-apart correction. A pushing contact therefore accumulates a
-        // NEGATIVE normalLambda here - the opposite sign from the textbook's non-negative
-        // convention, purely because the normal points B->A rather than A->B. The physical
-        // constraint "a contact can push apart but never pull together" is therefore normalLambda
-        // <= 0: clamp the accumulated value at 0 from above and feed back only the change actually
-        // applied, so an over-correction on a later iteration/substep can relax the push but can
-        // never invert it into an attractive pull across the contact.
-        const oldLambda = point.normalLambda;
-        let newLambda = oldLambda - C / wSum;
-        if (newLambda > 0) newLambda = 0; // contact cannot pull; clamp to no-push
-        const deltaLambda = newLambda - oldLambda;
-        point.normalLambda = newLambda;
-
-        this._applyPositionalCorrection(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, deltaLambda);
-    }
-
-    // Generalized inverse mass along direction (dx,dy,dz) for the pair, combining linear and
-    // angular contributions from both bodies. Shared by the normal and each friction direction.
-    _effectiveMass(bodyA, bodyB, rA, rB, dx, dy, dz) {
-        // linear_factor is a per-axis WORLD-space velocity mask, but this constraint's own
-        // direction is a single world vector - exact per-axis locking against an arbitrary contact
-        // normal isn't captured by a single isotropic scale, so the isotropic inverse mass is used
-        // directly here. Locked axes are a character-controller feature (movement clamped to a
-        // plane), not something a general rigid-body contact normal needs to interact with
-        // precisely - revisit if that combination turns out to matter.
-        let w = bodyA._massInverted + bodyB._massInverted;
-
-        const rax = rA.y * dz - rA.z * dy, ray = rA.z * dx - rA.x * dz, raz = rA.x * dy - rA.y * dx;
-        const rbx = rB.y * dz - rB.z * dy, rby = rB.z * dx - rB.x * dz, rbz = rB.x * dy - rB.y * dx;
-
-        if (bodyA._massInverted > 0) {
-            const IA = bodyA._worldInverseInertiaTensor;
-            const ix = IA.e00 * rax + IA.e01 * ray + IA.e02 * raz;
-            const iy = IA.e10 * rax + IA.e11 * ray + IA.e12 * raz;
-            const iz = IA.e20 * rax + IA.e21 * ray + IA.e22 * raz;
-            w += rax * ix + ray * iy + raz * iz;
-        }
-        if (bodyB._massInverted > 0) {
-            const IB = bodyB._worldInverseInertiaTensor;
-            const ix = IB.e00 * rbx + IB.e01 * rby + IB.e02 * rbz;
-            const iy = IB.e10 * rbx + IB.e11 * rby + IB.e12 * rbz;
-            const iz = IB.e20 * rbx + IB.e21 * rby + IB.e22 * rbz;
-            w += rbx * ix + rby * iy + rbz * iz;
-        }
-        return w;
-    }
-
-    // Applies the position correction dLambda * n (and the matching angular correction) to both
-    // bodies, scaled by their own inverse mass/inertia - standard XPBD position update (Muller et
-    // al. eq 6-7). Sign convention: correction pushes A along +n and B along -n, matching normal's
-    // B-to-A direction.
-    // C = (anchorB - anchorA) . n (see _solvePoint), so the constraint GRADIENT is dC/d(bodyA
-    // position) = -n and dC/d(bodyB position) = +n. XPBD's update Δx = Δλ * w * ∇C (Muller et al.
-    // eq 6) therefore moves A along -n*Δλ and B along +n*Δλ - the OPPOSITE pairing from what a
-    // naive "A gets +n, B gets -n" guess would produce. Verified against a concrete case: a box
-    // resting ON TOP of static ground, overlapping by a small amount, with normal pointing from B
-    // (the box) to A (the ground) - i.e. DOWNWARD. deltaLambda comes out negative for a positive
-    // overlap C, and the box (body B) must move UP to resolve it: +n*deltaLambda with n pointing
-    // down and deltaLambda negative gives a positive (upward) y-component - correct only with
-    // THIS pairing, not the reversed one that was here before (which pushed the box down, through
-    // the ground, for the same inputs - the actual fall-through bug this comment is fixing).
-    _applyPositionalCorrection(bodyA, bodyB, rA, rB, nx, ny, nz, dLambda) {
-        const px = nx * dLambda, py = ny * dLambda, pz = nz * dLambda;
-
-        if (bodyA._massInverted > 0) {
-            bodyA.position.x -= px * bodyA._massInverted * bodyA.linear_factor.x;
-            bodyA.position.y -= py * bodyA._massInverted * bodyA.linear_factor.y;
-            bodyA.position.z -= pz * bodyA._massInverted * bodyA.linear_factor.z;
-            this._applyAngularCorrection(bodyA, rA, -px, -py, -pz);
-        }
-        if (bodyB._massInverted > 0) {
-            bodyB.position.x += px * bodyB._massInverted * bodyB.linear_factor.x;
-            bodyB.position.y += py * bodyB._massInverted * bodyB.linear_factor.y;
-            bodyB.position.z += pz * bodyB._massInverted * bodyB.linear_factor.z;
-            this._applyAngularCorrection(bodyB, rB, px, py, pz);
+    _solveContactVelocities(manifolds, gravity, h) {
+        for (const manifold of manifolds.values()) {
+            const bodyA = manifold.bodyA, bodyB = manifold.bodyB;
+            for (let i = 0; i < manifold.points.length; i++) {
+                this._solveContactVelocity(manifold.points[i], bodyA, bodyB, gravity, h);
+            }
+            if (manifold.points.length > 0) {
+                // Reference point for angular friction: the most-engaged one (largest |normalLambda|),
+                // not always points[0] - see VelocitySolve.js._solveAngularFriction.
+                let ref = manifold.points[0];
+                for (let i = 1; i < manifold.points.length; i++) {
+                    if (Math.abs(manifold.points[i].normalLambda) > Math.abs(ref.normalLambda)) ref = manifold.points[i];
+                }
+                this._solveAngularFriction(ref, bodyA, bodyB, h);
+            }
         }
     }
+}
 
-    // Rotates `body` by the small-angle correction (I^-1 * (r x p)) * 0.5, the standard PBD
-    // angular position update from a linear positional impulse applied at offset r (Muller et al.
-    // eq 7-8, via the same quaternion-derivative integration _integrateRotation uses).
-    _applyAngularCorrection(body, r, px, py, pz) {
+// Restitution slop multiplier: an approach speed below (gravityMag*h)*this factor doesn't bounce -
+// keeps a resting body's own one-substep gravity nudge from becoming perpetual micro-jitter,
+// scaled to gravity/timestep instead of a fixed absolute speed so it stays correct across body
+// scale (a fixed threshold silently killed real small/slow bounces - e.g. a marble dropped 5mm hit
+// the floor at 0.31 m/s, a genuine restitution-worthy impact, and got fully suppressed under a
+// flat 0.5 m/s cutoff).
+Solver.RESTITUTION_SLOP_FACTOR = 8;
+
+// Largest single-point penetration (C) a multi-point manifold's position-solve resolves in one
+// substep (see PositionSolve.js's cappedC; never applied to a single-point manifold). The
+// remainder is real, live-measured penetration, picked up on the next substep instead of all at
+// once - keeps one point's correction from moving the body before its manifold siblings are read.
+Solver.MAX_PENETRATION_PER_SUBSTEP = 0.005;
+
+ActionPhysics.Solver = Solver;
+
+
+// ==== src/solver/Integrate.js ====
+// Phase 1: integrate velocity (gravity, forces, damping) and predict position for every dynamic
+// body this substep, plus rotation integration and the angular velocity helpers used elsewhere.
+var proto = Solver.prototype;
+
+proto._integrate = function (bodies, gravity, h) {
+    for (let i = 0; i < bodies.length; i++) {
+        const b = bodies[i];
+        if (b.bodyType !== RigidBody.DYNAMIC) continue;
+
+        this._prevPos.set(b.id, new Vector3().copy(b.position));
+        this._prevRot.set(b.id, new Quaternion().copy(b.rotation));
+        const bias = this._biasDelta.get(b.id) || new Vector3();
+        bias.set(0, 0, 0);
+        this._biasDelta.set(b.id, bias);
+        const deferred = this._deferredRotation.get(b.id) || new Vector3();
+        deferred.set(0, 0, 0);
+        this._deferredRotation.set(b.id, deferred);
+        // Snapshot before gravity/damping touch it - restitution's pre-solve velocity reads this,
+        // not the post-gravity value (see PositionSolve.js's restitution capture).
+        this._preGravityVel.set(b.id, new Vector3().copy(b.linear_velocity));
+
+        const g = b.gravity || gravity;
+        b.linear_velocity.x += g.x * h * b.linear_factor.x;
+        b.linear_velocity.y += g.y * h * b.linear_factor.y;
+        b.linear_velocity.z += g.z * h * b.linear_factor.z;
+
+        const af = b.accumulated_force;
+        if (af.x !== 0 || af.y !== 0 || af.z !== 0) {
+            b.linear_velocity.x += af.x * b._massInverted * h * b.linear_factor.x;
+            b.linear_velocity.y += af.y * b._massInverted * h * b.linear_factor.y;
+            b.linear_velocity.z += af.z * b._massInverted * h * b.linear_factor.z;
+        }
+        const at = b.accumulated_torque;
+        if (at.x !== 0 || at.y !== 0 || at.z !== 0) {
+            const I = b._worldInverseInertiaTensor;
+            b.angular_velocity.x += (I.e00 * at.x + I.e01 * at.y + I.e02 * at.z) * h * b.angular_factor.x;
+            b.angular_velocity.y += (I.e10 * at.x + I.e11 * at.y + I.e12 * at.z) * h * b.angular_factor.y;
+            b.angular_velocity.z += (I.e20 * at.x + I.e21 * at.y + I.e22 * at.z) * h * b.angular_factor.z;
+        }
+
+        if (b.linear_damping > 0) b.linear_velocity.scaleInPlace(Math.max(0, 1 - b.linear_damping * h));
+        if (b.angular_damping > 0) b.angular_velocity.scaleInPlace(Math.max(0, 1 - b.angular_damping * h));
+
+        b.position.addScaledInPlace(b.linear_velocity, h);
+        Solver._integrateRotation(b.rotation, b.angular_velocity, h);
+        // Inertia tensor depends on rotation, which just changed - refresh so this substep's
+        // effective-mass/angular-correction math uses the current orientation.
+        b._recomputeWorldInverseInertia();
+    }
+};
+
+proto._deriveVelocities = function (bodies, h) {
+    for (let i = 0; i < bodies.length; i++) {
+        const b = bodies[i];
+        if (b.bodyType !== RigidBody.DYNAMIC) continue;
+        const prevPos = this._prevPos.get(b.id);
+        const prevRot = this._prevRot.get(b.id);
+        const bias = this._biasDelta.get(b.id);
+        // Bias-only motion (see PositionSolve.js) is excluded here so a body that only moved from
+        // a bias nudge derives zero velocity from that nudge.
+        b.linear_velocity.x = (b.position.x - prevPos.x - bias.x) / h;
+        b.linear_velocity.y = (b.position.y - prevPos.y - bias.y) / h;
+        b.linear_velocity.z = (b.position.z - prevPos.z - bias.z) / h;
+        Solver._deriveAngularVelocity(b.angular_velocity, prevRot, b.rotation, h);
+    }
+};
+
+// Exact exponential-map quaternion integration: dq = (cos(theta/2), sin(theta/2)*axis).
+Solver._integrateRotation = function (rotation, angularVelocity, h) {
+    const wx = angularVelocity.x, wy = angularVelocity.y, wz = angularVelocity.z;
+    const wLenSq = wx * wx + wy * wy + wz * wz;
+    if (wLenSq < 1e-24) return;
+    const wLen = Math.sqrt(wLenSq);
+    const halfAngle = wLen * h * 0.5;
+    const s = Scalar.sin(halfAngle) / wLen;
+    const dqx = wx * s, dqy = wy * s, dqz = wz * s, dqw = Scalar.cos(halfAngle);
+
+    const qx = rotation.x, qy = rotation.y, qz = rotation.z, qw = rotation.w;
+    const rx = dqw * qx + dqx * qw + dqy * qz - dqz * qy;
+    const ry = dqw * qy - dqx * qz + dqy * qw + dqz * qx;
+    const rz = dqw * qz + dqx * qy - dqy * qx + dqz * qw;
+    const rw = dqw * qw - dqx * qx - dqy * qy - dqz * qz;
+    rotation.x = rx; rotation.y = ry; rotation.z = rz; rotation.w = rw;
+    rotation.normalize();
+};
+
+// Angular velocity from the rotation delta between prevRot and rotation: dq = rotation * conj(prevRot).
+Solver._deriveAngularVelocity = function (out, prevRot, rotation, h) {
+    let dqx = rotation.w * (-prevRot.x) + rotation.x * prevRot.w + rotation.y * (-prevRot.z) - rotation.z * (-prevRot.y);
+    let dqy = rotation.w * (-prevRot.y) - rotation.x * (-prevRot.z) + rotation.y * prevRot.w + rotation.z * (-prevRot.x);
+    let dqz = rotation.w * (-prevRot.z) + rotation.x * (-prevRot.y) - rotation.y * (-prevRot.x) + rotation.z * prevRot.w;
+    let dqw = rotation.w * prevRot.w - rotation.x * (-prevRot.x) - rotation.y * (-prevRot.y) - rotation.z * (-prevRot.z);
+    if (dqw < 0) { dqx = -dqx; dqy = -dqy; dqz = -dqz; dqw = -dqw; } // shorter path
+    const sinHalf = Math.sqrt(dqx * dqx + dqy * dqy + dqz * dqz);
+    if (sinHalf < 1e-12) { out.x = 0; out.y = 0; out.z = 0; return; }
+    const halfAngle = Scalar.atan2(sinHalf, dqw);
+    const scale = (2 * halfAngle / h) / sinHalf;
+    out.x = dqx * scale; out.y = dqy * scale; out.z = dqz * scale;
+};
+
+
+// ==== src/solver/PositionSolve.js ====
+// Phase 2: position-level XPBD constraint solve for a single contact point, plus the effective-mass
+// and positional-correction helpers it uses.
+var proto = Solver.prototype;
+
+proto._solvePoint = function (point, bodyA, bodyB, h, deferRotation, capPenetration) {
+    point.currentAnchorAInto(this._rA, bodyA);
+    point.currentAnchorBInto(this._rB, bodyB);
+    const nx = point.normal.x, ny = point.normal.y, nz = point.normal.z;
+    // C = (anchorB - anchorA).normal; normal points B->A (GJK/EPA convention). C > 0 = penetrating.
+    // Recomputed live every call from current anchor positions, never from point.signedDistance
+    // (a tick-start snapshot, stale by the second substep).
+    const C = (this._rB.x - this._rA.x) * nx + (this._rB.y - this._rA.y) * ny + (this._rB.z - this._rA.z) * nz;
+    // Speculative contact: created while still separated; only correct once predicted motion has
+    // actually reached/passed touch (C > 0). Never pulls a separated pair together across a gap.
+    if (C <= 0) return;
+
+    // Pre-solve normal velocity for restitution, captured on the substep that actually engages this
+    // point (C > 0), using each body's PRE-gravity velocity (this substep's own gravity add hasn't
+    // happened from the impact's point of view yet).
+    point._preSolveNormalVel = this._contactRelativeNormalVelocityPreGravity(point, bodyA, bodyB);
+
+    Vector3.subInto(this._rA, this._rA, bodyA.position);
+    Vector3.subInto(this._rB, this._rB, bodyB.position);
+
+    const wSum = this._effectiveMass(bodyA, bodyB, this._rA, this._rB, nx, ny, nz);
+    if (wSum < 1e-12) return; // both bodies immovable along this normal
+
+    // capPenetration is only passed true for a multi-point manifold (see Solver.MAX_PENETRATION_PER_SUBSTEP) -
+    // a single-point manifold always resolves C fully in one substep.
+    const cappedC = capPenetration ? Math.min(C, Solver.MAX_PENETRATION_PER_SUBSTEP) : C;
+
+    // Rigid (compliance-free) contact: deltaLambda = -C/wSum. normalLambda accumulates <= 0
+    // (a contact can push apart, never pull together).
+    const oldLambda = point.normalLambda;
+    let newLambda = oldLambda - cappedC / wSum;
+    if (newLambda > 0) newLambda = 0;
+    const deltaLambda = newLambda - oldLambda;
+    point.normalLambda = newLambda;
+
+    // Split the correction: only the part explainable by the body's own real closing velocity
+    // becomes derived velocity (velocityDelta); the rest is a pure position edit (biasDelta),
+    // excluded from step 4's velocity derivation. This is what lets a resting body under load
+    // correct fully while a raw spawn overlap resolves as gradual position bias instead of
+    // fabricated kinetic energy.
+    const liveRelVel = this._contactRelativeNormalVelocity(point, bodyA, bodyB);
+    const explainableBySubstep = Math.max(liveRelVel, 0) * h * Solver.EXPLAINABLE_MARGIN;
+    let velocityC = cappedC;
+    if (velocityC > explainableBySubstep) velocityC = explainableBySubstep;
+    const velocityDelta = -velocityC / wSum;
+    const biasDelta = deltaLambda - velocityDelta;
+    this._applyPositionalCorrection(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, velocityDelta, false, deferRotation);
+    this._applyPositionalCorrection(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, biasDelta, true, deferRotation);
+};
+
+// Generalized inverse mass along direction (dx,dy,dz): linear + angular contribution from both bodies.
+proto._effectiveMass = function (bodyA, bodyB, rA, rB, dx, dy, dz) {
+    let w = bodyA._massInverted + bodyB._massInverted;
+
+    const rax = rA.y * dz - rA.z * dy, ray = rA.z * dx - rA.x * dz, raz = rA.x * dy - rA.y * dx;
+    const rbx = rB.y * dz - rB.z * dy, rby = rB.z * dx - rB.x * dz, rbz = rB.x * dy - rB.y * dx;
+
+    if (bodyA._massInverted > 0) {
+        const IA = bodyA._worldInverseInertiaTensor;
+        const ix = IA.e00 * rax + IA.e01 * ray + IA.e02 * raz;
+        const iy = IA.e10 * rax + IA.e11 * ray + IA.e12 * raz;
+        const iz = IA.e20 * rax + IA.e21 * ray + IA.e22 * raz;
+        w += rax * ix + ray * iy + raz * iz;
+    }
+    if (bodyB._massInverted > 0) {
+        const IB = bodyB._worldInverseInertiaTensor;
+        const ix = IB.e00 * rbx + IB.e01 * rby + IB.e02 * rbz;
+        const iy = IB.e10 * rbx + IB.e11 * rby + IB.e12 * rbz;
+        const iz = IB.e20 * rbx + IB.e21 * rby + IB.e22 * rbz;
+        w += rbx * ix + rby * iy + rbz * iz;
+    }
+    return w;
+};
+
+// Applies dLambda*n (and the matching angular correction) to both bodies. C = (anchorB-anchorA).n,
+// so A moves along -n*dLambda, B along +n*dLambda.
+// `bias`: true for the non-explainable share of a split correction - the body still moves (so the
+// next substep measures a smaller overlap), but the movement is also recorded into this._biasDelta
+// for step 4 to subtract back out.
+// `deferRotation` (optional): accumulates the angular delta instead of composing it into
+// body.rotation immediately - see _applyAngularCorrection / _flushDeferredRotation.
+proto._applyPositionalCorrection = function (bodyA, bodyB, rA, rB, nx, ny, nz, dLambda, bias, deferRotation) {
+    const px = nx * dLambda, py = ny * dLambda, pz = nz * dLambda;
+
+    if (bodyA._massInverted > 0) {
+        const dx = -px * bodyA._massInverted * bodyA.linear_factor.x;
+        const dy = -py * bodyA._massInverted * bodyA.linear_factor.y;
+        const dz = -pz * bodyA._massInverted * bodyA.linear_factor.z;
+        bodyA.position.x += dx; bodyA.position.y += dy; bodyA.position.z += dz;
+        if (bias) {
+            const b = this._biasDelta.get(bodyA.id);
+            if (b) { b.x += dx; b.y += dy; b.z += dz; }
+        }
+        this._applyAngularCorrection(bodyA, rA, -px, -py, -pz, deferRotation);
+    }
+    if (bodyB._massInverted > 0) {
+        const dx = px * bodyB._massInverted * bodyB.linear_factor.x;
+        const dy = py * bodyB._massInverted * bodyB.linear_factor.y;
+        const dz = pz * bodyB._massInverted * bodyB.linear_factor.z;
+        bodyB.position.x += dx; bodyB.position.y += dy; bodyB.position.z += dz;
+        if (bias) {
+            const b = this._biasDelta.get(bodyB.id);
+            if (b) { b.x += dx; b.y += dy; b.z += dz; }
+        }
+        this._applyAngularCorrection(bodyB, rB, px, py, pz, deferRotation);
+    }
+};
+
+// Small-angle PBD angular update from a linear positional impulse p at offset r: I^-1*(r x p)*0.5.
+// With `deferRotation` supplied, adds the small-angle delta into its per-body accumulator instead
+// of composing it into body.rotation immediately - see _applyPositionalCorrection / _flushDeferredRotation.
+proto._applyAngularCorrection = function (body, r, px, py, pz, deferRotation) {
+    const torqueX = r.y * pz - r.z * py, torqueY = r.z * px - r.x * pz, torqueZ = r.x * py - r.y * px;
+    const I = body._worldInverseInertiaTensor;
+    const wx = I.e00 * torqueX + I.e01 * torqueY + I.e02 * torqueZ;
+    const wy = I.e10 * torqueX + I.e11 * torqueY + I.e12 * torqueZ;
+    const wz = I.e20 * torqueX + I.e21 * torqueY + I.e22 * torqueZ;
+    const ax = wx * body.angular_factor.x, ay = wy * body.angular_factor.y, az = wz * body.angular_factor.z;
+    if (deferRotation) {
+        const acc = deferRotation.get(body.id);
+        if (acc) { acc.x += ax; acc.y += ay; acc.z += az; return; }
+    }
+    this._angularCorrA.set(ax, ay, az);
+    Solver._integrateRotation(body.rotation, this._angularCorrA, 1); // h=1: this IS the delta, not a rate
+};
+
+// Applies one body's accumulated deferred small-angle rotation (summed across every point in the
+// manifold's pass) as a single quaternion update, then clears the accumulator.
+proto._flushDeferredRotation = function (body, deferRotation) {
+    const acc = deferRotation.get(body.id);
+    if (!acc || (acc.x === 0 && acc.y === 0 && acc.z === 0)) return;
+    this._angularCorrA.set(acc.x, acc.y, acc.z);
+    Solver._integrateRotation(body.rotation, this._angularCorrA, 1);
+    acc.x = 0; acc.y = 0; acc.z = 0;
+};
+
+
+// ==== src/solver/VelocitySolve.js ====
+// Phase 3: velocity-pass contact solve (restitution + Coulomb friction + rolling resistance),
+// applied after positions are solved, plus the velocity-space helpers they share.
+var proto = Solver.prototype;
+
+proto._solveContactVelocity = function (point, bodyA, bodyB, gravity, h) {
+    if (point.normalLambda >= 0) return; // never engaged this substep - nothing to correct
+
+    point.currentAnchorAInto(this._rA, bodyA);
+    point.currentAnchorBInto(this._rB, bodyB);
+    Vector3.subInto(this._rA, this._rA, bodyA.position);
+    Vector3.subInto(this._rB, this._rB, bodyB.position);
+    const nx = point.normal.x, ny = point.normal.y, nz = point.normal.z;
+
+    // --- Restitution (normal) ---
+    const restitution = Math.max(bodyA.restitution, bodyB.restitution);
+    const relN = this._contactRelativeNormalVelocity(point, bodyA, bodyB);
+    const g = bodyA.gravity || bodyB.gravity || gravity;
+    const gravityMag = Math.sqrt(g.x * g.x + g.y * g.y + g.z * g.z);
+    const restitutionThreshold = gravityMag * h * Solver.RESTITUTION_SLOP_FACTOR;
+    if (restitution > 0 && point._preSolveNormalVel > restitutionThreshold) {
+        const targetN = -restitution * point._preSolveNormalVel;
+        if (targetN < relN) { // only add separation, never damp an already-separating contact
+            const wN = this._effectiveMass(bodyA, bodyB, this._rA, this._rB, nx, ny, nz);
+            if (wN >= 1e-12) this._applyVelocityImpulse(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, (targetN - relN) / wN);
+        }
+    }
+
+    // --- Friction (tangent) ---
+    const friction = Math.sqrt(bodyA.friction * bodyB.friction);
+    if (friction <= 0) return;
+    const maxImpulse = friction * Math.abs(point.normalLambda) / h;
+    if (maxImpulse <= 0) return;
+
+    this._contactRelativeVelocity(point, bodyA, bodyB, this._tmpDispA);
+    const vn = this._tmpDispA.x * nx + this._tmpDispA.y * ny + this._tmpDispA.z * nz;
+    let vtx = this._tmpDispA.x - vn * nx, vty = this._tmpDispA.y - vn * ny, vtz = this._tmpDispA.z - vn * nz;
+    const vtMag = Math.sqrt(vtx * vtx + vty * vty + vtz * vtz);
+    if (vtMag < 1e-12) return;
+
+    const tx = vtx / vtMag, ty = vty / vtMag, tz = vtz / vtMag;
+    const wT = this._effectiveMass(bodyA, bodyB, this._rA, this._rB, tx, ty, tz);
+    if (wT < 1e-12) return;
+    let jt = vtMag / wT; // impulse to fully stop tangential motion, clamped to Coulomb cap
+    if (jt > maxImpulse) jt = maxImpulse;
+    this._applyVelocityImpulse(bodyA, bodyB, this._rA, this._rB, -tx, -ty, -tz, jt);
+};
+
+// Angular friction: damps relative angular velocity ABOUT the contact's tangent plane only (spin
+// about the normal is untouched). Shape-agnostic - on a round shape this looks like rolling
+// resistance, but it fires the same way for a box pivoting at a contact corner. Applied once per
+// manifold via the most-engaged point, not once per point - splitting it per-point let each point's
+// correction change the angular velocity the next point read, oscillating instead of converging
+// (traced on a shoved cylinder: stuck at a nonzero fixed-point angular velocity forever instead of
+// decaying to rest).
+proto._solveAngularFriction = function (point, bodyA, bodyB, h) {
+    const angularFriction = Math.sqrt(Math.max(bodyA.angular_friction, 0) * Math.max(bodyB.angular_friction, 0));
+    if (angularFriction <= 0) return;
+
+    const nx = point.normal.x, ny = point.normal.y, nz = point.normal.z;
+    const rw = bodyA.angular_velocity, ww = bodyB.angular_velocity;
+    let relWx = ww.x - rw.x, relWy = ww.y - rw.y, relWz = ww.z - rw.z;
+    const relWn = relWx * nx + relWy * ny + relWz * nz;
+    relWx -= relWn * nx; relWy -= relWn * ny; relWz -= relWn * nz;
+    const relWMag = Math.sqrt(relWx * relWx + relWy * relWy + relWz * relWz);
+    if (relWMag < 1e-9) return;
+
+    const ax = relWx / relWMag, ay = relWy / relWMag, az = relWz / relWMag;
+    let wSum = 0;
+    if (bodyA._massInverted > 0) {
+        const IA = bodyA._worldInverseInertiaTensor;
+        wSum += ax * (IA.e00 * ax + IA.e01 * ay + IA.e02 * az) + ay * (IA.e10 * ax + IA.e11 * ay + IA.e12 * az) + az * (IA.e20 * ax + IA.e21 * ay + IA.e22 * az);
+    }
+    if (bodyB._massInverted > 0) {
+        const IB = bodyB._worldInverseInertiaTensor;
+        wSum += ax * (IB.e00 * ax + IB.e01 * ay + IB.e02 * az) + ay * (IB.e10 * ax + IB.e11 * ay + IB.e12 * az) + az * (IB.e20 * ax + IB.e21 * ay + IB.e22 * az);
+    }
+    if (wSum < 1e-12) return;
+
+    const maxAngImpulse = angularFriction * Math.abs(point.normalLambda) / h;
+    if (maxAngImpulse <= 0) return;
+    let j = relWMag / wSum;
+    if (j > maxAngImpulse) j = maxAngImpulse;
+
+    if (bodyA._massInverted > 0) {
+        const IA = bodyA._worldInverseInertiaTensor;
+        const tqx = ax * j, tqy = ay * j, tqz = az * j;
+        bodyA.angular_velocity.x += (IA.e00 * tqx + IA.e01 * tqy + IA.e02 * tqz) * bodyA.angular_factor.x;
+        bodyA.angular_velocity.y += (IA.e10 * tqx + IA.e11 * tqy + IA.e12 * tqz) * bodyA.angular_factor.y;
+        bodyA.angular_velocity.z += (IA.e20 * tqx + IA.e21 * tqy + IA.e22 * tqz) * bodyA.angular_factor.z;
+    }
+    if (bodyB._massInverted > 0) {
+        const IB = bodyB._worldInverseInertiaTensor;
+        const tqx = -ax * j, tqy = -ay * j, tqz = -az * j;
+        bodyB.angular_velocity.x += (IB.e00 * tqx + IB.e01 * tqy + IB.e02 * tqz) * bodyB.angular_factor.x;
+        bodyB.angular_velocity.y += (IB.e10 * tqx + IB.e11 * tqy + IB.e12 * tqz) * bodyB.angular_factor.y;
+        bodyB.angular_velocity.z += (IB.e20 * tqx + IB.e21 * tqy + IB.e22 * tqz) * bodyB.angular_factor.z;
+    }
+};
+
+// Contact-relative velocity (B's point velocity minus A's) into `out`.
+proto._contactRelativeVelocity = function (point, bodyA, bodyB, out) {
+    point.currentAnchorAInto(this._tmpPrev, bodyA);
+    this._tmpPrev.subInPlace(bodyA.position);
+    const va = this._pointVelocity(bodyA, this._tmpPrev, this._tmpDispB);
+    const vax = va.x, vay = va.y, vaz = va.z;
+    point.currentAnchorBInto(this._tmpPrev, bodyB);
+    this._tmpPrev.subInPlace(bodyB.position);
+    const vb = this._pointVelocity(bodyB, this._tmpPrev, this._tmpDispB);
+    out.set(vb.x - vax, vb.y - vay, vb.z - vaz);
+    return out;
+};
+
+// Velocity of the material point at center-relative offset r on `body`: v + omega x r.
+proto._pointVelocity = function (body, r, out) {
+    const w = body.angular_velocity, v = body.linear_velocity;
+    out.set(
+        v.x + (w.y * r.z - w.z * r.y),
+        v.y + (w.z * r.x - w.x * r.z),
+        v.z + (w.x * r.y - w.y * r.x)
+    );
+    return out;
+};
+
+proto._contactRelativeNormalVelocity = function (point, bodyA, bodyB) {
+    this._contactRelativeVelocity(point, bodyA, bodyB, this._tmpDispA);
+    return this._tmpDispA.x * point.normal.x + this._tmpDispA.y * point.normal.y + this._tmpDispA.z * point.normal.z;
+};
+
+// Same as _contactRelativeNormalVelocity but using each body's linear velocity from before this
+// substep's gravity add - used only for restitution's pre-solve capture (PositionSolve.js).
+proto._contactRelativeNormalVelocityPreGravity = function (point, bodyA, bodyB) {
+    point.currentAnchorAInto(this._tmpPrev, bodyA);
+    this._tmpPrev.subInPlace(bodyA.position);
+    const preA = this._preGravityVel.get(bodyA.id) || bodyA.linear_velocity;
+    const wa = bodyA.angular_velocity, ra = this._tmpPrev;
+    const vax = preA.x + (wa.y * ra.z - wa.z * ra.y);
+    const vay = preA.y + (wa.z * ra.x - wa.x * ra.z);
+    const vaz = preA.z + (wa.x * ra.y - wa.y * ra.x);
+
+    point.currentAnchorBInto(this._tmpPrev, bodyB);
+    this._tmpPrev.subInPlace(bodyB.position);
+    const preB = this._preGravityVel.get(bodyB.id) || bodyB.linear_velocity;
+    const wb = bodyB.angular_velocity, rb = this._tmpPrev;
+    const vbx = preB.x + (wb.y * rb.z - wb.z * rb.y);
+    const vby = preB.y + (wb.z * rb.x - wb.x * rb.z);
+    const vbz = preB.z + (wb.x * rb.y - wb.y * rb.x);
+
+    const dx = vbx - vax, dy = vby - vay, dz = vbz - vaz;
+    return dx * point.normal.x + dy * point.normal.y + dz * point.normal.z;
+};
+
+// Applies velocity-space impulse j*(dx,dy,dz) at contact offsets rA/rB (A: -j, B: +j).
+proto._applyVelocityImpulse = function (bodyA, bodyB, rA, rB, dx, dy, dz, j) {
+    const px = dx * j, py = dy * j, pz = dz * j;
+    if (bodyA._massInverted > 0) {
+        bodyA.linear_velocity.x -= px * bodyA._massInverted * bodyA.linear_factor.x;
+        bodyA.linear_velocity.y -= py * bodyA._massInverted * bodyA.linear_factor.y;
+        bodyA.linear_velocity.z -= pz * bodyA._massInverted * bodyA.linear_factor.z;
+        this._applyAngularVelocityImpulse(bodyA, rA, -px, -py, -pz);
+    }
+    if (bodyB._massInverted > 0) {
+        bodyB.linear_velocity.x += px * bodyB._massInverted * bodyB.linear_factor.x;
+        bodyB.linear_velocity.y += py * bodyB._massInverted * bodyB.linear_factor.y;
+        bodyB.linear_velocity.z += pz * bodyB._massInverted * bodyB.linear_factor.z;
+        this._applyAngularVelocityImpulse(bodyB, rB, px, py, pz);
+    }
+};
+
+proto._applyAngularVelocityImpulse = function (body, r, px, py, pz) {
+    const tqx = r.y * pz - r.z * py, tqy = r.z * px - r.x * pz, tqz = r.x * py - r.y * px;
+    const I = body._worldInverseInertiaTensor;
+    body.angular_velocity.x += (I.e00 * tqx + I.e01 * tqy + I.e02 * tqz) * body.angular_factor.x;
+    body.angular_velocity.y += (I.e10 * tqx + I.e11 * tqy + I.e12 * tqz) * body.angular_factor.y;
+    body.angular_velocity.z += (I.e20 * tqx + I.e21 * tqy + I.e22 * tqz) * body.angular_factor.z;
+};
+
+// Two unit vectors spanning the plane perpendicular to `normal`.
+Solver._tangentBasis = function (normal, outT1, outT2) {
+    outT1.findOrthogonal(normal);
+    Vector3.crossInto(outT2, normal, outT1);
+};
+
+
+// ==== src/constraints/Constraint.js ====
+/**
+ * Constraint: base class for the user-facing joints (Point, Hinge, Slider, Weld).
+ *
+ * A joint computes its own position error (a vector or scalar C) and applies the correction via
+ * the same generalized-inverse-mass math the contact solver already uses. A joint's solve() runs
+ * once per substep inside the position-constraint loop, before velocity is derived - so a joint's
+ * effect shows up in derived velocity for free, the same way a contact's does. No
+ * compliance/softness yet; every joint here is rigid.
+ */
+class Constraint {
+    constructor(bodyA, bodyB) {
+        this.bodyA = bodyA;
+        this.bodyB = bodyB; // may be null: a joint anchored to the world (bodyA pinned in space)
+        this.enabled = true;
+        // Warm-start accumulators, reset per substep like a contact's normalLambda - carried across
+        // TICKS via nothing (a joint has no manifold to warm-start from between ticks the way a
+        // contact does; its own accumulated lambda within a tick's substeps is enough for XPBD's
+        // convergence, matching the contact solver's own per-substep reset discipline).
+    }
+}
+
+ActionPhysics.Constraint = Constraint;
+
+
+// ==== src/constraints/PointConstraint.js ====
+// Ball/socket joint: pins bodyA's local anchor to bodyB's (or a fixed world point if bodyB null).
+// Full 3x3 coupled XPBD solve (C = worldB - worldA), not 3 independent scalar passes.
+class PointConstraint extends Constraint {
+    constructor(bodyA, bodyB, localAnchorA, localAnchorB) {
+        super(bodyA, bodyB);
+        this.localAnchorA = new Vector3().copy(localAnchorA);
+        this.localAnchorB = new Vector3().copy(localAnchorB); // world point if bodyB is null
+
+        this._worldA = new Vector3();
+        this._worldB = new Vector3();
+        this._rA = new Vector3();
+        this._rB = new Vector3();
+        this._C = new Vector3();
+        this._delta = new Vector3();
+        this._K = new Matrix3();
+        this._Kinv = new Matrix3();
+        this.breaking_threshold = null; // null = never breaks
+    }
+
+    _anchorAWorld(out) {
+        out.copy(this.localAnchorA);
+        this.bodyA.rotation.transformVectorInPlace(out);
+        out.addInPlace(this.bodyA.position);
+        return out;
+    }
+
+    _anchorBWorld(out) {
+        if (!this.bodyB) { out.copy(this.localAnchorB); return out; }
+        out.copy(this.localAnchorB);
+        this.bodyB.rotation.transformVectorInPlace(out);
+        out.addInPlace(this.bodyB.position);
+        return out;
+    }
+
+    solve(h) {
+        if (!this.enabled) return;
+        const bodyA = this.bodyA, bodyB = this.bodyB;
+        const hasB = !!(bodyB && bodyB._massInverted > 0);
+
+        this._anchorAWorld(this._worldA);
+        this._anchorBWorld(this._worldB);
+        Vector3.subInto(this._C, this._worldB, this._worldA);
+        if (this._C.lengthSquared() < 1e-20) return;
+
+        Vector3.subInto(this._rA, this._worldA, bodyA.position);
+        if (hasB) Vector3.subInto(this._rB, this._worldB, bodyB.position);
+        else this._rB.set(0, 0, 0);
+
+        this._buildEffectiveMassMatrix(this._K, bodyA, hasB ? bodyB : null, this._rA, this._rB);
+        if (!this._Kinv.invertInto(this._K)) return;
+
+        const cx = -this._C.x, cy = -this._C.y, cz = -this._C.z;
+        const K = this._Kinv;
+        this._delta.set(
+            K.e00 * cx + K.e01 * cy + K.e02 * cz,
+            K.e10 * cx + K.e11 * cy + K.e12 * cz,
+            K.e20 * cx + K.e21 * cy + K.e22 * cz
+        );
+
+        // delta/h^2 is the force-equivalent breaking_threshold checks - raw C alone stays near zero
+        // regardless of load.
+        if (this.breaking_threshold != null && this._delta.length() / (h * h) > this.breaking_threshold) {
+            this.enabled = false;
+            return;
+        }
+
+        this._applyCorrection(bodyA, this._rA, this._delta, -1);
+        if (hasB) this._applyCorrection(bodyB, this._rB, this._delta, 1);
+    }
+
+    // K = (1/mA + 1/mB)*I3 - [rA×]*IA^-1*[rA×] - [rB×]*IB^-1*[rB×].
+    _buildEffectiveMassMatrix(out, bodyA, bodyB, rA, rB) {
+        const mSum = bodyA._massInverted + (bodyB ? bodyB._massInverted : 0);
+        out.e00 = mSum; out.e01 = 0; out.e02 = 0;
+        out.e10 = 0; out.e11 = mSum; out.e12 = 0;
+        out.e20 = 0; out.e21 = 0; out.e22 = mSum;
+        if (bodyA._massInverted > 0) PointConstraint._subtractSkewInertiaSkew(out, rA, bodyA._worldInverseInertiaTensor);
+        if (bodyB && bodyB._massInverted > 0) PointConstraint._subtractSkewInertiaSkew(out, rB, bodyB._worldInverseInertiaTensor);
+    }
+
+    // out -= [r×]^T * I * [r×]
+    static _subtractSkewInertiaSkew(out, r, I) {
+        const rx = r.x, ry = r.y, rz = r.z;
+        const m00 = I.e01 * rz - I.e02 * ry, m01 = -I.e00 * rz + I.e02 * rx, m02 = I.e00 * ry - I.e01 * rx;
+        const m10 = I.e11 * rz - I.e12 * ry, m11 = -I.e10 * rz + I.e12 * rx, m12 = I.e10 * ry - I.e11 * rx;
+        const m20 = I.e21 * rz - I.e22 * ry, m21 = -I.e20 * rz + I.e22 * rx, m22 = I.e20 * ry - I.e21 * rx;
+        out.e00 -= (-rz * m10 + ry * m20); out.e01 -= (-rz * m11 + ry * m21); out.e02 -= (-rz * m12 + ry * m22);
+        out.e10 -= (rz * m00 - rx * m20); out.e11 -= (rz * m01 - rx * m21); out.e12 -= (rz * m02 - rx * m22);
+        out.e20 -= (-ry * m00 + rx * m10); out.e21 -= (-ry * m01 + rx * m11); out.e22 -= (-ry * m02 + rx * m12);
+    }
+
+    // sign: -1 for bodyA, +1 for bodyB (matches C = worldB - worldA).
+    _applyCorrection(body, r, delta, sign) {
+        if (body._massInverted <= 0) return;
+        body.position.x += sign * delta.x * body._massInverted * body.linear_factor.x;
+        body.position.y += sign * delta.y * body._massInverted * body.linear_factor.y;
+        body.position.z += sign * delta.z * body._massInverted * body.linear_factor.z;
+
+        const px = sign * delta.x, py = sign * delta.y, pz = sign * delta.z;
         const torqueX = r.y * pz - r.z * py, torqueY = r.z * px - r.x * pz, torqueZ = r.x * py - r.y * px;
         const I = body._worldInverseInertiaTensor;
         const wx = I.e00 * torqueX + I.e01 * torqueY + I.e02 * torqueZ;
         const wy = I.e10 * torqueX + I.e11 * torqueY + I.e12 * torqueZ;
         const wz = I.e20 * torqueX + I.e21 * torqueY + I.e22 * torqueZ;
-        this._angularCorrA.set(wx * body.angular_factor.x, wy * body.angular_factor.y, wz * body.angular_factor.z);
-        Solver._integrateRotation(body.rotation, this._angularCorrA, 1); // h=1: this IS the delta, not a rate
-    }
-
-    // Velocity-pass contact solve: friction and restitution, applied to the contact-relative
-    // velocity AFTER the position solve has set velocities (Muller et al. 2020 sec 3.6). Working in
-    // velocity space here (not position) is what makes friction stable and gives true static stick:
-    // a resting body's tangential contact velocity is driven to exactly zero, capped by the Coulomb
-    // limit, so it does not creep - the position-anchor approach kept saturating its cap and letting
-    // the body slide down a shallow slope. This is a physical contact constraint on the relative
-    // velocity, NOT the derived-velocity clamp plan.md forbids (that governed a whole body's velocity
-    // to hide a detection bug; this only removes the tangential rub and restores a chosen restitution
-    // at the contact, which is exactly what friction and bounce ARE).
-    _solveContactVelocity(point, bodyA, bodyB, h) {
-        // Only act on a contact that is actually touching/overlapping right now (normalLambda < 0
-        // means the normal solve pushed this substep). A purely speculative point that never engaged
-        // has normalLambda == 0 and no contact velocity to correct.
-        if (point.normalLambda >= 0) return;
-
-        point.currentAnchorAInto(this._rA, bodyA);
-        point.currentAnchorBInto(this._rB, bodyB);
-        Vector3.subInto(this._rA, this._rA, bodyA.position);
-        Vector3.subInto(this._rB, this._rB, bodyB.position);
-        const nx = point.normal.x, ny = point.normal.y, nz = point.normal.z;
-
-        // --- Restitution (normal) ---
-        // Sign convention (normal points B->A): a body APPROACHING the contact has POSITIVE normal
-        // relative velocity (relVel . normal > 0 = closing), and after a bounce it should SEPARATE at
-        // -e * the approach speed (negative relN). Skip slow approaches (a resting body's one-substep
-        // gravity nudge) via a threshold, so restitution does not turn rest into perpetual jitter.
-        const restitution = Math.max(bodyA.restitution, bodyB.restitution); // combined: max, standard convention
-        const relN = this._contactRelativeNormalVelocity(point, bodyA, bodyB);
-        if (restitution > 0 && point._preSolveNormalVel > Solver.RESTITUTION_THRESHOLD) {
-            const targetN = -restitution * point._preSolveNormalVel; // desired separating velocity (< 0)
-            // Only ADD separation (make relN more negative); never damp an already-separating contact.
-            if (targetN < relN) {
-                const wN = this._effectiveMass(bodyA, bodyB, this._rA, this._rB, nx, ny, nz);
-                if (wN >= 1e-12) this._applyVelocityImpulse(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, (targetN - relN) / wN);
-            }
-        }
-
-        // --- Friction (tangent) ---
-        const friction = Math.sqrt(bodyA.friction * bodyB.friction);
-        if (friction <= 0) return;
-        // Coulomb cap on the friction impulse magnitude: mu times the normal impulse the position
-        // solve actually applied this substep. normalLambda is a position Lagrange multiplier;
-        // dividing by h converts it to a velocity-space impulse commensurate with the tangential
-        // impulses computed below. This is the correct, unit-consistent cap that the position-space
-        // attempt never got right.
-        const maxImpulse = friction * Math.abs(point.normalLambda) / h;
-        if (maxImpulse <= 0) return;
-
-        // Current tangential relative velocity, and the impulse that would zero it.
-        this._contactRelativeVelocity(point, bodyA, bodyB, this._tmpDispA); // full relative velocity -> _tmpDispA
-        const vn = this._tmpDispA.x * nx + this._tmpDispA.y * ny + this._tmpDispA.z * nz;
-        let vtx = this._tmpDispA.x - vn * nx, vty = this._tmpDispA.y - vn * ny, vtz = this._tmpDispA.z - vn * nz;
-        const vtMag = Math.sqrt(vtx * vtx + vty * vty + vtz * vtz);
-        if (vtMag < 1e-12) return; // no tangential motion to resist
-
-        const tx = vtx / vtMag, ty = vty / vtMag, tz = vtz / vtMag; // tangent = slip direction
-        const wT = this._effectiveMass(bodyA, bodyB, this._rA, this._rB, tx, ty, tz);
-        if (wT < 1e-12) return;
-        // Impulse to fully stop the tangential velocity, clamped to the Coulomb cap (static stick
-        // when the full stop is within budget, dynamic slide when clamped).
-        let jt = vtMag / wT;
-        if (jt > maxImpulse) jt = maxImpulse;
-        // Apply along -tangent (oppose the slip).
-        this._applyVelocityImpulse(bodyA, bodyB, this._rA, this._rB, -tx, -ty, -tz, jt);
-    }
-
-    // Contact-relative velocity (velocity of B's contact point minus A's), into `out`. rA/rB are the
-    // center-relative contact offsets (already in this._rA/_rB when called from the velocity pass,
-    // but recomputed here from the anchors so this is usable standalone).
-    _contactRelativeVelocity(point, bodyA, bodyB, out) {
-        point.currentAnchorAInto(this._tmpPrev, bodyA);
-        this._tmpPrev.subInPlace(bodyA.position); // rA (center-relative)
-        const va = this._pointVelocity(bodyA, this._tmpPrev, this._tmpDispB);
-        const vax = va.x, vay = va.y, vaz = va.z;
-        point.currentAnchorBInto(this._tmpPrev, bodyB);
-        this._tmpPrev.subInPlace(bodyB.position); // rB
-        const vb = this._pointVelocity(bodyB, this._tmpPrev, this._tmpDispB);
-        out.set(vb.x - vax, vb.y - vay, vb.z - vaz);
-        return out;
-    }
-
-    // Velocity of the material point at center-relative offset r on `body`: v + omega x r.
-    _pointVelocity(body, r, out) {
-        const w = body.angular_velocity, v = body.linear_velocity;
-        out.set(
-            v.x + (w.y * r.z - w.z * r.y),
-            v.y + (w.z * r.x - w.x * r.z),
-            v.z + (w.x * r.y - w.y * r.x)
-        );
-        return out;
-    }
-
-    // Contact-relative velocity along the normal (B->A). Scalar.
-    _contactRelativeNormalVelocity(point, bodyA, bodyB) {
-        this._contactRelativeVelocity(point, bodyA, bodyB, this._tmpDispA);
-        return this._tmpDispA.x * point.normal.x + this._tmpDispA.y * point.normal.y + this._tmpDispA.z * point.normal.z;
-    }
-
-    // Apply a velocity-space impulse j*(dir) at contact offsets rA/rB: A gets -j (B->A convention,
-    // matching the position correction's own pairing), B gets +j, each scaled by inverse mass, with
-    // the matching angular velocity change. rA/rB are center-relative offsets.
-    _applyVelocityImpulse(bodyA, bodyB, rA, rB, dx, dy, dz, j) {
-        const px = dx * j, py = dy * j, pz = dz * j;
-        if (bodyA._massInverted > 0) {
-            bodyA.linear_velocity.x -= px * bodyA._massInverted * bodyA.linear_factor.x;
-            bodyA.linear_velocity.y -= py * bodyA._massInverted * bodyA.linear_factor.y;
-            bodyA.linear_velocity.z -= pz * bodyA._massInverted * bodyA.linear_factor.z;
-            this._applyAngularVelocityImpulse(bodyA, rA, -px, -py, -pz);
-        }
-        if (bodyB._massInverted > 0) {
-            bodyB.linear_velocity.x += px * bodyB._massInverted * bodyB.linear_factor.x;
-            bodyB.linear_velocity.y += py * bodyB._massInverted * bodyB.linear_factor.y;
-            bodyB.linear_velocity.z += pz * bodyB._massInverted * bodyB.linear_factor.z;
-            this._applyAngularVelocityImpulse(bodyB, rB, px, py, pz);
-        }
-    }
-
-    // Angular velocity change from a linear impulse p applied at center-relative offset r:
-    // dOmega = I^-1 (r x p). (Velocity-space analog of _applyAngularCorrection.)
-    _applyAngularVelocityImpulse(body, r, px, py, pz) {
-        const tqx = r.y * pz - r.z * py, tqy = r.z * px - r.x * pz, tqz = r.x * py - r.y * px;
-        const I = body._worldInverseInertiaTensor;
-        body.angular_velocity.x += (I.e00 * tqx + I.e01 * tqy + I.e02 * tqz) * body.angular_factor.x;
-        body.angular_velocity.y += (I.e10 * tqx + I.e11 * tqy + I.e12 * tqz) * body.angular_factor.y;
-        body.angular_velocity.z += (I.e20 * tqx + I.e21 * tqy + I.e22 * tqz) * body.angular_factor.z;
-    }
-
-    // Two unit vectors spanning the plane perpendicular to `normal` - the friction directions.
-    static _tangentBasis(normal, outT1, outT2) {
-        outT1.findOrthogonal(normal);
-        Vector3.crossInto(outT2, normal, outT1);
+        PointConstraint._scratchAngular.set(wx * body.angular_factor.x, wy * body.angular_factor.y, wz * body.angular_factor.z);
+        Solver._integrateRotation(body.rotation, PointConstraint._scratchAngular, 1);
     }
 }
 
-// Approach speeds slower than this (m/s) do not bounce - below it, restitution would turn a resting
-// body's one-substep gravity nudge into perpetual micro-jitter. Standard restitution slop.
-Solver.RESTITUTION_THRESHOLD = 0.5;
+PointConstraint._scratchAngular = new Vector3();
 
-ActionPhysics.Solver = Solver;
+ActionPhysics.PointConstraint = PointConstraint;
+
+
+// ==== src/constraints/HingeConstraint.js ====
+// Hinge: pivot (3 DOF, via composed PointConstraint) + axis lock (2 DOF), optional swing limit/motor.
+class HingeConstraint extends Constraint {
+    constructor(bodyA, hingeAxisA, pivotA, bodyB, pivotB) {
+        super(bodyA, bodyB);
+        this.localAxisA = new Vector3().copy(hingeAxisA).normalizeInPlace();
+        this.localPivotA = new Vector3().copy(pivotA);
+        this.localPivotB = new Vector3().copy(pivotB || new Vector3());
+
+        this.localAxisB = new Vector3();
+        if (bodyB) {
+            const worldAxis = HingeConstraint._scratchV1.copy(this.localAxisA);
+            bodyA.rotation.transformVectorInPlace(worldAxis);
+            const invRotB = HingeConstraint._scratchQ.copy(bodyB.rotation).invert();
+            this.localAxisB.copy(worldAxis);
+            invRotB.transformVectorInPlace(this.localAxisB);
+        }
+        this._pivot = new PointConstraint(bodyA, bodyB, this.localPivotA, bodyB ? this.localPivotB : this._worldPivotBPlaceholder());
+
+        // Swing-angle reference vector, perpendicular to the axis, in each body's local space.
+        this._refA = HingeConstraint._perpendicularTo(this.localAxisA);
+        if (bodyB) {
+            const worldRef = HingeConstraint._scratchV1.copy(this._refA);
+            bodyA.rotation.transformVectorInPlace(worldRef);
+            const invRotB = HingeConstraint._scratchQ.copy(bodyB.rotation).invert();
+            this._refB = new Vector3().copy(worldRef);
+            invRotB.transformVectorInPlace(this._refB);
+        } else {
+            this._refB = null;
+            this._fixedWorldRef = HingeConstraint._scratchV1.copy(this._refA);
+            bodyA.rotation.transformVectorInPlace(this._fixedWorldRef);
+            this._fixedWorldRef = new Vector3().copy(this._fixedWorldRef);
+        }
+
+        this.limit = { min: null, max: null, set: function (min, max) { this.min = min; this.max = max; return this; } };
+        this.motor = { targetVelocity: 0, maxTorque: 0, set: function (targetVelocity, maxTorque) { this.targetVelocity = targetVelocity; this.maxTorque = maxTorque; return this; } };
+    }
+
+    // Gram-Schmidt: any vector not parallel to axis, made perpendicular + unit length.
+    static _perpendicularTo(axis) {
+        const seed = Math.abs(axis.x) < 0.9 ? new Vector3(1, 0, 0) : new Vector3(0, 1, 0);
+        const d = seed.x * axis.x + seed.y * axis.y + seed.z * axis.z;
+        const perp = new Vector3(seed.x - d * axis.x, seed.y - d * axis.y, seed.z - d * axis.z);
+        return perp.normalizeInPlace();
+    }
+
+    // Null bodyB: PointConstraint wants a world point, so use bodyA's own world pivot at construction.
+    _worldPivotBPlaceholder() {
+        const world = HingeConstraint._scratchV2.copy(this.localPivotA);
+        this.bodyA.rotation.transformVectorInPlace(world);
+        world.addInPlace(this.bodyA.position);
+        return new Vector3().copy(world);
+    }
+
+    solve(h) {
+        if (!this.enabled) return;
+        this._pivot.solve(h);
+        this._solveAxisAlignment();
+        if (this.limit.min != null || this.limit.max != null) this._solveLimit();
+        if (this.motor.maxTorque > 0) this._solveMotor(h);
+    }
+
+    // Signed swing angle about the axis, refB -> refA, both projected into the plane perpendicular to axis.
+    _swingAngle() {
+        const bodyA = this.bodyA, bodyB = this.bodyB;
+        const axis = HingeConstraint._scratchAxis.copy(this.localAxisA);
+        bodyA.rotation.transformVectorInPlace(axis);
+
+        const refA = HingeConstraint._scratchV1.copy(this._refA);
+        bodyA.rotation.transformVectorInPlace(refA);
+
+        const refB = HingeConstraint._scratchV2;
+        if (bodyB) { refB.copy(this._refB); bodyB.rotation.transformVectorInPlace(refB); }
+        else refB.copy(this._fixedWorldRef);
+
+        HingeConstraint._projectOntoPlane(refA, axis);
+        HingeConstraint._projectOntoPlane(refB, axis);
+        const dot = refA.x * refB.x + refA.y * refB.y + refA.z * refB.z;
+        const cx = refB.y * refA.z - refB.z * refA.y, cy = refB.z * refA.x - refB.x * refA.z, cz = refB.x * refA.y - refB.y * refA.x;
+        const crossDotAxis = cx * axis.x + cy * axis.y + cz * axis.z;
+        return Scalar.atan2(crossDotAxis, dot);
+    }
+
+    static _projectOntoPlane(v, axis) {
+        const d = v.x * axis.x + v.y * axis.y + v.z * axis.z;
+        v.x -= d * axis.x; v.y -= d * axis.y; v.z -= d * axis.z;
+        const len = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+        if (len > 1e-12) { v.x /= len; v.y /= len; v.z /= len; }
+    }
+
+    _solveLimit() {
+        const angle = this._swingAngle();
+        const min = this.limit.min != null ? this.limit.min : -Infinity;
+        const max = this.limit.max != null ? this.limit.max : Infinity;
+        let violation = 0;
+        if (angle < min) violation = angle - min;
+        else if (angle > max) violation = angle - max;
+        else return;
+
+        const bodyA = this.bodyA, bodyB = this.bodyB;
+        const axis = HingeConstraint._scratchAxis.copy(this.localAxisA);
+        bodyA.rotation.transformVectorInPlace(axis);
+
+        let wSum = 0;
+        const hasB = !!(bodyB && bodyB._massInverted > 0);
+        if (bodyA._massInverted > 0) wSum += HingeConstraint._angularEffectiveMass(bodyA, axis.x, axis.y, axis.z);
+        if (hasB) wSum += HingeConstraint._angularEffectiveMass(bodyB, axis.x, axis.y, axis.z);
+        if (wSum < 1e-12) return;
+
+        const scale = -violation / wSum;
+        const tx = axis.x * scale, ty = axis.y * scale, tz = axis.z * scale;
+        if (bodyA._massInverted > 0) HingeConstraint._applyAngularDelta(bodyA, tx, ty, tz);
+        if (hasB) HingeConstraint._applyAngularDelta(bodyB, -tx, -ty, -tz);
+    }
+
+    // Position-space motor: writes a bounded angle step (not velocity directly, since the solver
+    // derives velocity from position delta after all constraints run).
+    _solveMotor(h) {
+        const bodyA = this.bodyA, bodyB = this.bodyB;
+        const axis = HingeConstraint._scratchAxis.copy(this.localAxisA);
+        bodyA.rotation.transformVectorInPlace(axis);
+
+        let wSum = 0;
+        const hasB = !!(bodyB && bodyB._massInverted > 0);
+        if (bodyA._massInverted > 0) wSum += HingeConstraint._angularEffectiveMass(bodyA, axis.x, axis.y, axis.z);
+        if (hasB) wSum += HingeConstraint._angularEffectiveMass(bodyB, axis.x, axis.y, axis.z);
+        if (wSum < 1e-12) return;
+
+        const wA = bodyA.angular_velocity, wB = hasB ? bodyB.angular_velocity : HingeConstraint._zero;
+        const relOmega = (wA.x - wB.x) * axis.x + (wA.y - wB.y) * axis.y + (wA.z - wB.z) * axis.z;
+        const velError = this.motor.targetVelocity - relOmega;
+        if (velError === 0) return;
+
+        const maxDeltaOmega = this.motor.maxTorque * wSum;
+        const deltaOmega = velError > 0 ? Math.min(velError, maxDeltaOmega) : Math.max(velError, -maxDeltaOmega);
+        let step = deltaOmega * h;
+        if (step === 0) return;
+
+        if (this.limit.min != null || this.limit.max != null) {
+            const angle = this._swingAngle();
+            const min = this.limit.min != null ? this.limit.min : -Infinity;
+            const max = this.limit.max != null ? this.limit.max : Infinity;
+            if (step > 0 && angle + step > max) step = Math.max(0, max - angle);
+            else if (step < 0 && angle + step < min) step = Math.min(0, min - angle);
+            if (step === 0) return;
+        }
+
+        const scale = step / wSum;
+        const tx = axis.x * scale, ty = axis.y * scale, tz = axis.z * scale;
+        if (bodyA._massInverted > 0) HingeConstraint._applyAngularDelta(bodyA, tx, ty, tz);
+        if (hasB) HingeConstraint._applyAngularDelta(bodyB, -tx, -ty, -tz);
+    }
+
+    _solveAxisAlignment() {
+        const bodyA = this.bodyA, bodyB = this.bodyB;
+        const axisA = HingeConstraint._scratchV1.copy(this.localAxisA);
+        bodyA.rotation.transformVectorInPlace(axisA);
+
+        const axisB = HingeConstraint._scratchV2;
+        if (bodyB) {
+            axisB.copy(this.localAxisB);
+            bodyB.rotation.transformVectorInPlace(axisB);
+        } else {
+            if (!this._fixedWorldAxis) {
+                this._fixedWorldAxis = new Vector3().copy(this.localAxisA);
+                this.bodyA.rotation.transformVectorInPlace(this._fixedWorldAxis);
+            }
+            axisB.copy(this._fixedWorldAxis);
+        }
+
+        // axisA x axisB: zero when parallel, magnitude ~sin(angle), direction = correction rotation.
+        const ex = axisA.y * axisB.z - axisA.z * axisB.y;
+        const ey = axisA.z * axisB.x - axisA.x * axisB.z;
+        const ez = axisA.x * axisB.y - axisA.y * axisB.x;
+        const errLenSq = ex * ex + ey * ey + ez * ez;
+        if (errLenSq < 1e-20) return;
+
+        const errLen = Math.sqrt(errLenSq);
+        const dx = ex / errLen, dy = ey / errLen, dz = ez / errLen;
+        let wSum = 0;
+        const hasB = !!(bodyB && bodyB._massInverted > 0);
+        if (bodyA._massInverted > 0) wSum += HingeConstraint._angularEffectiveMass(bodyA, dx, dy, dz);
+        if (hasB) wSum += HingeConstraint._angularEffectiveMass(bodyB, dx, dy, dz);
+        if (wSum < 1e-12) return;
+
+        const scale = -1 / wSum;
+        const tx = ex * scale, ty = ey * scale, tz = ez * scale;
+
+        if (bodyA._massInverted > 0) HingeConstraint._applyAngularDelta(bodyA, -tx, -ty, -tz);
+        if (hasB) HingeConstraint._applyAngularDelta(bodyB, tx, ty, tz);
+    }
+
+    static _angularEffectiveMass(body, dx, dy, dz) {
+        const I = body._worldInverseInertiaTensor;
+        const ix = I.e00 * dx + I.e01 * dy + I.e02 * dz;
+        const iy = I.e10 * dx + I.e11 * dy + I.e12 * dz;
+        const iz = I.e20 * dx + I.e21 * dy + I.e22 * dz;
+        return dx * ix + dy * iy + dz * iz;
+    }
+
+    static _applyAngularDelta(body, tx, ty, tz) {
+        const I = body._worldInverseInertiaTensor;
+        const wx = I.e00 * tx + I.e01 * ty + I.e02 * tz;
+        const wy = I.e10 * tx + I.e11 * ty + I.e12 * tz;
+        const wz = I.e20 * tx + I.e21 * ty + I.e22 * tz;
+        HingeConstraint._scratchAngular.set(wx * body.angular_factor.x, wy * body.angular_factor.y, wz * body.angular_factor.z);
+        Solver._integrateRotation(body.rotation, HingeConstraint._scratchAngular, 1);
+    }
+}
+
+HingeConstraint._scratchV1 = new Vector3();
+HingeConstraint._scratchV2 = new Vector3();
+HingeConstraint._scratchAxis = new Vector3();
+HingeConstraint._scratchQ = new Quaternion();
+HingeConstraint._scratchAngular = new Vector3();
+HingeConstraint._zero = new Vector3();
+
+ActionPhysics.HingeConstraint = HingeConstraint;
+
+
+// ==== src/constraints/WeldConstraint.js ====
+// Rigidly fuses two bodies at a shared point: pivot (composed PointConstraint) + full 3-DOF
+// rotation lock at whatever relative orientation existed at construction.
+class WeldConstraint extends Constraint {
+    constructor(bodyA, bodyB, pivotA, pivotB) {
+        super(bodyA, bodyB);
+        this.localPivotA = new Vector3().copy(pivotA);
+        this.localPivotB = new Vector3().copy(pivotB || new Vector3());
+
+        // Relative rotation to hold: qRel = qB^-1 * qA (or bodyA's own rotation for a world weld).
+        this.targetRel = new Quaternion();
+        if (bodyB) {
+            const invB = WeldConstraint._scratchQ.copy(bodyB.rotation).invert();
+            this.targetRel.multiplyQuaternions(invB, bodyA.rotation);
+        } else {
+            this.targetRel.copy(bodyA.rotation);
+        }
+
+        this._pivot = bodyB
+            ? new PointConstraint(bodyA, bodyB, this.localPivotA, this.localPivotB)
+            : new PointConstraint(bodyA, null, this.localPivotA, WeldConstraint._worldPoint(bodyA, this.localPivotA));
+    }
+
+    static _worldPoint(body, localPoint) {
+        const w = new Vector3().copy(localPoint);
+        body.rotation.transformVectorInPlace(w);
+        w.addInPlace(body.position);
+        return w;
+    }
+
+    solve(h) {
+        if (!this.enabled) return;
+        this._pivot.solve(h);
+        this._solveRotationLock();
+    }
+
+    _solveRotationLock() {
+        const bodyA = this.bodyA, bodyB = this.bodyB;
+        const currentRel = WeldConstraint._scratchQ2;
+        if (bodyB) {
+            const invB = WeldConstraint._scratchQ.copy(bodyB.rotation).invert();
+            currentRel.multiplyQuaternions(invB, bodyA.rotation);
+        } else {
+            currentRel.copy(bodyA.rotation);
+        }
+        // error = currentRel * targetRel^-1; imaginary part is a direct small-angle correction.
+        const invCurrent = WeldConstraint._scratchQ3.copy(currentRel).invert();
+        const errQ = WeldConstraint._scratchQ4.multiplyQuaternions(this.targetRel, invCurrent);
+        if (errQ.w < 0) { errQ.x = -errQ.x; errQ.y = -errQ.y; errQ.z = -errQ.z; errQ.w = -errQ.w; }
+        const ex = errQ.x, ey = errQ.y, ez = errQ.z;
+        const errLenSq = ex * ex + ey * ey + ez * ez;
+        if (errLenSq < 1e-20) return;
+
+        // error is in bodyB's local frame (currentRel = qB^-1 * qA); rotate to world before applying.
+        const worldErr = WeldConstraint._scratchV;
+        worldErr.set(ex, ey, ez);
+        if (bodyB) bodyB.rotation.transformVectorInPlace(worldErr);
+        const wex = worldErr.x, wey = worldErr.y, wez = worldErr.z;
+        const wLen = Math.sqrt(wex * wex + wey * wey + wez * wez);
+        if (wLen < 1e-12) return;
+        const dx = wex / wLen, dy = wey / wLen, dz = wez / wLen;
+
+        let wSum = 0;
+        const hasB = !!(bodyB && bodyB._massInverted > 0);
+        if (bodyA._massInverted > 0) wSum += WeldConstraint._angularEffectiveMass(bodyA, dx, dy, dz);
+        if (hasB) wSum += WeldConstraint._angularEffectiveMass(bodyB, dx, dy, dz);
+        if (wSum < 1e-12) return;
+
+        const scale = -1 / wSum;
+        const tx = wex * scale, ty = wey * scale, tz = wez * scale;
+        if (bodyA._massInverted > 0) WeldConstraint._applyAngularDelta(bodyA, -tx, -ty, -tz);
+        if (hasB) WeldConstraint._applyAngularDelta(bodyB, tx, ty, tz);
+    }
+
+    static _angularEffectiveMass(body, dx, dy, dz) {
+        const I = body._worldInverseInertiaTensor;
+        const ix = I.e00 * dx + I.e01 * dy + I.e02 * dz;
+        const iy = I.e10 * dx + I.e11 * dy + I.e12 * dz;
+        const iz = I.e20 * dx + I.e21 * dy + I.e22 * dz;
+        return dx * ix + dy * iy + dz * iz;
+    }
+
+    static _applyAngularDelta(body, tx, ty, tz) {
+        const I = body._worldInverseInertiaTensor;
+        const wx = I.e00 * tx + I.e01 * ty + I.e02 * tz;
+        const wy = I.e10 * tx + I.e11 * ty + I.e12 * tz;
+        const wz = I.e20 * tx + I.e21 * ty + I.e22 * tz;
+        WeldConstraint._scratchAngular.set(wx * body.angular_factor.x, wy * body.angular_factor.y, wz * body.angular_factor.z);
+        Solver._integrateRotation(body.rotation, WeldConstraint._scratchAngular, 1);
+    }
+}
+
+WeldConstraint._scratchQ = new Quaternion();
+WeldConstraint._scratchQ2 = new Quaternion();
+WeldConstraint._scratchQ3 = new Quaternion();
+WeldConstraint._scratchQ4 = new Quaternion();
+WeldConstraint._scratchV = new Vector3();
+WeldConstraint._scratchAngular = new Vector3();
+
+ActionPhysics.WeldConstraint = WeldConstraint;
+
+
+// ==== src/constraints/SliderConstraint.js ====
+// Piston joint: rotation fully locked (reuses WeldConstraint's angular half), position locked
+// perpendicular to the slide axis, free to move along it.
+class SliderConstraint extends Constraint {
+    constructor(bodyA, localAxisA, anchorA, bodyB, anchorB) {
+        super(bodyA, bodyB);
+        this.localAxis = new Vector3().copy(localAxisA).normalizeInPlace();
+        this.localAnchorA = new Vector3().copy(anchorA);
+        this.localAnchorB = new Vector3().copy(anchorB || new Vector3());
+
+        // Only ever calls _solveRotationLock, never the pivot - the slider has its own
+        // axis-restricted positional constraint below.
+        this._weld = new WeldConstraint(bodyA, bodyB, new Vector3(), new Vector3());
+
+        this._worldA = new Vector3();
+        this._worldB = new Vector3();
+        this._rA = new Vector3();
+        this._rB = new Vector3();
+        this._t1 = new Vector3();
+        this._t2 = new Vector3();
+    }
+
+    _anchorAWorld(out) {
+        out.copy(this.localAnchorA);
+        this.bodyA.rotation.transformVectorInPlace(out);
+        out.addInPlace(this.bodyA.position);
+        return out;
+    }
+    _anchorBWorld(out) {
+        if (!this.bodyB) { out.copy(this.localAnchorB); return out; }
+        out.copy(this.localAnchorB);
+        this.bodyB.rotation.transformVectorInPlace(out);
+        out.addInPlace(this.bodyB.position);
+        return out;
+    }
+
+    solve(h) {
+        if (!this.enabled) return;
+        this._weld._solveRotationLock();
+        this._solvePerpendicularPosition();
+    }
+
+    _solvePerpendicularPosition() {
+        const bodyA = this.bodyA, bodyB = this.bodyB;
+        const hasB = !!(bodyB && bodyB._massInverted > 0);
+
+        this._anchorAWorld(this._worldA);
+        this._anchorBWorld(this._worldB);
+
+        const axis = SliderConstraint._scratchAxis;
+        axis.copy(this.localAxis);
+        bodyA.rotation.transformVectorInPlace(axis);
+
+        // Strip the along-axis component - what's left is the perpendicular error to correct.
+        const sepX = this._worldB.x - this._worldA.x, sepY = this._worldB.y - this._worldA.y, sepZ = this._worldB.z - this._worldA.z;
+        const along = sepX * axis.x + sepY * axis.y + sepZ * axis.z;
+        const cx = sepX - along * axis.x, cy = sepY - along * axis.y, cz = sepZ - along * axis.z;
+        const errLenSq = cx * cx + cy * cy + cz * cz;
+        if (errLenSq < 1e-20) return;
+
+        Vector3.subInto(this._rA, this._worldA, bodyA.position);
+        if (hasB) Vector3.subInto(this._rB, this._worldB, bodyB.position);
+        else this._rB.set(0, 0, 0);
+
+        const t1 = this._t1, t2 = this._t2;
+        t1.findOrthogonal(axis);
+        Vector3.crossInto(t2, axis, t1);
+
+        const c1 = cx * t1.x + cy * t1.y + cz * t1.z;
+        const c2 = cx * t2.x + cy * t2.y + cz * t2.z;
+
+        this._solveAxis(bodyA, hasB ? bodyB : null, this._rA, this._rB, t1, c1);
+        this._solveAxis(bodyA, hasB ? bodyB : null, this._rA, this._rB, t2, c2);
+    }
+
+    _solveAxis(bodyA, bodyB, rA, rB, dir, C) {
+        const dx = dir.x, dy = dir.y, dz = dir.z;
+        let wSum = bodyA._massInverted + (bodyB ? bodyB._massInverted : 0);
+        const rax = rA.y * dz - rA.z * dy, ray = rA.z * dx - rA.x * dz, raz = rA.x * dy - rA.y * dx;
+        if (bodyA._massInverted > 0) {
+            const IA = bodyA._worldInverseInertiaTensor;
+            const ix = IA.e00 * rax + IA.e01 * ray + IA.e02 * raz;
+            const iy = IA.e10 * rax + IA.e11 * ray + IA.e12 * raz;
+            const iz = IA.e20 * rax + IA.e21 * ray + IA.e22 * raz;
+            wSum += rax * ix + ray * iy + raz * iz;
+        }
+        const rbx = rB.y * dz - rB.z * dy, rby = rB.z * dx - rB.x * dz, rbz = rB.x * dy - rB.y * dx;
+        if (bodyB && bodyB._massInverted > 0) {
+            const IB = bodyB._worldInverseInertiaTensor;
+            const ix = IB.e00 * rbx + IB.e01 * rby + IB.e02 * rbz;
+            const iy = IB.e10 * rbx + IB.e11 * rby + IB.e12 * rbz;
+            const iz = IB.e20 * rbx + IB.e21 * rby + IB.e22 * rbz;
+            wSum += rbx * ix + rby * iy + rbz * iz;
+        }
+        if (wSum < 1e-12) return;
+
+        const deltaLambda = -C / wSum;
+        const px = dx * deltaLambda, py = dy * deltaLambda, pz = dz * deltaLambda;
+
+        if (bodyA._massInverted > 0) {
+            bodyA.position.x -= px * bodyA._massInverted * bodyA.linear_factor.x;
+            bodyA.position.y -= py * bodyA._massInverted * bodyA.linear_factor.y;
+            bodyA.position.z -= pz * bodyA._massInverted * bodyA.linear_factor.z;
+            SliderConstraint._applyAngular(bodyA, rA, -px, -py, -pz);
+        }
+        if (bodyB && bodyB._massInverted > 0) {
+            bodyB.position.x += px * bodyB._massInverted * bodyB.linear_factor.x;
+            bodyB.position.y += py * bodyB._massInverted * bodyB.linear_factor.y;
+            bodyB.position.z += pz * bodyB._massInverted * bodyB.linear_factor.z;
+            SliderConstraint._applyAngular(bodyB, rB, px, py, pz);
+        }
+    }
+
+    static _applyAngular(body, r, px, py, pz) {
+        const torqueX = r.y * pz - r.z * py, torqueY = r.z * px - r.x * pz, torqueZ = r.x * py - r.y * px;
+        const I = body._worldInverseInertiaTensor;
+        const wx = I.e00 * torqueX + I.e01 * torqueY + I.e02 * torqueZ;
+        const wy = I.e10 * torqueX + I.e11 * torqueY + I.e12 * torqueZ;
+        const wz = I.e20 * torqueX + I.e21 * torqueY + I.e22 * torqueZ;
+        SliderConstraint._scratchAngular.set(wx * body.angular_factor.x, wy * body.angular_factor.y, wz * body.angular_factor.z);
+        Solver._integrateRotation(body.rotation, SliderConstraint._scratchAngular, 1);
+    }
+}
+
+SliderConstraint._scratchAxis = new Vector3();
+SliderConstraint._scratchAngular = new Vector3();
+
+ActionPhysics.SliderConstraint = SliderConstraint;
+
+
+// ==== src/queries/Queries.js ====
+/**
+ * Queries: ray casting and shape sweeps against the world's bodies. World's public surface
+ * (rayIntersect/shapeIntersect) delegates here (Rule 2: World is pipeline glue).
+ *
+ * Both queries reuse GJK's own closest-distance result directly rather than a separate ray/shape
+ * algorithm: a ray is a zero-radius sphere queried against the target; a shape sweep is the same
+ * query with the caller's real shape. This is exact (GJK's separated result IS the true closest
+ * distance/normal), so one query per candidate body is enough - no repeated advance-and-requery
+ * loop needed the way a hand-rolled slab/segment test would require.
+ *
+ * Broadphase has no arbitrary-AABB query surface, so both queries filter world.bodies directly
+ * with a cheap ray-vs-AABB / swept-AABB reject before calling GJK - queries run on demand, not
+ * every tick for every pair, so an O(n) filter over the whole body list is fine.
+ *
+ * See RayIntersect.js, ShapeIntersect.js (the two public entry points + their compound/mesh
+ * dispatch) and Advance.js (the shared conservative-advancement core + AABB rejects).
+ */
+class Queries {
+    static _isIgnored(body, ignore) {
+        if (!ignore) return false;
+        if (Array.isArray(ignore)) return ignore.indexOf(body) !== -1;
+        return body === ignore;
+    }
+
+    static _isCompound(shape) {
+        return typeof CompoundShape !== 'undefined' && shape instanceof CompoundShape;
+    }
+
+    static _isMesh(shape) {
+        return typeof MeshShape !== 'undefined' && shape instanceof MeshShape;
+    }
+
+    // World-space placement of one mesh triangle onto a cached scratch TriangleShape (no per-
+    // triangle allocation). MeshShape.triangleAt already hands back body-local vertices.
+    static _placedTriangleInto(outPlaced, body, triShape, a, b, c) {
+        triShape.a = a; triShape.b = b; triShape.c = c;
+        outPlaced.shape = triShape;
+        outPlaced.position = body.position;
+        outPlaced.rotation = body.rotation;
+        return outPlaced;
+    }
+
+    // World-space placement of one compound child, matching Midphase's own convention: world
+    // position = bodyPos + bodyRot * childLocalPos; world rotation = bodyRot * childLocalRot.
+    static _placedChildInto(outPlaced, body, child) {
+        outPlaced.shape = child.shape;
+        outPlaced.rotation.multiplyQuaternions(body.rotation, child.localRotation);
+        outPlaced.position.copy(child.localPosition);
+        body.rotation.transformVectorInPlace(outPlaced.position);
+        outPlaced.position.addInPlace(body.position);
+        return outPlaced;
+    }
+}
+
+Queries._gjk = new GJK();
+Queries._epa = new EPA();
+Queries._identityQuat = new Quaternion(0, 0, 0, 1);
+Queries._scratchPos = new Vector3();
+Queries._scratchPlacedA = { shape: null, position: new Vector3(), rotation: new Quaternion(0, 0, 0, 1) };
+Queries._scratchPlacedB = { shape: null, position: new Vector3(), rotation: new Quaternion(0, 0, 0, 1) };
+Queries._scratchSupport = new MinkowskiSupport(Queries._scratchPlacedA, Queries._scratchPlacedB);
+Queries._scratchPointShape = new SphereShape(0); // zero-radius sphere: a point, via the existing Shape contract
+Queries._scratchLocalAABB = new AABB();
+Queries._scratchExpandedAABB = new AABB();
+Queries._scratchCompoundChild = { shape: null, position: new Vector3(), rotation: new Quaternion(0, 0, 0, 1) };
+Queries._scratchTriangleShape = new TriangleShape(new Vector3(), new Vector3(), new Vector3());
+
+ActionPhysics.Queries = Queries;
+
+
+// ==== src/queries/Advance.js ====
+// Shared conservative-advancement sweep core, plus the AABB reject tests both rayIntersect and
+// shapeIntersect use before ever constructing a GJK support for a candidate body.
+
+// Casts `placedMover` (already at `start`) toward `start + dir*fullLen` via conservative
+// advancement using GJK.run() as the distance oracle: GJK's separated-case distance from the
+// mover's current position to the body is the TRUE closest distance in any direction, so the mover
+// can safely advance by exactly that much along the ray without ever overshooting into the body.
+// Repeating (re-running GJK from the new position) narrows in on the true first-hit point -
+// standard sphere-tracing conservative advancement, using an already-proven GJK as the primitive
+// instead of a hand-rolled ray/shape algorithm (a hand-rolled version was tried twice and failed a
+// 500-config ground-truth cross-check both times on corner/grazing cases).
+//
+// Convergence for a corner-on or near-tangent approach is geometric (never reaching exactly zero),
+// so the iteration cap/epsilon (160, 1e-4) are set generously.
+Queries._advance = function (support, placedMover, start, dirX, dirY, dirZ, fullLen) {
+    const ux = dirX / fullLen, uy = dirY / fullLen, uz = dirZ / fullLen;
+    let traveled = 0;
+    // Last normal from a non-degenerate GJK call. GJK's own exact-touch case has no unique normal
+    // at distance ~0 and falls back to an arbitrary-but-valid one - using the LAST good approach
+    // normal instead avoids ever trusting that degenerate fallback (a ray hitting a flat box face
+    // was previously reporting a spurious 45-degree diagonal normal from exactly this).
+    let lastGoodNx = -ux, lastGoodNy = -uy, lastGoodNz = -uz;
+
+    for (let iter = 0; iter < 160; iter++) {
+        const result = Queries._gjk.run(support);
+        if (result.overlapping) {
+            // Already inside/touching: EPA expands the same simplex into a real surface normal.
+            // This (not a reversed-travel-direction fallback) is what correctly handles a sweep that
+            // starts embedded - the reversed-direction fallback can't tell "approaching a surface
+            // ahead" from "already past it and moving away".
+            const epaResult = Queries._epa.run(support, result.simplex);
+            return Queries._finishHit(start, dirX, dirY, dirZ, traveled, fullLen, epaResult.normal.x, epaResult.normal.y, epaResult.normal.z);
+        }
+        if (result.distance < 1e-4) {
+            return Queries._finishHit(start, dirX, dirY, dirZ, traveled, fullLen, lastGoodNx, lastGoodNy, lastGoodNz);
+        }
+        lastGoodNx = result.normal.x; lastGoodNy = result.normal.y; lastGoodNz = result.normal.z;
+        if (traveled + result.distance > fullLen) return null; // cannot reach within the segment
+        traveled += result.distance;
+        placedMover.position.set(start.x + ux * traveled, start.y + uy * traveled, start.z + uz * traveled);
+        support.refresh();
+    }
+    return null; // did not converge within the cap - treat as a miss, never a false hit
+};
+
+Queries._finishHit = function (start, dirX, dirY, dirZ, traveled, fullLen, nx, ny, nz) {
+    const fraction = traveled / fullLen;
+    return {
+        point: new Vector3(start.x + dirX * fraction, start.y + dirY * fraction, start.z + dirZ * fraction),
+        normal: new Vector3(nx, ny, nz),
+        distance: traveled,
+        fraction: fraction
+    };
+};
+
+// Cheap ray-vs-AABB reject (slab method) before ever constructing a GJK support for a body.
+Queries._rayIntersectsAABB = function (start, end, aabb) {
+    let tmin = 0, tmax = 1;
+    const dirs = [end.x - start.x, end.y - start.y, end.z - start.z];
+    const starts = [start.x, start.y, start.z];
+    const mins = [aabb.min.x, aabb.min.y, aabb.min.z];
+    const maxs = [aabb.max.x, aabb.max.y, aabb.max.z];
+    for (let axis = 0; axis < 3; axis++) {
+        const d = dirs[axis], s = starts[axis];
+        if (Math.abs(d) < 1e-12) {
+            if (s < mins[axis] || s > maxs[axis]) return false; // parallel and outside the slab
+            continue;
+        }
+        let t1 = (mins[axis] - s) / d, t2 = (maxs[axis] - s) / d;
+        if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp; }
+        if (t1 > tmin) tmin = t1;
+        if (t2 < tmax) tmax = t2;
+        if (tmin > tmax) return false;
+    }
+    return true;
+};
+
+// Cheap reject for a shape sweep: expand the body's AABB by the swept shape's bounding radius
+// (conservative, no-false-negatives, same discipline as broadphase's own margin) and ray-test that.
+Queries._sweptAABBMayHit = function (start, end, radius, aabb) {
+    const expanded = Queries._scratchExpandedAABB;
+    expanded.copy(aabb).expandInPlace(radius);
+    return Queries._rayIntersectsAABB(start, end, expanded);
+};
+
+
+// ==== src/queries/RayIntersect.js ====
+// rayIntersect and its compound/mesh point-sweep dispatch.
+
+// rayIntersect(bodies, start, end, ignore) -> { body, point, normal, distance, fraction } | null.
+// The first body the segment hits, or null. `ignore`: a single RigidBody or array, excluded before
+// the AABB reject (a caller casting from its own surface would otherwise hit itself at distance 0).
+Queries.rayIntersect = function (bodies, start, end, ignore) {
+    const dirX = end.x - start.x, dirY = end.y - start.y, dirZ = end.z - start.z;
+    const fullLen = Math.sqrt(dirX * dirX + dirY * dirY + dirZ * dirZ);
+    if (fullLen < 1e-12) return null; // zero-length ray hits nothing
+
+    let best = null, bestFraction = Infinity;
+    for (let i = 0; i < bodies.length; i++) {
+        const body = bodies[i];
+        if (Queries._isIgnored(body, ignore)) continue;
+        const aabb = body.getAABB();
+        if (!Queries._rayIntersectsAABB(start, end, aabb)) continue;
+
+        const hit = Queries._sweepPointVsBody(start, dirX, dirY, dirZ, fullLen, body);
+        if (hit && hit.fraction < bestFraction) { bestFraction = hit.fraction; best = hit; best.body = body; }
+    }
+    return best;
+};
+
+// Same result shape, against exactly one known body - no candidate filtering/AABB reject. What
+// RigidBody.rayIntersect delegates to.
+Queries.rayIntersectBody = function (start, end, body) {
+    const dirX = end.x - start.x, dirY = end.y - start.y, dirZ = end.z - start.z;
+    const fullLen = Math.sqrt(dirX * dirX + dirY * dirY + dirZ * dirZ);
+    if (fullLen < 1e-12) return null;
+    return Queries._sweepPointVsBody(start, dirX, dirY, dirZ, fullLen, body);
+};
+
+// Casts a zero-radius point against one body via a single GJK query. CompoundShape isn't itself
+// convex (supportInto throws by design), so a compound body dispatches per child.
+Queries._sweepPointVsBody = function (start, dirX, dirY, dirZ, fullLen, body) {
+    if (Queries._isCompound(body.shape)) {
+        return Queries._sweepPointVsCompound(start, dirX, dirY, dirZ, fullLen, body);
+    }
+    if (Queries._isMesh(body.shape)) {
+        return Queries._sweepPointVsMesh(start, dirX, dirY, dirZ, fullLen, body);
+    }
+    const pointShape = Queries._scratchPointShape;
+    const placedPoint = Queries._scratchPlacedA;
+    placedPoint.shape = pointShape;
+    placedPoint.position = Queries._scratchPos.set(start.x, start.y, start.z);
+    placedPoint.rotation = Queries._identityQuat;
+
+    const placedBody = Queries._scratchPlacedB;
+    placedBody.shape = body.shape;
+    placedBody.position = body.position;
+    placedBody.rotation = body.rotation;
+
+    const support = Queries._scratchSupport;
+    support.a = placedPoint; support.b = placedBody;
+    support._invRotA.copy(Queries._identityQuat);
+    support._invRotB.copy(body.rotation).invert();
+
+    return Queries._advance(support, placedPoint, start, dirX, dirY, dirZ, fullLen);
+};
+
+Queries._sweepPointVsCompound = function (start, dirX, dirY, dirZ, fullLen, body) {
+    const children = body.shape.children;
+    let best = null, bestFraction = Infinity;
+    for (let i = 0; i < children.length; i++) {
+        const child = children[i];
+        const placedChild = Queries._placedChildInto(Queries._scratchCompoundChild, body, child);
+
+        const pointShape = Queries._scratchPointShape;
+        const placedPoint = Queries._scratchPlacedA;
+        placedPoint.shape = pointShape;
+        placedPoint.position = Queries._scratchPos.set(start.x, start.y, start.z);
+        placedPoint.rotation = Queries._identityQuat;
+
+        const support = Queries._scratchSupport;
+        support.a = placedPoint; support.b = placedChild;
+        support._invRotA.copy(Queries._identityQuat);
+        support._invRotB.copy(placedChild.rotation).invert();
+
+        const hit = Queries._advance(support, placedPoint, start, dirX, dirY, dirZ, fullLen);
+        if (hit && hit.fraction < bestFraction) { bestFraction = hit.fraction; best = hit; }
+    }
+    return best;
+};
+
+Queries._sweepPointVsMesh = function (start, dirX, dirY, dirZ, fullLen, body) {
+    const shape = body.shape;
+    const a = new Vector3(), b = new Vector3(), c = new Vector3();
+    let best = null, bestFraction = Infinity;
+    for (let i = 0; i < shape.triangleCount; i++) {
+        shape.triangleAt(i, a, b, c);
+        const placedTri = Queries._placedTriangleInto(Queries._scratchCompoundChild, body, Queries._scratchTriangleShape, a, b, c);
+
+        const pointShape = Queries._scratchPointShape;
+        const placedPoint = Queries._scratchPlacedA;
+        placedPoint.shape = pointShape;
+        placedPoint.position = Queries._scratchPos.set(start.x, start.y, start.z);
+        placedPoint.rotation = Queries._identityQuat;
+
+        const support = Queries._scratchSupport;
+        support.a = placedPoint; support.b = placedTri;
+        support._invRotA.copy(Queries._identityQuat);
+        support._invRotB.copy(placedTri.rotation).invert();
+
+        const hit = Queries._advance(support, placedPoint, start, dirX, dirY, dirZ, fullLen);
+        if (hit && hit.fraction < bestFraction) { bestFraction = hit.fraction; best = hit; }
+    }
+    return best;
+};
+
+
+// ==== src/queries/ShapeIntersect.js ====
+// shapeIntersect (swept-shape cast) and its compound/mesh dispatch, plus the stationary-overlap
+// test used for a zero-length sweep.
+
+// shapeIntersect(bodies, shape, start, end, rotation, ignore) -> same result shape as rayIntersect.
+// Sweeps `shape` (fixed orientation) from start to end. `ignore`: see rayIntersect.
+Queries.shapeIntersect = function (bodies, shape, start, end, rotation, ignore) {
+    const dirX = end.x - start.x, dirY = end.y - start.y, dirZ = end.z - start.z;
+    const fullLen = Math.sqrt(dirX * dirX + dirY * dirY + dirZ * dirZ);
+    // A zero-length sweep is a stationary overlap test - unlike a zero-length ray (degenerate,
+    // reports a miss), a real shape held still genuinely can overlap something.
+    if (fullLen < 1e-12) return Queries._overlapTest(bodies, shape, start, rotation, ignore);
+    const localAABB = Queries._scratchLocalAABB;
+    shape.localAABBInto(localAABB);
+    const radius = Math.sqrt(
+        Math.max(localAABB.min.x * localAABB.min.x, localAABB.max.x * localAABB.max.x) +
+        Math.max(localAABB.min.y * localAABB.min.y, localAABB.max.y * localAABB.max.y) +
+        Math.max(localAABB.min.z * localAABB.min.z, localAABB.max.z * localAABB.max.z)
+    );
+
+    let best = null, bestFraction = Infinity;
+    for (let i = 0; i < bodies.length; i++) {
+        const body = bodies[i];
+        if (Queries._isIgnored(body, ignore)) continue;
+        const aabb = body.getAABB();
+        if (!Queries._sweptAABBMayHit(start, end, radius, aabb)) continue;
+
+        const hit = Queries._sweepShapeVsBody(shape, rotation, start, dirX, dirY, dirZ, fullLen, body);
+        if (hit && hit.fraction < bestFraction) { bestFraction = hit.fraction; best = hit; best.body = body; }
+    }
+    return best;
+};
+
+Queries._sweepShapeVsBody = function (shape, rotation, start, dirX, dirY, dirZ, fullLen, body) {
+    if (Queries._isCompound(body.shape)) {
+        return Queries._sweepShapeVsCompound(shape, rotation, start, dirX, dirY, dirZ, fullLen, body);
+    }
+    if (Queries._isMesh(body.shape)) {
+        return Queries._sweepShapeVsMesh(shape, rotation, start, dirX, dirY, dirZ, fullLen, body);
+    }
+    const placedShape = Queries._scratchPlacedA;
+    placedShape.shape = shape;
+    placedShape.position = Queries._scratchPos.set(start.x, start.y, start.z);
+    placedShape.rotation = rotation || Queries._identityQuat;
+
+    const placedBody = Queries._scratchPlacedB;
+    placedBody.shape = body.shape;
+    placedBody.position = body.position;
+    placedBody.rotation = body.rotation;
+
+    const support = Queries._scratchSupport;
+    support.a = placedShape; support.b = placedBody;
+    support._invRotA.copy(placedShape.rotation).invert();
+    support._invRotB.copy(body.rotation).invert();
+
+    return Queries._advance(support, placedShape, start, dirX, dirY, dirZ, fullLen);
+};
+
+Queries._sweepShapeVsCompound = function (shape, rotation, start, dirX, dirY, dirZ, fullLen, body) {
+    const children = body.shape.children;
+    let best = null, bestFraction = Infinity;
+    for (let i = 0; i < children.length; i++) {
+        const child = children[i];
+        const placedChild = Queries._placedChildInto(Queries._scratchCompoundChild, body, child);
+
+        const placedShape = Queries._scratchPlacedA;
+        placedShape.shape = shape;
+        placedShape.position = Queries._scratchPos.set(start.x, start.y, start.z);
+        placedShape.rotation = rotation || Queries._identityQuat;
+
+        const support = Queries._scratchSupport;
+        support.a = placedShape; support.b = placedChild;
+        support._invRotA.copy(placedShape.rotation).invert();
+        support._invRotB.copy(placedChild.rotation).invert();
+
+        const hit = Queries._advance(support, placedShape, start, dirX, dirY, dirZ, fullLen);
+        if (hit && hit.fraction < bestFraction) { bestFraction = hit.fraction; best = hit; }
+    }
+    return best;
+};
+
+Queries._sweepShapeVsMesh = function (shape, rotation, start, dirX, dirY, dirZ, fullLen, body) {
+    const meshShape = body.shape;
+    const a = new Vector3(), b = new Vector3(), c = new Vector3();
+    let best = null, bestFraction = Infinity;
+    for (let i = 0; i < meshShape.triangleCount; i++) {
+        meshShape.triangleAt(i, a, b, c);
+        const placedTri = Queries._placedTriangleInto(Queries._scratchCompoundChild, body, Queries._scratchTriangleShape, a, b, c);
+
+        const placedShape = Queries._scratchPlacedA;
+        placedShape.shape = shape;
+        placedShape.position = Queries._scratchPos.set(start.x, start.y, start.z);
+        placedShape.rotation = rotation || Queries._identityQuat;
+
+        const support = Queries._scratchSupport;
+        support.a = placedShape; support.b = placedTri;
+        support._invRotA.copy(placedShape.rotation).invert();
+        support._invRotB.copy(placedTri.rotation).invert();
+
+        const hit = Queries._advance(support, placedShape, start, dirX, dirY, dirZ, fullLen);
+        if (hit && hit.fraction < bestFraction) { bestFraction = hit.fraction; best = hit; }
+    }
+    return best;
+};
+
+// Stationary overlap test: does `shape`, held fixed at `start`, touch anything? One GJK query per
+// candidate, same AABB-reject structure as the swept queries, but EPA runs directly on an
+// overlapping result (no travel direction to fall back on).
+Queries._overlapTest = function (bodies, shape, start, rotation, ignore) {
+    const localAABB = Queries._scratchLocalAABB;
+    shape.localAABBInto(localAABB);
+    const radius = Math.sqrt(
+        Math.max(localAABB.min.x * localAABB.min.x, localAABB.max.x * localAABB.max.x) +
+        Math.max(localAABB.min.y * localAABB.min.y, localAABB.max.y * localAABB.max.y) +
+        Math.max(localAABB.min.z * localAABB.min.z, localAABB.max.z * localAABB.max.z)
+    );
+    const rot = rotation || Queries._identityQuat;
+
+    for (let i = 0; i < bodies.length; i++) {
+        const body = bodies[i];
+        if (Queries._isIgnored(body, ignore)) continue;
+        if (Queries._isCompound(body.shape)) {
+            const hit = Queries._overlapTestCompound(shape, start, rot, body);
+            if (hit) return hit;
+            continue;
+        }
+        if (Queries._isMesh(body.shape)) {
+            const hit = Queries._overlapTestMesh(shape, start, rot, body);
+            if (hit) return hit;
+            continue;
+        }
+        const aabb = body.getAABB();
+        const expanded = Queries._scratchExpandedAABB;
+        expanded.copy(aabb).expandInPlace(radius);
+        if (start.x < expanded.min.x || start.x > expanded.max.x ||
+            start.y < expanded.min.y || start.y > expanded.max.y ||
+            start.z < expanded.min.z || start.z > expanded.max.z) continue;
+
+        const hit = Queries._overlapTestOne(shape, start, rot, body);
+        if (hit) return hit;
+    }
+    return null;
+};
+
+Queries._overlapTestOne = function (shape, start, rotation, body) {
+    const placedShape = Queries._scratchPlacedA;
+    placedShape.shape = shape;
+    placedShape.position = start;
+    placedShape.rotation = rotation;
+
+    const placedBody = Queries._scratchPlacedB;
+    placedBody.shape = body.shape;
+    placedBody.position = body.position;
+    placedBody.rotation = body.rotation;
+
+    const support = Queries._scratchSupport;
+    support.a = placedShape; support.b = placedBody;
+    support._invRotA.copy(rotation).invert();
+    support._invRotB.copy(body.rotation).invert();
+
+    const gjkResult = Queries._gjk.run(support);
+    if (!gjkResult.overlapping) return null;
+    const epaResult = Queries._epa.run(support, gjkResult.simplex);
+    return { point: epaResult.pointA, normal: epaResult.normal, distance: 0, fraction: 0, body: body };
+};
+
+Queries._overlapTestCompound = function (shape, start, rotation, body) {
+    const children = body.shape.children;
+    for (let i = 0; i < children.length; i++) {
+        const placedChild = Queries._placedChildInto(Queries._scratchCompoundChild, body, children[i]);
+        const placedShape = Queries._scratchPlacedA;
+        placedShape.shape = shape;
+        placedShape.position = start;
+        placedShape.rotation = rotation;
+
+        const support = Queries._scratchSupport;
+        support.a = placedShape; support.b = placedChild;
+        support._invRotA.copy(rotation).invert();
+        support._invRotB.copy(placedChild.rotation).invert();
+
+        const gjkResult = Queries._gjk.run(support);
+        if (!gjkResult.overlapping) continue;
+        const epaResult = Queries._epa.run(support, gjkResult.simplex);
+        return { point: epaResult.pointA, normal: epaResult.normal, distance: 0, fraction: 0, body: body };
+    }
+    return null;
+};
+
+Queries._overlapTestMesh = function (shape, start, rotation, body) {
+    const meshShape = body.shape;
+    const a = new Vector3(), b = new Vector3(), c = new Vector3();
+    for (let i = 0; i < meshShape.triangleCount; i++) {
+        meshShape.triangleAt(i, a, b, c);
+        const placedTri = Queries._placedTriangleInto(Queries._scratchCompoundChild, body, Queries._scratchTriangleShape, a, b, c);
+        const placedShape = Queries._scratchPlacedA;
+        placedShape.shape = shape;
+        placedShape.position = start;
+        placedShape.rotation = rotation;
+
+        const support = Queries._scratchSupport;
+        support.a = placedShape; support.b = placedTri;
+        support._invRotA.copy(rotation).invert();
+        support._invRotB.copy(placedTri.rotation).invert();
+
+        const gjkResult = Queries._gjk.run(support);
+        if (!gjkResult.overlapping) continue;
+        const epaResult = Queries._epa.run(support, gjkResult.simplex);
+        return { point: epaResult.pointA, normal: epaResult.normal, distance: 0, fraction: 0, body: body };
+    }
+    return null;
+};
 
 
 // ==== src/world/World.js ====
-/**
- * World: the pipeline glue. Owns the body list and drives one tick through every stage in order -
- * broadphase, midphase, narrowphase, solver - exactly the pipeline table in plan.md, nothing more.
- *
- * Public surface matches plan.md's API surface table: addRigidBody, removeRigidBody, step(dt),
- * gravity. addConstraint/removeConstraint/rayIntersect/shapeIntersect are later-stage features
- * (joints, queries) and are not implemented yet - present as documented no-ops would be worse than
- * absent, so they are simply not here until built for real.
- */
+// Pipeline glue: owns the body list, drives one tick through broadphase -> midphase/narrowphase ->
+// solver. Query methods delegate to Queries.js.
 class World {
     constructor(broadphase, narrowphase, solver) {
         this.broadphase = broadphase;
@@ -6213,7 +7966,31 @@ class World {
         this.solver = solver;
         this.midphase = new Midphase();
         this.gravity = new Vector3(0, -9.81, 0);
-        this.bodies = []; // all bodies, static and dynamic alike - broadphase filters by type itself
+        this.bodies = [];
+        this.constraints = [];
+        this._listeners = {};
+    }
+
+    addListener(event, fn) {
+        (this._listeners[event] || (this._listeners[event] = [])).push(fn);
+        return this;
+    }
+
+    emit(event, arg) {
+        const list = this._listeners[event];
+        if (!list) return;
+        for (let i = 0; i < list.length; i++) list[i](arg);
+    }
+
+    addConstraint(constraint) {
+        this.constraints.push(constraint);
+        return this;
+    }
+
+    removeConstraint(constraint) {
+        const i = this.constraints.indexOf(constraint);
+        if (i !== -1) this.constraints.splice(i, 1);
+        return this;
     }
 
     addRigidBody(body) {
@@ -6232,34 +8009,3456 @@ class World {
         return this;
     }
 
-    // Advances the whole world by `dt`: broadphase -> midphase/narrowphase (fused inside
-    // NarrowPhase.step, which owns calling into Midphase per plan.md's phases split) -> solver.
-    // Every dynamic body's derived state (world AABB, world inverse inertia) is refreshed BEFORE
-    // broadphase runs, so broadphase's own "AABBs are current" assumption (Rule 1) holds for
-    // this tick's bodies, including ones the solver moved last tick.
     step(dt) {
+        this.emit('stepStart', dt);
         for (let i = 0; i < this.bodies.length; i++) this.bodies[i].updateDerived(dt);
 
         const pairs = this.broadphase.computePairs();
         const manifolds = this.narrowphase.step(pairs, this.midphase, dt);
 
-        // Interleaved detect-then-solve: the solver re-measures contact geometry against each
-        // substep's predicted positions via this callback (see Solver.step and
-        // NarrowPhase.refreshManifoldGeometry), which is what keeps rotating/corner contacts stable.
+        // refresh callback: re-measures contact geometry against predicted positions each substep.
         const narrowphase = this.narrowphase;
         this.solver.step(this.bodies, manifolds, this.gravity, dt, function (mans) {
             narrowphase.refreshManifoldGeometry(mans);
-        });
+        }, this.constraints);
 
-        // The solver moved bodies; their derived state (AABB, world inertia) is stale until the
-        // NEXT tick's pass above runs. Nothing within this tick reads it again after this point,
-        // so refreshing here would be wasted work - narrowphase/broadphase for THIS tick already
-        // ran against the pre-solve state, which is correct (Rule 1: each stage assumes the state
-        // handed to it, not a moving target updated out from under it mid-tick).
+        // Forces are per-tick: cleared once here, after the solver used this tick's value.
+        for (let i = 0; i < this.bodies.length; i++) {
+            const b = this.bodies[i];
+            if (b.bodyType === RigidBody.DYNAMIC) b.clearForces();
+        }
+
+        this.emit('stepEnd', dt);
+    }
+
+    rayIntersect(start, end, ignore) {
+        return Queries.rayIntersect(this.bodies, start, end, ignore);
+    }
+
+    shapeIntersect(shape, start, end, rotation, ignore) {
+        return Queries.shapeIntersect(this.bodies, shape, start, end, rotation, ignore);
     }
 }
 
 ActionPhysics.World = World;
+
+
+// ==== src/character/CharacterController.js ====
+/**
+ * Spring-based character controller: a capsule body held at a fixed ride height above the ground
+ * by a raycast spring, with slope-projected movement and a small falling/grounded/jumping state
+ * machine. This is the smaller of ActionPhysics's two character controllers (the other is the
+ * FPS controller) — see the design plan's Component 10 for why they are independent, not a
+ * base + specialization.
+ *
+ * Uses the World/RigidBody privileged interface directly (raw force application, direct velocity
+ * writes) rather than the public gameplay surface — a character controller is documented as
+ * needing that access.
+ */
+class CharacterController {
+    constructor(world, options) {
+        this.world = world;
+        options = options || {};
+
+        const radius = options.radius || 2;
+        const totalHeight = options.height || 6;
+        this.shape = new CapsuleShape(radius, totalHeight);
+        this.body = new RigidBody(this.shape, options.mass || 1);
+
+        this.body.angular_factor = options.allowYRotation === false
+            ? new Vector3(0, 0, 0)
+            : new Vector3(0, 1, 0);
+
+        // Movement configuration
+        this.moveSpeed = options.moveSpeed || 50;
+        this.maxSpeed = options.maxSpeed || 50;
+        this.stopFactor = options.stopFactor || 0.9;
+        this.stoppingThreshold = options.stoppingThreshold || 0.1;
+        this.jumpForce = options.jumpForce || 60;
+        this.airAcceleration = options.airAcceleration || 0.3;
+        this.groundAcceleration = options.groundAcceleration || 0.3;
+
+        // Input handling
+        this._inputDirection = new Vector3();
+        this._hasInputThisFrame = false;
+        this._jumpRequested = false;
+
+        // Working vectors
+        this.contactNormal = new Vector3(0, 1, 0);
+        this.tempVector = new Vector3();
+        this.moveVector = new Vector3();
+        this.projectedMove = new Vector3();
+
+        // Ground spring config. Once the capsule touches the ground the solver's own contact
+        // constraint pins it there regardless of spring force, so the spring must stop a fall before
+        // the shape reaches the surface - hence a stiff springStrength default. springDamping is set
+        // near critical damping for that strength (2*sqrt(strength*mass)), not scaled proportionally
+        // with it - proportional scaling is underdamped and bounces for a long time before settling.
+        this.rideHeight = options.rideHeight || 4;
+        this.rayLength = options.rayLength || totalHeight;
+        this.springStrength = options.springStrength || 300;
+        this.springDamping = options.springDamping || 30;
+
+        // State management
+        this.states = {};
+        this.currentState = null;
+        this._lastStateChange = { from: null, to: null, time: Date.now() };
+
+        // Debug tracking
+        this._lastGroundHit = null;
+        this._lastHeightError = null;
+        this._lastSpringForce = null;
+        this._lastMoveDelta = new Vector3();
+        this._lastProjectedMove = new Vector3();
+        this._lastAppliedForce = null;
+
+        this._listeners = {};
+
+        this._initializeStates();
+        this.changeState('falling');
+    }
+
+    _initializeStates() {
+        this.states.falling = {
+            name: 'falling',
+            enter: () => {},
+            update: (deltaTime) => {
+                this.updateGroundSpring();
+                if (this._hasInputThisFrame) this.move(this._inputDirection, deltaTime);
+                if (this._lastGroundHit) return 'grounded';
+            },
+            exit: () => {}
+        };
+
+        this.states.grounded = {
+            name: 'grounded',
+            enter: () => {},
+            update: (deltaTime) => {
+                this.updateGroundSpring();
+
+                if (this._jumpRequested) {
+                    this._jumpRequested = false;
+                    return 'jumping';
+                }
+
+                if (this._hasInputThisFrame) {
+                    this.move(this._inputDirection, deltaTime);
+                } else {
+                    const vx = this.body.linear_velocity.x, vz = this.body.linear_velocity.z;
+                    const currentHorizontalSpeed = Math.sqrt(vx * vx + vz * vz);
+                    if (currentHorizontalSpeed > this.stoppingThreshold) {
+                        this.body.linear_velocity.x *= this.stopFactor;
+                        this.body.linear_velocity.z *= this.stopFactor;
+                    } else {
+                        this.body.linear_velocity.x = 0;
+                        this.body.linear_velocity.z = 0;
+                    }
+                }
+
+                if (!this._lastGroundHit) return 'falling';
+            },
+            exit: () => {}
+        };
+
+        this.states.jumping = {
+            name: 'jumping',
+            enter: () => {
+                this.body.linear_velocity.y = this.jumpForce;
+            },
+            update: (deltaTime) => {
+                if (this._hasInputThisFrame) this.move(this._inputDirection, deltaTime);
+                if (this.body.linear_velocity.y <= 0) return 'falling';
+            },
+            exit: () => {}
+        };
+    }
+
+    /** Requests a jump; only takes effect while grounded. */
+    wishJump() {
+        if (this.currentState && this.currentState.name === 'grounded') {
+            this._jumpRequested = true;
+        }
+    }
+
+    changeState(newStateName) {
+        const newState = this.states[newStateName];
+        if (!newState) throw new Error('Invalid state: ' + newStateName);
+
+        if (this.currentState) this.currentState.exit();
+
+        this._lastStateChange = {
+            from: this.currentState ? this.currentState.name : null,
+            to: newState.name,
+            time: Date.now()
+        };
+
+        this.currentState = newState;
+        this.currentState.enter();
+    }
+
+    /** Stores input direction for processing during update(). */
+    handleInput(direction) {
+        if (direction && direction.lengthSquared() > 0) {
+            this._inputDirection.copy(direction);
+            this._hasInputThisFrame = true;
+        } else {
+            this._inputDirection.set(0, 0, 0);
+            this._hasInputThisFrame = false;
+        }
+    }
+
+    /** Advances the state machine. Call once per frame after handleInput(). */
+    update(deltaTime) {
+        if (this.currentState) {
+            const nextState = this.currentState.update(deltaTime);
+            if (nextState && nextState !== this.currentState.name) {
+                this.changeState(nextState);
+            }
+        }
+        this._hasInputThisFrame = false;
+    }
+
+    /**
+     * Raycasts straight down from the capsule's base and applies a spring force to hold the body
+     * at rideHeight above whatever it hits. Call while in FALLING or GROUNDED.
+     */
+    updateGroundSpring() {
+        const halfHeight = this.shape.totalHeight / 2;
+        const rayStart = new Vector3(
+            this.body.position.x,
+            this.body.position.y - halfHeight - 0.00001,
+            this.body.position.z
+        );
+        const rayEnd = new Vector3(rayStart.x, rayStart.y - this.rayLength, rayStart.z);
+
+        const hit = this.world.rayIntersect(rayStart, rayEnd, this.body);
+
+        if (hit) {
+            this._lastGroundHit = hit;
+            this.contactNormal.copy(hit.normal);
+
+            const heightError = this.rideHeight - hit.distance;
+            const verticalVelocity = this.body.linear_velocity.y;
+            const springForce = (heightError * this.springStrength) - (verticalVelocity * this.springDamping);
+
+            this._lastHeightError = heightError;
+            this._lastSpringForce = springForce;
+            this._lastAppliedForce = { x: 0, y: springForce, z: 0 };
+
+            this.body.applyForce(new Vector3(0, springForce, 0));
+        } else {
+            this._lastGroundHit = null;
+            this._lastHeightError = null;
+            this._lastSpringForce = null;
+            this._lastAppliedForce = null;
+            this.contactNormal.set(0, 1, 0);
+        }
+    }
+
+    /** Projects `direction` onto the current ground (or air) and drives velocity toward it. */
+    move(direction, deltaTime) {
+        this.moveVector.copy(direction);
+        this.moveVector.scale(this.moveSpeed);
+        this._lastMoveDelta.copy(this.moveVector);
+
+        if (this.currentState.name === 'falling' || this.currentState.name === 'jumping') {
+            const currentY = this.body.linear_velocity.y;
+            this.body.linear_velocity.x += (this.moveVector.x - this.body.linear_velocity.x) * this.airAcceleration;
+            this.body.linear_velocity.z += (this.moveVector.z - this.body.linear_velocity.z) * this.airAcceleration;
+            this.body.linear_velocity.y = currentY;
+        } else {
+            const dot = this.moveVector.dot(this.contactNormal);
+            this.projectedMove.copy(this.moveVector);
+            this.tempVector.copy(this.contactNormal);
+            this.tempVector.scale(dot);
+            this.projectedMove.subtract(this.tempVector);
+            this._lastProjectedMove.copy(this.projectedMove);
+
+            this.body.linear_velocity.x += (this.projectedMove.x - this.body.linear_velocity.x) * this.groundAcceleration;
+            this.body.linear_velocity.z += (this.projectedMove.z - this.body.linear_velocity.z) * this.groundAcceleration;
+        }
+
+        const vx = this.body.linear_velocity.x, vz = this.body.linear_velocity.z;
+        const currentSpeed = Math.sqrt(vx * vx + vz * vz);
+        if (currentSpeed > this.maxSpeed) {
+            const scale = this.maxSpeed / currentSpeed;
+            this.body.linear_velocity.x *= scale;
+            this.body.linear_velocity.z *= scale;
+        }
+    }
+
+    /** Everything about current movement state, forces and contacts — for debugging/inspection. */
+    getDebugInfo() {
+        return {
+            physics: {
+                position: { x: this.body.position.x, y: this.body.position.y, z: this.body.position.z },
+                velocity: { x: this.body.linear_velocity.x, y: this.body.linear_velocity.y, z: this.body.linear_velocity.z }
+            },
+            movement: {
+                input_direction: this._hasInputThisFrame
+                    ? { x: this._inputDirection.x, y: this._inputDirection.y, z: this._inputDirection.z }
+                    : null,
+                raw_move: { x: this._lastMoveDelta.x, y: this._lastMoveDelta.y, z: this._lastMoveDelta.z },
+                projected_move: { x: this._lastProjectedMove.x, y: this._lastProjectedMove.y, z: this._lastProjectedMove.z },
+                applied_force: this._lastAppliedForce
+            },
+            spring: {
+                hit_distance: this._lastGroundHit ? this._lastGroundHit.distance : null,
+                height_error: this._lastHeightError,
+                spring_force: this._lastSpringForce,
+                target_height: this.rideHeight,
+                spring_strength: this.springStrength,
+                spring_damping: this.springDamping
+            },
+            contact: {
+                normal: { x: this.contactNormal.x, y: this.contactNormal.y, z: this.contactNormal.z },
+                hit: this._lastGroundHit
+                    ? { point: this._lastGroundHit.point, normal: this._lastGroundHit.normal, distance: this._lastGroundHit.distance }
+                    : null
+            },
+            state: { current: this.currentState ? this.currentState.name : null, lastTransition: this._lastStateChange }
+        };
+    }
+
+    addListener(event, fn) {
+        (this._listeners[event] || (this._listeners[event] = [])).push(fn);
+        return this;
+    }
+
+    emit(event, arg) {
+        const list = this._listeners[event];
+        if (!list) return;
+        for (let i = 0; i < list.length; i++) list[i](arg);
+    }
+}
+
+ActionPhysics.CharacterController = CharacterController;
+
+
+// ==== src/character/fps/FPSControllerConstants.js ====
+/**
+ * Every tunable default for FPSCharacterController, in ONE place, grouped by subsystem. The
+ * controller reads each default from here (constructor: `o.walkSpeed !== undefined ?
+ * o.walkSpeed : FPS_CONTROLLER_DEFAULTS.movement.walkSpeed`), so a caller can still
+ * override any single value per-instance via the options object — this is only the fallback.
+ *
+ * What is NOT here (on purpose): algorithm-internal epsilons/thresholds inside the collision +
+ * slope math (1e-4 guards, normal.y classifications, sub-step fractions) — those are
+ * implementation details, not feel knobs, and stay at their use site in
+ * CharacterController/Constants.js (the FPSC object).
+ *
+ * @class FPS_CONTROLLER_DEFAULTS
+ * @static
+ */
+var FPS_CONTROLLER_DEFAULTS = {
+    // ---- Collider dimensions + mass (pre-scale "base" values; _applyScale multiplies at runtime) ----
+    dimensions: {
+        width: 0.6,
+        depth: 0.6,
+        height: 1.8,
+        mass: 10,
+        eyeHeightRatio: 0.42, // eyeHeight default = height * this (overridable directly via o.eyeHeight)
+        crouchRatio: 0.55,    // crouched collider height as a fraction of standing height
+    },
+
+    // ---- Ground movement. Three gaits: walk (held modifier) < move/run (default) < sprint. ----
+    movement: {
+        walkSpeed: 3.8,        // deliberate slow gait (held walk modifier)
+        moveSpeed: 7,          // RUN speed — the no-modifier default
+        sprintSpeed: 11.5,     // top gait
+        crouchSpeedMult: 0.5,  // multiplies whichever gait is active while crouched (unitless)
+        sprintDecay: 10,       // units/sec bleed of excess speed after releasing sprint (Infinity = instant)
+        groundStopDecel: 80,   // units/sec decel when all move keys released (idle stop)
+        airControl: 0.12,      // steering authority while airborne (0..1)
+        friction: 0,           // body friction (0 keeps wall-slides clean; kinematic grounding holds slopes)
+    },
+
+    // ---- Jump + forgiveness windows ----
+    jump: {
+        jumpSpeed: 4.6,
+        stepHeight: 0.4,       // max ledge height the mover steps up onto (base/1x; scales linearly with player scale)
+        stepDownDist: 0.5,     // max drop the mover snaps down to keep grounded
+        coyoteTime: 0.1,       // sec after leaving a ledge a jump still registers
+        jumpBuffer: 0.12,      // sec before landing a jump press is remembered and fires on touchdown
+    },
+
+    // ---- Slopes ----
+    slopes: {
+        maxSlopeAngle: 45.57,  // max standable slope, degrees (>=90 disables the limit)
+        climbSteepSlopes: false, // can the player ascend a too-steep slope by walking into it
+    },
+
+    // ---- Slide (crouch-at-speed) ----
+    slide: {
+        enabled: true,
+        requiresMoveInput: true,  // ENTRY requires a movement key held (not crouch alone); exit does not
+        allowLandingWithoutInput: true, // ...EXCEPT on the landing frame, where crouch + speed alone can start a slide
+        minSpeed: 7.8,         // speed at/above which a crouch launches a slide
+        endSpeed: 1,           // slide ends when speed bleeds below this
+        friction: 6,           // flat-ground slide friction
+        boost: 1.3,            // launch speed multiplier
+        control: 0.14,         // steering authority while sliding (0..1)
+        slopeAccel: 1.5,       // downhill acceleration factor while sliding
+        slopeMin: 0.2,         // sin(angle) at/above which the slide is gravity-governed (Infinity disables)
+        slopeFriction: 1.5,    // cross-slope friction while gravity-sliding
+        reversalBrakeMult: 4,  // multiplier on slopeFriction for how hard a deliberate reversal brakes
+    },
+
+    // ---- Ladders (see _updateLadder) ----
+    ladder: {
+        climbSpeed: 2.5,        // vertical speed while climbing (pre-scale)
+        strafeSpeed: 2.5,       // lateral speed along the ladder's face while climbing (pre-scale)
+        // Forward/back and strafe contributions are summed WITHOUT normalizing the combined wish
+        // vector, unlike ground movement — holding both diagonally into a ladder climbs strictly
+        // faster than either alone. Intentional.
+        mountReach: 0.2,        // reach (pre-scale) past the collider's own half-width for the mount probe
+        dismountPushSpeed: 7.0, // horizontal shove speed away from the face on a jump-off dismount (pre-scale)
+    },
+
+    // ---- Ghost: the solver body that trails the player and pushes objects (see _syncGhost) ----
+    ghost: {
+        pushMassBaseMult: 35,  // objects heavier than mass * this block like a wall; lighter yield proportionally
+        // Physics material of the ghost body itself (not the chase drive, which targets the
+        // character's predicted end-of-tick position directly). Zero friction/restitution/
+        // linearDamping so the chase-drive velocity is never fought by the solver; high
+        // angularDamping keeps contact torque from spinning it up while it shoves objects.
+        material: {
+            friction: 0,
+            restitution: 0,
+            linearDamping: 0,
+            angularDamping: 0.9,
+        },
+    },
+
+    // ---- Knockback: how the player RECEIVES a push from an object (see _readGhostKnockback) ----
+    knockback: {
+        receivePush: true,        // gate the whole knockback path
+        maxSpeed: 16,             // cap on received knockback speed
+        knockbackFraction: 1.0,   // scale received knockback
+        selfPush: false,          // false = only an object with its OWN inbound momentum knocks you (no self-push
+                                  //         oscillation); true = legacy relative-closing gate (oscillates)
+    },
+
+    // ---- Netcode / prediction behavior for the ghost (both default ON; false reverts to older behavior) ----
+    netcode: {
+        driveGhostDuringResim: true,    // run the ghost drive during rollback resim (off = objects rubber-band)
+        hardsnapGhostOnReconcile: true, // snap ghost onto authority on setState (off = objects oscillate)
+    },
+
+    // ---- View / aim ----
+    view: {
+        yaw: 0,
+        pitch: 0,
+        maxPitch: 1.5,         // clamp, radians
+    },
+
+    // ---- Render (sub-tick eye interpolation) ----
+    render: {
+        snapDist: 0.8,         // per-tick eye jump (units) above which the interp snaps instead of sliding
+    },
+
+    // ---- Mantle (ledge grab + pull-up arc) ----
+    mantle: {
+        height: 2.2,        // max rise (feet to ledge top) that can be mantled (pre-scale); above this = too tall
+        reach: 0.25,        // extra reach past the collider's half-width for the forward ledge probe (pre-scale)
+        duration: 0.35,     // total arc time in seconds (lift + vault)
+        liftFrac: 0.6,      // fraction of duration spent in the lift phase; remainder is the vault
+        speed: 6.0,         // drive speed for both lift and vault phases (pre-scale, units/sec)
+    },
+
+    // ---- Misc identity defaults (not feel knobs, but kept here so nothing is scattered) ----
+    misc: {
+        color: "#cc4444",
+        visible: false,        // the collider body is invisible by default (a model/render layer draws the player)
+        bodyName: "fpsControllerBody",
+        scale: 1,              // 1 = no scaling
+        spawn: { x: 0, y: 2, z: 0 }, // fallback spawn when no position is passed
+    },
+};
+
+ActionPhysics.FPS_CONTROLLER_DEFAULTS = FPS_CONTROLLER_DEFAULTS;
+
+
+// ==== src/character/fps/FPSCharacterController.js ====
+/**
+ * Engine-agnostic, reusable first-person character controller built on the physics engine
+ * (NOT `CharacterController` — that's a separate, spring-based capsule controller; this
+ * one is a kinematic box mover with its own ground/wall/slope/ghost handling). Uses a BOX
+ * collider that is angular-locked so it can never tip. Grounding, slopes, walls and resting are
+ * handled by hand-written raycast/sweep probes each tick, not by the physics solver — the
+ * controller does NOT hard-teleport the body to the ground every frame (that fights the solver
+ * and jitters). It only:
+ *   - sets HORIZONTAL velocity from input each step (snappy, no momentum fighting),
+ *   - projects that velocity along the ground plane (no sliding on slopes) and off walls
+ *     (smooth move-and-slide, so we never ram the solver), and
+ *   - applies targeted raycast assists for STEP-UP and STEP-DOWN, which the solver can't
+ *     do with a box collider.
+ * Vertical motion (gravity, landing) is left to the solver; only jump / jetpack thrust write
+ * the vertical velocity directly.
+ *
+ * Also handles two further movement states parallel to ground/air: climbing a body tagged
+ * isLadder (see _updateLadder), and riding a body tagged isPlatform via base-velocity inheritance
+ * (see _baseVelocity in the constructor, and beginStep/endStep/_updateVertical) — jumping off a
+ * rising platform adds its velocity into the jump.
+ *
+ * DESIGN SEAMS:
+ *   The controller never reads input directly. Gameplay samples an input command (pure data, so
+ *   any caller can run remote characters' commands through the exact same path) and feeds it in,
+ *   bracketing a single physics world step:
+ *       const cmd = mySampleInput(input);       // input mapping is policy, lives outside this class
+ *       controller.beginStep(cmd, dt);           // pre-physics: velocity + assists
+ *       world.step(dt);                          // ONE world step (all bodies)
+ *       controller.endStep(dt);                  // post-physics: grounded + step-down
+ *
+ * EXTENSIBILITY:
+ *   This base IS the default "kit" (instantiate it directly). A game adds an alternate kit by
+ *   subclassing and overriding `_updateVertical` (jump/gravity) and/or `_getMoveSpeed` without
+ *   touching ground/step/wall logic.
+ *
+ * Units: METERS (gravity -9.81 by default); defaults are in meters (a ~1.8m human ≈ 1.8 units
+ * tall). Use `scale` to resize the whole character.
+ *
+ * @class FPSCharacterController
+ * @constructor
+ * @param {World} world - The physics world this controller's body/ghost live in.
+ * @param {Object} [options] - See FPS_CONTROLLER_DEFAULTS (FPSControllerConstants.js) for every
+ *   tunable default and its meaning; each `options.X` below overrides that default per-instance.
+ * @param {Vector3} [options.position] - Spawn position (body center). Default (0,20,0).
+ * @param {Number} [options.scale=1] - Uniform size multiplier for the whole character.
+ * @param {Number} [options.width] - Collider width (x) before scale.
+ * @param {Number} [options.depth] - Collider depth (z) before scale.
+ * @param {Number} [options.height] - Collider height (y) before scale.
+ * @param {Number} [options.mass] - Body mass before scale.
+ * @param {Number} [options.eyeHeight] - Eye offset above body CENTER before scale.
+ * @param {Number} [options.walkSpeed] - Held-walk gait speed before scale (slower than run).
+ * @param {Number} [options.moveSpeed] - RUN speed (the default no-modifier gait) before scale.
+ * @param {Number} [options.sprintSpeed] - Sprint move speed before scale.
+ * @param {Number} [options.crouchSpeedMult] - Multiplier on the active gait while crouched.
+ * @param {Number} [options.sprintDecay] - Rate (units/sec) the sprint boost fades after release.
+ * @param {Number} [options.groundStopDecel] - Deceleration (units/sec) on releasing all move keys.
+ * @param {Number} [options.airControl] - 0..1 horizontal steering authority per step while airborne.
+ * @param {Number} [options.jumpSpeed] - Jump velocity before scale.
+ * @param {Number} [options.friction] - Body friction (0 keeps wall-slides clean; kinematic
+ *   grounding holds slopes without relying on solver friction).
+ * @param {Number} [options.stepHeight] - Max step-UP height before scale.
+ * @param {Number} [options.stepDownDist] - Max step-DOWN snap before scale.
+ * @param {Number} [options.coyoteTime] - Seconds after leaving a ledge you can still jump (0=off).
+ * @param {Number} [options.jumpBuffer] - Seconds before landing a jump press is remembered (0=off).
+ * @param {Boolean} [options.slideEnabled=true] - Enable crouch-at-speed sliding.
+ * @param {Boolean} [options.slideRequiresMoveInput=true] - Require a movement key held to START a slide (exit never requires it).
+ * @param {Boolean} [options.slideAllowLandingWithoutInput=true] - Waive the movement-key requirement on the landing frame, so an impact-slide can start from crouch + speed alone.
+ * @param {Number} [options.slideMinSpeed] - Min along-ground speed (pre-scale) to start a slide.
+ * @param {Number} [options.slideEndSpeed] - Flat slide ends below this speed (pre-scale).
+ * @param {Number} [options.slideFriction] - Speed bled per second on flat ground (pre-scale).
+ * @param {Number} [options.slideBoost] - Launch speed multiplier at slide entry.
+ * @param {Number} [options.slideControl] - 0..1 carve authority while sliding (speed-preserving).
+ * @param {Number} [options.slideSlopeAccel] - Gravity-along-slope multiplier while sliding.
+ * @param {Number} [options.slideSlopeMin] - Min slope (sin of angle) that sustains a slide via gravity.
+ * @param {Number} [options.slideSlopeFriction] - Cross-slope bleed per second on a sustaining slope.
+ * @param {Number} [options.slideReversalBrakeMult] - Multiplier on slideSlopeFriction for how hard a
+ *   deliberate on-slope reversal (wish opposing current slide direction) brakes before the carve
+ *   steering picks the new heading back up.
+ * @param {Boolean} [options.receivePush=true] - Enable object-to-character knockback via the ghost body.
+ * @param {Number} [options.receiveMaxSpeed] - Cap on how fast a single object hit can knock the character.
+ * @param {Number} [options.receiveKnockbackFraction] - Fraction of the ghost's contact velocity transferred.
+ * @param {Number} [options.maxSlopeAngle] - Max standable slope in degrees (90+ disables the limit).
+ * @param {Boolean} [options.visible=false] - Whether a consumer should treat the collider as drawable
+ *   (this controller does no rendering itself — see `object.isVisible`).
+ * @param {String} [options.color] - Cosmetic color tag, opaque to this class.
+ * @param {Number} [options.skin] - Contact/sweep tolerance override (see FPSC.SKIN).
+ */
+var FPSCharacterController = function(world, options) {
+    this.world = world;
+    var o = options || {};
+
+    var D = FPS_CONTROLLER_DEFAULTS;
+    var dim = D.dimensions, mv = D.movement, jmp = D.jump, slp = D.slopes, sld = D.slide,
+        gh = D.ghost, kb = D.knockback, net = D.netcode, vw = D.view, rnd = D.render, msc = D.misc,
+        lad = D.ladder, man = D.mantle;
+
+    // Base (pre-scale) values.
+    this._baseWidth = o.width !== undefined ? o.width : dim.width;
+    this._baseDepth = o.depth !== undefined ? o.depth : dim.depth;
+    this._baseHeight = o.height !== undefined ? o.height : dim.height;
+    this._baseMass = o.mass !== undefined ? o.mass : dim.mass;
+    this._baseEyeHeight = o.eyeHeight !== undefined ? o.eyeHeight : this._baseHeight * dim.eyeHeightRatio;
+
+    this._baseWalkSpeed = o.walkSpeed !== undefined ? o.walkSpeed : mv.walkSpeed;
+    this._baseMoveSpeed = o.moveSpeed !== undefined ? o.moveSpeed : mv.moveSpeed;
+    this._baseSprintSpeed = o.sprintSpeed !== undefined ? o.sprintSpeed : mv.sprintSpeed;
+    this.crouchSpeedMult = o.crouchSpeedMult !== undefined ? o.crouchSpeedMult : mv.crouchSpeedMult;
+    this._baseSprintDecay = o.sprintDecay !== undefined ? o.sprintDecay : mv.sprintDecay;
+    this._baseGroundStopDecel = o.groundStopDecel !== undefined ? o.groundStopDecel : mv.groundStopDecel;
+    this._baseJumpSpeed = o.jumpSpeed !== undefined ? o.jumpSpeed : jmp.jumpSpeed;
+    this._baseStepHeight = o.stepHeight !== undefined ? o.stepHeight : jmp.stepHeight;
+    this._baseStepDownDist = o.stepDownDist !== undefined ? o.stepDownDist : jmp.stepDownDist;
+    // Contact/sweep tolerance. A per-instance override (not just FPSC.SKIN) lets a project tune this
+    // for a specific character without touching the shared engine default.
+    this._baseSkin = o.skin !== undefined ? o.skin : FPSCharacterController.FPSC.SKIN;
+
+    // Jump-off-a-platform base-velocity behavior — see _updateVertical. Two independent axes, opposite
+    // defaults: VERTICAL fling (jumping off a rising elevator flings you higher) defaults ON — it's the
+    // established, expected platforming feel and existing tests (PL3) depend on it. HORIZONTAL carry
+    // (jumping off a moving/rotating platform keeps its sideways speed) defaults OFF — carrying a fast
+    // platform's horizontal speed into a jump (especially a spinning platform's tangential speed) reads
+    // as an unwanted "fling" rather than a clean jump; a project that wants the classic
+    // conveyor-belt-momentum feel can opt back in per-instance.
+    this._jumpKeepsVerticalBaseVelocity = o.jumpKeepsVerticalBaseVelocity !== undefined ? o.jumpKeepsVerticalBaseVelocity !== false : true;
+    this._jumpKeepsHorizontalBaseVelocity = o.jumpKeepsHorizontalBaseVelocity === true;
+    // A jump is the player's WISH to leave the surface — that wish should only ever be HELPED by the
+    // platform's current vertical motion, never fought. Default true (opt-out): a platform descending
+    // at jump time contributes nothing negative to the launch, only a rising one still flings higher
+    // (via jumpKeepsVerticalBaseVelocity above). Scoped to the jump moment only — normal ground-follow
+    // on a descending platform when NOT jumping is unaffected, still correctly rides it down.
+    this._jumpIgnoresDescendingBaseVelocity = o.jumpIgnoresDescendingBaseVelocity !== undefined ? o.jumpIgnoresDescendingBaseVelocity !== false : true;
+
+    // Object interaction (push and be pushed) runs through the ghost body (see _buildGhost / _readGhostKnockback).
+    this._receivePush = o.receivePush !== undefined ? o.receivePush !== false : kb.receivePush;
+    // Speed-like (a velocity cap), so it must scale with character size the same way sprintSpeed
+    // does — stored as a BASE here and scaled in _applyScale, not a fixed literal, so a 2x
+    // character's (faster, harder-hitting) knockback is judged against a 2x cap, not the 1x default.
+    this._baseReceiveMaxSpeed = o.receiveMaxSpeed !== undefined ? o.receiveMaxSpeed : kb.maxSpeed;
+    this._receiveKnockbackFraction = o.receiveKnockbackFraction !== undefined ? o.receiveKnockbackFraction : kb.knockbackFraction;
+    this._receiveSelfPush = o.receiveSelfPush !== undefined ? o.receiveSelfPush === true : kb.selfPush;
+    // Ghost body's physics material — read once here so _buildGhost (called on every rebuild:
+    // crouch, setScale, respawn) doesn't need its own access to FPS_CONTROLLER_DEFAULTS.
+    this._ghostMaterial = o.ghostMaterial || gh.material;
+    this._driveGhostDuringResim = o.driveGhostDuringResim !== undefined ? o.driveGhostDuringResim !== false : net.driveGhostDuringResim;
+    this._hardsnapGhostOnReconcile = o.hardsnapGhostOnReconcile !== undefined ? o.hardsnapGhostOnReconcile !== false : net.hardsnapGhostOnReconcile;
+    this._pushMassLimitOverride = o.pushMassLimit;
+    this._pushMassBaseMult = gh.pushMassBaseMult;
+
+    this.airControl = o.airControl !== undefined ? o.airControl : mv.airControl;
+    this.friction = o.friction !== undefined ? o.friction : mv.friction;
+
+    this.coyoteTime = o.coyoteTime !== undefined ? o.coyoteTime : jmp.coyoteTime;
+    this.jumpBuffer = o.jumpBuffer !== undefined ? o.jumpBuffer : jmp.jumpBuffer;
+    this._coyoteTimer = 0;
+    this._jumpBufferTimer = 0;
+
+    // Max standable slope, in degrees. Stored as the cosine (_minStandableNormalY) since that's
+    // what the per-tick ground-normal check compares against. 90 (or more) disables the limit.
+    this.maxSlopeAngle = o.maxSlopeAngle !== undefined ? o.maxSlopeAngle : slp.maxSlopeAngle;
+    this._minStandableNormalY = Scalar.cos(Math.min(90, this.maxSlopeAngle) * Math.PI / 180);
+    this.climbSteepSlopes = o.climbSteepSlopes !== undefined ? o.climbSteepSlopes === true : slp.climbSteepSlopes;
+
+    // Slide (crouch-at-speed). slide* tuning values only take effect once sliding.
+    this.slideEnabled = o.slideEnabled !== undefined ? o.slideEnabled !== false : sld.enabled;
+    this.slideRequiresMoveInput = o.slideRequiresMoveInput !== undefined ? !!o.slideRequiresMoveInput : sld.requiresMoveInput;
+    this.slideAllowLandingWithoutInput = o.slideAllowLandingWithoutInput !== undefined ? !!o.slideAllowLandingWithoutInput : sld.allowLandingWithoutInput;
+    this._baseSlideMinSpeed = o.slideMinSpeed !== undefined ? o.slideMinSpeed : sld.minSpeed;
+    this._baseSlideEndSpeed = o.slideEndSpeed !== undefined ? o.slideEndSpeed : sld.endSpeed;
+    this._baseSlideFriction = o.slideFriction !== undefined ? o.slideFriction : sld.friction;
+    this.slideBoost = o.slideBoost !== undefined ? o.slideBoost : sld.boost;
+    this.slideControl = o.slideControl !== undefined ? o.slideControl : sld.control;
+    this.slideSlopeAccel = o.slideSlopeAccel !== undefined ? o.slideSlopeAccel : sld.slopeAccel;
+    this.slideSlopeMin = o.slideSlopeMin !== undefined ? o.slideSlopeMin : sld.slopeMin;
+    this._baseSlideSlopeFriction = o.slideSlopeFriction !== undefined ? o.slideSlopeFriction : sld.slopeFriction;
+    // Reversal brake rate, as a multiplier on slideSlopeFriction — how hard a deliberate reversal
+    // (wish opposing current slide direction, see FPSC.SLIDE_REVERSAL_DOT) bleeds speed before the
+    // ordinary carve blend picks the new heading back up.
+    this.slideReversalBrakeMult = o.slideReversalBrakeMult !== undefined ? o.slideReversalBrakeMult : sld.reversalBrakeMult;
+    // Authoritative movement state — see the "Movement state machine" comment above endStep. Starts
+    // AIRBORNE; the first tick's endStep probe corrects it (e.g. to WALK if spawned on the ground).
+    this._moveState = FPSCharacterController.FPSC.MOVE_AIRBORNE;
+    this._slipJustEntered = false; // gates the SLIP branch's one-time velocity projection; set by endStep
+    this._wantCrouch = false; // this tick's crouch intent, stashed by beginStep for endStep to read
+    this._hasMoveInput = false; // this tick's movement input, stashed by beginStep for endStep to read
+    this._prevCrouch = false;
+
+    // Ladders (see _updateLadder). base* values scale with the character like every other speed.
+    this._baseLadderClimbSpeed = o.ladderClimbSpeed !== undefined ? o.ladderClimbSpeed : lad.climbSpeed;
+    this._baseLadderStrafeSpeed = o.ladderStrafeSpeed !== undefined ? o.ladderStrafeSpeed : lad.strafeSpeed;
+    this._baseLadderMountReach = o.ladderMountReach !== undefined ? o.ladderMountReach : lad.mountReach;
+    this._baseLadderDismountPushSpeed = o.ladderDismountPushSpeed !== undefined ? o.ladderDismountPushSpeed : lad.dismountPushSpeed;
+    this._onLadder = false;
+    this._ladderNormal = new Vector3(0, 0, 1); // points OUT of the ladder face, toward the character
+
+    // Mantle (ledge grab + pull-up arc, see _updateMantle / Movement/Mantle.js).
+    this._baseMantleHeight = o.mantleHeight !== undefined ? o.mantleHeight : man.height;
+    this._baseMantleReach = o.mantleReach !== undefined ? o.mantleReach : man.reach;
+    this._baseMantleSpeed = o.mantleSpeed !== undefined ? o.mantleSpeed : man.speed;
+    this.mantleDuration = o.mantleDuration !== undefined ? o.mantleDuration : man.duration;
+    this.mantleLiftFrac = o.mantleLiftFrac !== undefined ? o.mantleLiftFrac : man.liftFrac;
+    this._mantleActive = false;
+    this._mantleTimer = 0;
+    // Arc anchors: body-center start (X/Y/Z), body-center Y once feet clear the ledge top, and the
+    // XZ landing point past the ledge edge — all captured once at commit time (see _updateMantle's
+    // detection block) so the arc interpolates position directly instead of driving velocity
+    // through _collideAndSlide, which would treat the ledge face as a blocking wall.
+    this._mantleStartX = 0;
+    this._mantleStartY = 0;
+    this._mantleStartZ = 0;
+    this._mantleTopBodyY = 0;
+    this._mantleLandX = 0;
+    this._mantleLandZ = 0;
+
+    // Moving platforms (see endStep's acquire + beginStep's apply). A body tagged isPlatform=true,
+    // when it's what the ground probe is currently resting on, has its linear_velocity read into
+    // this vector once per endStep. beginStep adds it into the horizontal move so collide-and-slide
+    // carries the rider through real swept collision; it stays baked into gb.x/z afterward (position
+    // integrates from gb on a LATER, separate world step, so subtracting it back out first would
+    // discard the ride). _ownVelocityX/Z tracks the character's OWN horizontal velocity separately, so
+    // endStep's groundStopDecel (and the sprint-decay branch) decay the character's momentum without
+    // also decaying the platform's contribution. The vertical component is folded into a jump's
+    // velocity ASSIGNMENT additively (not overwritten) in _updateVertical.
+    this._baseVelocity = new Vector3(0, 0, 0);
+    this._ownVelocityX = 0;
+    this._ownVelocityZ = 0;
+
+    var g = world.gravity || { y: -9.81 };
+    this._gravityVec = new Vector3(0, g.y, 0);
+    this._groundSuppress = 0;
+    this._jumpRising = false; // see _updateVertical's jump branch + endStep's `suppressed`
+    this._prevTopCandidateY = null; // last tick's highest ground candidate — see the slide-launch gate in endStep
+    this._slideLaunched = false; // latched true the tick a slide apex launch fires; see endStep
+
+    this._color = o.color || msc.color;
+    this._visible = o.visible !== undefined ? o.visible === true : msc.visible;
+    this._bodyName = o.bodyName || msc.bodyName;
+
+    this.yaw = o.yaw !== undefined ? o.yaw : vw.yaw;
+    this.pitch = o.pitch !== undefined ? o.pitch : vw.pitch;
+    this.maxPitch = o.maxPitch !== undefined ? o.maxPitch : vw.maxPitch;
+
+    // Live, render-only aim set per frame via aim(). Separate from yaw/pitch (the commanded,
+    // networked, fixed-tick facing) so the view can update every frame without touching the
+    // simulation. Falls back to yaw/pitch until aim() is called. See getLiveAimDirection().
+    this._liveYaw = this.yaw;
+    this._livePitch = this.pitch;
+    this._liveAimSet = false;
+
+    // Render interpolation: the body steps at the fixed tick but the screen draws at display
+    // refresh. captureRenderState() stashes the last two fixed-tick eyes; renderEye(alpha) lerps
+    // them for the draw. _renderSnapDist2 is the squared per-tick eye jump above which the
+    // interpolation snaps instead of sliding (teleport/respawn).
+    this._prevEye = null;
+    this._currEye = null;
+    // Base (scale-1) interp snap distance. The SQUARED, scale-adjusted value used at the compare site
+    // is (re)derived in _applyScale — a scaled character legitimately moves the eye N× farther per tick,
+    // so a fixed 1× threshold would read normal motion as a teleport and snap every tick (killing the
+    // sub-tick smoothing → jitter at high scale).
+    this._baseRenderSnapDist = o.renderSnapDist !== undefined ? o.renderSnapDist : rnd.snapDist;
+    this._renderSnapDist2 = this._baseRenderSnapDist * this._baseRenderSnapDist;
+    this._renderProxy = null;
+
+    this.grounded = false;
+    this.groundNormal = new Vector3(0, 1, 0);
+    this.velocityY = 0;
+    // Vertical eye displacement this controller applied via the ground-clamp/crouch/scale snaps
+    // (not from velocity integration). Render-only; a camera consumes it to smooth those snaps.
+    this._viewDisplacementY = 0;
+    // True while the caller is resimulating already-run commands (see beginResim/endResim).
+    // View-displacement is suppressed during resim so re-derived state doesn't double-count.
+    this._resimulating = false;
+
+    // Crouch is an instant collider-height swap. crouchRatio is the fraction of standing
+    // height when crouched.
+    this.crouchRatio = o.crouchRatio !== undefined ? o.crouchRatio : dim.crouchRatio;
+    this.crouching = false;
+
+    // Opaque consumer payload; the controller never reads inside it. Rides the same
+    // command->state->snapshot path as crouch/scale.
+    this.userData = null;
+
+    this.scale = 1;
+    var spawnOpt = o.position;
+    var spawn = spawnOpt ? new Vector3(spawnOpt.x, spawnOpt.y, spawnOpt.z)
+        : new Vector3(msc.spawn.x, msc.spawn.y, msc.spawn.z);
+    this._applyScale(o.scale !== undefined ? o.scale : msc.scale);
+    this._buildBody(spawn);
+};
+
+var proto = FPSCharacterController.prototype;
+
+// Resolve scaled dimensions/speeds from the base values.
+proto._applyScale = function(scale) {
+    this.scale = scale;
+    this.width = this._baseWidth * scale;
+    this.depth = this._baseDepth * scale;
+    // Standing dimensions, then the active height/eye reflect the crouch state.
+    this.standHeight = this._baseHeight * scale;
+    this.standEye = this._baseEyeHeight * scale;
+    this.height = this.crouching ? this.standHeight * this.crouchRatio : this.standHeight;
+    this.eyeHeight = this.crouching ? this.standEye * this.crouchRatio : this.standEye;
+    this.mass = this._baseMass * scale * scale * scale; // volume scaling
+    this.walkSpeed = this._baseWalkSpeed * scale;
+    this.moveSpeed = this._baseMoveSpeed * scale;
+    this.sprintSpeed = this._baseSprintSpeed * scale;
+    this.sprintDecay = this._baseSprintDecay * scale; // excess-speed bleed rate (Infinity = instant)
+    this.groundStopDecel = this._baseGroundStopDecel * scale; // idle ground stop rate (Infinity = instant hard-stop)
+    this.slideMinSpeed = this._baseSlideMinSpeed * scale;
+    this.slideEndSpeed = this._baseSlideEndSpeed * scale;
+    this.slideFriction = this._baseSlideFriction * scale;
+    this.slideSlopeFriction = this._baseSlideSlopeFriction * scale;
+    this.jumpSpeed = this._baseJumpSpeed * Math.sqrt(scale); // jump height scales ~linearly
+    this.stepHeight = this._baseStepHeight * scale;
+    this.stepDownDist = this._baseStepDownDist * scale;
+    this.ladderClimbSpeed = this._baseLadderClimbSpeed * scale;
+    this.ladderStrafeSpeed = this._baseLadderStrafeSpeed * scale;
+    this.ladderMountReach = this._baseLadderMountReach * scale;
+    this.ladderDismountPushSpeed = this._baseLadderDismountPushSpeed * scale;
+    this.mantleHeight = this._baseMantleHeight * scale;
+    this.mantleReach = this._baseMantleReach * scale;
+    this.mantleSpeed = this._baseMantleSpeed * scale;
+    this._skin = this._baseSkin * scale; // contact tolerance
+    this._groundTol = FPSCharacterController.FPSC.GROUND_TOL * scale; // how close feet must be to count as grounded
+    // Terminal fall speed. Also keeps per-step fall distance < ground-probe reach so
+    // the raycast ground clamp can't be tunneled through on big drops.
+    this._maxFall = 22 * scale;
+    // Render interp snap threshold scales with the body: a 4x character sprints ~4x faster, so its eye
+    // legitimately jumps ~4x farther per tick. Without this, that normal motion trips the teleport-snap
+    // and the sub-tick smoother snaps every tick instead of easing — the high-scale render jitter.
+    var rs = (this._baseRenderSnapDist || 0.8) * scale;
+    this._renderSnapDist2 = rs * rs;
+    // Push-mass eligibility limit scales with the character, mass-like (volume, scale^3).
+    this._pushMassLimit = this._pushMassLimitOverride !== undefined ?
+        this._pushMassLimitOverride : this._baseMass * scale * scale * scale * this._pushMassBaseMult;
+    this._receiveMaxSpeed = this._baseReceiveMaxSpeed * scale;
+};
+
+/**
+ * Resize the whole character at runtime (rebuilds the collider, feet planted).
+ * @method setScale
+ * @param {Number} scale
+ */
+proto.setScale = function(scale) {
+    var p = this.body.position;
+    var eyeBefore = p.y + this.eyeHeight;
+    var feetY = p.y - this.height / 2;
+    this._applyScale(scale);
+    this._buildBody(new Vector3(p.x, feetY + this.height / 2, p.z));
+    if (!this._resimulating) { this._viewDisplacementY += this.body.position.y + this.eyeHeight - eyeBefore; } // eye jump from the resize
+};
+
+// Instantly enter/leave crouch by rebuilding the collider at the new height. Grounded: feet
+// planted, top comes down. Airborne: top planted, feet rise up (crouch-jump clearance aid).
+proto._setCrouch = function(want) {
+    if (want === this.crouching) { return; }
+    var p = this.body.position;
+    var eyeBefore = p.y + this.eyeHeight;
+    var feetY = p.y - this.height / 2;
+    var headY = p.y + this.height / 2;
+    this.crouching = want;
+    this._applyScale(this.scale); // recompute height/eye for the new crouch state
+    var newCenterY = this.grounded ? (feetY + this.height / 2) : (headY - this.height / 2);
+    this._buildBody(new Vector3(p.x, newCenterY, p.z));
+    if (!this._resimulating) { this._viewDisplacementY += this.body.position.y + this.eyeHeight - eyeBefore; } // eye jump from the crouch swap
+};
+
+/**
+ * Add a velocity impulse and force the character airborne (explosions / knockback / rocket-jumping).
+ * @method applyKnockback
+ */
+proto.applyKnockback = function(vx, vy, vz) {
+    var gb = this.body.linear_velocity;
+    gb.x += vx;
+    gb.y += vy;
+    gb.z += vz;
+    this.grounded = false;
+    this._moveState = FPSCharacterController.FPSC.MOVE_AIRBORNE;
+    this._groundSuppress = 10;
+    this.velocityY = gb.y;
+};
+
+// ---- Lifecycle ---------------------------------------------------------
+
+/**
+ * @method setPosition
+ * @param {Vector3} pos
+ */
+proto.setPosition = function(pos) {
+    this.body.position.set(pos.x, pos.y, pos.z);
+    this.body.updateDerived();
+    this.body.linear_velocity.set(0, 0, 0);
+    this.grounded = false;
+    this._moveState = FPSCharacterController.FPSC.MOVE_AIRBORNE;
+    if (this._ghost) {
+        var inset = this._ghostGroundInset || 0;
+        this._ghost.position.set(pos.x, pos.y + inset / 2, pos.z);
+        this._ghost.linear_velocity.set(0, 0, 0);
+    }
+};
+
+/**
+ * @method destroy
+ */
+proto.destroy = function() {
+    this.world.removeRigidBody(this.body);
+    this._destroyGhost();
+};
+
+ActionPhysics.FPSCharacterController = FPSCharacterController;
+
+
+// ==== src/character/fps/Constants.js ====
+// Internal statics for FPSCharacterController: algorithm constants (FPSC) and the private raycast
+// helper. LOAD ORDER REQUIREMENT: this file must load AFTER FPSCharacterController.js (which defines
+// `FPSCharacterController` as the constructor function) — these assignments attach static
+// properties onto that function object, so the function must already exist. Nothing at module-load
+// time in any other file reads FPSC/`_raycast` before first use (only inside function bodies invoked
+// later, e.g. at `new FPSCharacterController(...)` time), so this ordering is safe. See
+// gulpfile.js's buildOrder comment for the explicit ordering this depends on.
+
+// Internal algorithm constants — the thresholds/epsilons/factors baked into the controller's collision,
+// grounding, slope and ghost math. These are NOT caller-facing feel knobs (those live in
+// FPS_CONTROLLER_DEFAULTS); they are implementation tolerances kept named here so nothing is a bare literal
+// at a use site. Changing them changes solver behavior — treat as internals, not tuning.
+FPSCharacterController.FPSC = {
+    // Contact tolerances (metres, multiplied by the character scale where used).
+    SKIN: 0.01,               // sweep/contact skin width
+    GROUND_TOL: 0.1,          // how close the feet must be to a surface to count as grounded
+    GHOST_GROUND_INSET: 0.25, // fraction of height the ghost's bottom is lifted above the feet
+
+    // "Effectively zero" epsilons — vector/speed magnitudes below which we treat a quantity as null.
+    EPS_LEN: 1e-4,            // general length/normal guard
+    EPS_DIR: 1e-5,            // direction-normalisation guard
+    EPS_SPD: 1e-6,            // speed-normalisation guard
+    EPS_INPUT2: 1e-10,        // squared move-input threshold (has-input test)
+    EPS_SPEED_MARGIN: 1e-3,   // speed must exceed a target by this to count as "above" it
+
+    // Ground-normal.y classifiers (a surface normal's up-component; 1 = flat floor, 0 = vertical wall).
+    NY_CEILING: -0.4,         // normal.y ABOVE this is not a ceiling (must face downward to be one)
+    NY_STEEP_MIN: 0.3,        // steep-but-not-wall floor-like face lower bound
+    NY_GROUNDISH: 0.5,        // normal.y at/above this is walkable-ish ground (skip as a wall/step)
+    NY_FLOORLIKE: 0.1,        // normal.y above this tilts up (floor-like), below is a vertical wall
+    N_DEGENERATE: 0.5,        // reject a contact normal whose length is below this (bad EPA result)
+    TOE_BAND_FRAC: 0.6,       // a too-steep floor-like contact only blocks as a slope-toe within this
+                              // fraction of body height above the feet; higher is an overhang (headroom
+                              // gate's job), not a wall to clip horizontal velocity against
+
+    // Slide reversal (see _updateSlide's onSlope steering). Below this dot product between wish and
+    // current slide direction, wish counts as a deliberate reversal (brake) rather than a carve.
+    SLIDE_REVERSAL_DOT: -0.5,
+
+    // MOVEMENT STATE — one flat enum, mutually exclusive, decided ONCE per tick by endStep (the only
+    // place with a fresh ground probe) and read everywhere else (beginStep dispatches on it verbatim;
+    // nothing re-derives it from other flags). See the "Movement state machine" comment above endStep
+    // for the full design and why it replaced the old grounded+sliding+wishSlide flag soup.
+    //   LADDER   = mounted on a ladder; _updateLadder owns velocity fully.
+    //   AIRBORNE = no ground contact; gravity + air control own velocity.
+    //   WALK     = grounded, standable surface, not sliding: ordinary input-driven movement.
+    //   SLIP     = grounded, too-steep surface, not sliding: gravity-fed slip, weak air-control.
+    //   SLIDE    = grounded, crouch-at-speed slide: _updateSlide's surface-tracking model owns velocity.
+    MOVE_LADDER: 'ladder',
+    MOVE_AIRBORNE: 'airborne',
+    MOVE_WALK: 'walk',
+    MOVE_SLIP: 'slip',
+    MOVE_SLIDE: 'slide',
+    MOVE_MANTLE: 'mantle',
+
+    // Mantle: a grounded (flat-footed) mantle tap is only allowed up to this fraction of standHeight
+    // (roughly chest height) — anything taller needs a running jump first (see _updateMantle).
+    MANTLE_CHEST_HEIGHT_FRAC: 0.77,
+
+    // Knockback gating (see _readGhostKnockback).
+    KB_CLOSING_MIN: 0.5,      // object must close on the character faster than this (units/s) to knock back
+    KB_MIN: 0.05,             // ignore a computed knockback smaller than this
+
+    // Ground-suppress frame counts — ticks the ground clamp is held off after an event.
+    GROUND_SUPPRESS_KB: 5,    // after taking knockback
+    GROUND_SUPPRESS_JUMP: 8,  // after jumping
+
+    // Sweep sub-stepping + wall interaction.
+    SUBSTEP_FRAC: 0.5,        // sub-step length as a fraction of the smallest half-extent
+    NEAR_CENTER_FRAC: 0.4,    // "hit near my centre" band as a fraction of width
+    PUSH_INTO_MIN: 0.5,       // dot(vel, toHit) above this = actively moving into a contact
+
+    // Wall clip / step-up / depenetration.
+    KEEP_BLOCKED: 0.01,       // keep-fraction below this = a non-yielding wall (fully blocks / triggers step-up)
+    NY_NEAR_VERTICAL: 0.2,    // |normal.y| below this = a near-vertical face (steppable candidate)
+    // Depenetration back-probe step, as a fraction of the character's own half-width — independent of
+    // skin (skin is a contact/tunneling tolerance, not a "how fast should a buried body recover" rate;
+    // coupling the two meant shrinking skin for tunneling reasons silently crippled buried-recovery speed).
+    BACKPROBE_WIDTH_FRAC: 0.1,
+    // Climbable-slope look-ahead sample points, as multiples of the character's DEPTH past the footprint
+    // edge (so the probe reaches the same RELATIVE forward zone at any scale — a fixed-meter reach would
+    // under-reach a big character and over-reach a small one, breaking steep-slope walk off default scale).
+    CLIMB_PROBE_DEPTH_MULTS: [0, 0.5, 1.0, 1.67],
+
+    // Render.
+    VIEW_DISP_SNAP: 0.01,     // pending view-displacement above which eye interpolation snaps (crouch/step)
+};
+
+/**
+ * Cast a ray from start to end in the physics world, kept private since nothing outside the
+ * CharacterController subsystem needs it. Returns the nearest hit not among `ignoreObjects`, or
+ * null.
+ *
+ * Adapts World.rayIntersect's own result shape ({body, point, normal, distance, fraction}, single
+ * hit or null - see Queries.js) to the {object, point, normal, t} shape every caller in this
+ * subsystem already expects, so only this one function needs to know the difference.
+ *
+ * `ignoreObjects` (body `.name` values) is resolved to actual body REFERENCES and passed to
+ * World.rayIntersect's own `ignore` parameter, so those bodies are excluded from candidates BEFORE
+ * the query finds its nearest hit - not filtered after the fact. This matters here specifically: a
+ * ground probe casts from just above the character's own body, which is almost always the nearest
+ * thing directly below the ray origin. Filtering after the query (checking the single reported
+ * body's name against the ignore list, returning null on a match) would report "no hit" on every
+ * such probe instead of finding the real ground behind/below the character's own shape - this was
+ * a real, verified bug (a dropped controller found the ground once, then immediately lost it again
+ * the very next tick with zero movement in between, because its own body was the "nearest hit" the
+ * post-hoc filter then discarded).
+ *
+ * @method _raycast
+ * @private
+ * @static
+ * @param {World} world
+ * @param {Vector3} start
+ * @param {Vector3} end
+ * @param {String[]} [ignoreObjects] - body `.name` values to skip
+ * @return {Object|null} { object, point:Vector3, normal:Vector3, t:Number } or null
+ */
+FPSCharacterController._raycast = function(world, start, end, ignoreObjects) {
+    var ignore = null;
+    if (ignoreObjects && ignoreObjects.length) {
+        ignore = [];
+        var bodies = world.bodies;
+        for (var i = 0; i < bodies.length; i++) {
+            if (bodies[i].name && ignoreObjects.indexOf(bodies[i].name) !== -1) { ignore.push(bodies[i]); }
+        }
+    }
+    var hit = world.rayIntersect(start, end, ignore);
+    if (!hit) { return null; }
+    return { object: hit.body, point: hit.point, normal: hit.normal, t: hit.distance };
+};
+
+
+// ==== src/character/fps/Body.js ====
+// Character body lifecycle: creates/recreates the kinematic box collider the character controller
+// drives (see _buildBody), and the shared material-application helper used by both the character
+// body and its ghost (see Ghost.js).
+var proto = FPSCharacterController.prototype;
+
+/**
+ * Apply this controller's material/behavior defaults + explicit overrides to a freshly created body.
+ * Shared by the character's own body (Body.js) and its ghost (Ghost.js).
+ *
+ * @method _applyMaterial
+ * @private
+ * @static
+ * @param {RigidBody} body
+ * @param {Object} [opts]
+ * @param {Number} [opts.friction=3.0]
+ * @param {Number} [opts.restitution=0.33]
+ * @param {Number} [opts.linearDamping=0.1]
+ * @param {Number} [opts.angularDamping=0.9]
+ * @param {Vector3} [opts.gravity] - if set, overrides the body's gravity via setGravity.
+ */
+FPSCharacterController._applyMaterial = function(body, opts) {
+    opts = opts || {};
+    body.friction = opts.friction !== undefined ? opts.friction : 3.0;
+    body.restitution = opts.restitution !== undefined ? opts.restitution : 0.33;
+    body.linear_damping = opts.linearDamping !== undefined ? opts.linearDamping : 0.1;
+    body.angular_damping = opts.angularDamping !== undefined ? opts.angularDamping : 0.9;
+    if (opts.gravity) { body.setGravity(opts.gravity.x, opts.gravity.y, opts.gravity.z); }
+};
+
+/**
+ * (Re)create the box body at a position, preserving look + velocity where possible.
+ * @method _buildBody
+ * @private
+ * @param {Vector3} position
+ */
+proto._buildBody = function(position) {
+    var carriedVel = null;
+    if (this.body) {
+        var v = this.body.linear_velocity;
+        carriedVel = { x: v.x, y: v.y, z: v.z };
+        this.world.removeRigidBody(this.body);
+    }
+    this._destroyGhost();
+
+    var shape = new BoxShape(this.width / 2, this.height / 2, this.depth / 2);
+    this.body = new RigidBody(shape, this.mass);
+    FPSCharacterController._applyMaterial(this.body, {});
+    this.body.position.copy(position);
+    this.body.updateDerived();
+    // `object` is the lightweight cosmetic handle a consumer (renderer) can use to decide whether/how
+    // to draw the collider. This controller never renders anything itself.
+    this.object = { body: this.body, isVisible: this._visible };
+
+    // Never tip; resting/slopes/walls handled by the solver (gravity + friction).
+    this.body.angular_factor.set(0, 0, 0);
+    this.body.friction = this.friction;
+    this.body.restitution = 0;
+    this.body.linear_damping = 0;
+    this.body.angular_damping = 0;
+
+    // Tag our physics body so raycasts can ignore ourselves. Also ignore the ghost's name so the
+    // kinematic body's own probing raycasts never treat its own trailing ghost as a wall.
+    this.body.name = this._bodyName;
+    this._ignoreSelf = [this._bodyName, this._bodyName + "_ghost"];
+    // Mark this as a kinematic character body so OTHER characters' receive-push pass skips it
+    // (character-vs-character is already handled by collide-and-slide treating each other as walls;
+    // the body-push coupling is only meant for free dynamic objects).
+    this.body.isKinematicCharacter = true;
+
+    // Exclude the character from ALL solver contacts: a mask of 0 matches no group, regardless of
+    // this body's own collision_groups (RigidBody's default groups/mask is "collide with everything" -
+    // the inverse of the "collide with nothing until opted in" convention this exclusion pattern was
+    // originally written against, so the exclusion here is an explicit zero mask, not a specific
+    // unused group bit). The body still integrates and is still raycast-queryable. Collision is done
+    // entirely via raycasts (ground clamp + collide-and-slide), so the solver can never fight the
+    // control loop.
+    this.body.collision_mask = 0;
+
+    if (carriedVel) { this.body.linear_velocity.set(carriedVel.x, carriedVel.y, carriedVel.z); }
+
+    this.world.addRigidBody(this.body);
+    this._buildGhost(position, carriedVel);
+};
+
+
+// ==== src/character/fps/Ghost.js ====
+// Ghost body lifecycle: a solver-participating dynamic body that trails the kinematic character for
+// object-contact purposes. The character's own body is excluded from solver contacts (collision_mask
+// 1); the ghost is its stand-in for object contact. Control is one-way: character position -> ghost
+// target. The ghost's position never writes back to the character; only contact-derived knockback
+// flows back (_syncGhost / _readGhostKnockback), as a velocity nudge. See _syncGhost.
+var proto = FPSCharacterController.prototype;
+var FPSC = FPSCharacterController.FPSC;
+
+/**
+ * GHOST: a solver-participating dynamic body that trails the kinematic character. The character's own
+ * body is excluded from solver contacts (collision_mask 1); the ghost is its stand-in for object
+ * contact. Control is one-way: character position -> ghost target. The ghost's position never writes
+ * back to the character; only contact-derived knockback flows back (_syncGhost), as a velocity nudge.
+ *
+ * @method _buildGhost
+ * @private
+ * @param {Vector3} position - the character body's current position.
+ * @param {Object} [carriedVel] - {x,y,z} velocity to seed the ghost with (carried over a rebuild).
+ */
+proto._buildGhost = function(position, carriedVel) {
+    // Ghost bottom is inset above the character's feet so it doesn't overlap a surface the character is
+    // standing on (that's _probeGround's job). Top is unchanged, so head-height contact is unaffected.
+    var groundInset = this.height * FPSC.GHOST_GROUND_INSET;
+    var ghostHeight = this.height - groundInset;
+    var ghostPos = new Vector3(position.x, position.y + groundInset / 2, position.z);
+    var ghostShape = new BoxShape(this.width / 2, ghostHeight / 2, this.depth / 2);
+    this._ghost = new RigidBody(ghostShape, this.mass);
+    FPSCharacterController._applyMaterial(this._ghost, {
+        friction: this._ghostMaterial.friction,
+        restitution: this._ghostMaterial.restitution,
+        linearDamping: this._ghostMaterial.linearDamping,
+        angularDamping: this._ghostMaterial.angularDamping,
+        gravity: new Vector3(0, 0, 0)
+    });
+    this._ghost.position.copy(ghostPos);
+    this._ghost.updateDerived();
+    this._ghostObject = { body: this._ghost, isVisible: false };
+    this._ghostCommandedVel = null;
+    this._ghost.name = this._bodyName + "_ghost";
+    this._ghost.angular_factor.set(0, 0, 0);
+    this._ghost.isKinematicCharacter = true;
+    // Distinguishes this body from a real character body for OTHER controllers' sweeps: their own
+    // kinematic body is never a wall (it has no mass to yield against), but this ghost IS a real
+    // solver-participating mass and should block/get pushed like any other object.
+    this._ghost.isCharacterGhost = true;
+    this._ghostGroundInset = groundInset;
+    if (carriedVel) { this._ghost.linear_velocity.set(carriedVel.x, carriedVel.y, carriedVel.z); }
+    this.world.addRigidBody(this._ghost);
+};
+
+/**
+ * Remove and clear the ghost body, if any (called before every rebuild + on destroy()).
+ * @method _destroyGhost
+ * @private
+ */
+proto._destroyGhost = function() {
+    if (this._ghostObject) {
+        this.world.removeRigidBody(this._ghost);
+        this._ghostObject = null;
+        this._ghost = null;
+    }
+};
+
+/**
+ * Drive the ghost toward the character each tick and read back contact-driven knockback. Called once
+ * per endStep, after the character's position is settled.
+ *
+ * @method _syncGhost
+ * @private
+ * @param {Number} dt
+ */
+proto._syncGhost = function(dt) {
+    if (!this._ghost) { return; }
+    var p = this.body.position;
+    var cv = this.body.linear_velocity;
+    var gp = this._ghost.position;
+    // Target where the character WILL BE at the end of this tick (p + v*dt), not where it is right
+    // now — closing "the gap as of the start of the tick" is already stale by the time it's applied,
+    // since the character moves by v*dt over that same tick. Without this the ghost permanently lags
+    // by ~one tick's worth of the character's own motion, growing with speed, even at constant
+    // velocity (no acceleration needed to produce it).
+    var targetX = p.x + cv.x * dt;
+    var targetY = p.y + cv.y * dt + (this._ghostGroundInset || 0) / 2;
+    var targetZ = p.z + cv.z * dt;
+    var dx = targetX - gp.x, dy = targetY - gp.y, dz = targetZ - gp.z;
+    var gap = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    var gv = this._ghost.linear_velocity;
+
+    // A gap this large is a rebuild/respawn/teleport: beam the ghost to the character instead of chasing.
+    var teleportDist = Math.max(this.width, this.height) * 2;
+    if (gap > teleportDist) {
+        this._ghost.position.set(p.x, p.y + (this._ghostGroundInset || 0) / 2, p.z);
+        gv.set(0, 0, 0);
+        this._ghostCommandedVel = { x: 0, y: 0, z: 0 };
+        return;
+    }
+
+    // Knockback signal = (ghost's actual velocity) - (velocity the drive commanded last tick). This
+    // runs during resim too: an authority that never resims applies knockback in its own live step, so
+    // skipping it here while resimulating would reconcile the character's velocity to a value that
+    // permanently disagrees with authority by the knockback amount. It only needs to be deterministic
+    // run-to-run (it is — the read is a pure function of the current contact state).
+    this._readGhostKnockback();
+
+    // Drive the ghost directly at the velocity that closes the (predicted) gap this tick. No cap:
+    // any cap below the gap-closing speed just reintroduces a residual gap on fast motion — the
+    // predicted-target math above already keeps this bounded and small under normal conditions.
+    gv.x = dx / dt; gv.y = dy / dt; gv.z = dz / dt;
+
+    // Clip the ghost's horizontal velocity through the same swept collide-and-slide the character uses.
+    var clip = this._sweptCollideAndSlide({
+        position: new Vector3(gp.x, gp.y, gp.z),
+        width: this.width, depth: this.depth, height: this.height - (this._ghostGroundInset || 0),
+        skin: this._skin, mass: this.mass, stepHeight: 0,
+        selfBody: this._ghost, otherSelfBody: this.body,
+        climbSteepSlopes: false,
+        vx: gv.x, vz: gv.z, dt: dt,
+    });
+    gv.x = clip.x; gv.z = clip.z;
+    if (clip.depenX !== 0 || clip.depenZ !== 0) {
+        this._ghost.position.set(gp.x + clip.depenX, gp.y, gp.z + clip.depenZ);
+    }
+
+    this._ghostCommandedVel = { x: gv.x, y: gv.y, z: gv.z }; // baseline for next tick's (actual - commanded) knockback read
+};
+
+/**
+ * Knockback speed = mass ratio (objectMass/(objectMass+playerMass)) x the object's closing speed
+ * onto the character, gated to only apply when the object is moving into the character above a small
+ * momentum floor. Horizontal only; never moves position, only velocity.
+ *
+ * @method _readGhostKnockback
+ * @private
+ */
+proto._readGhostKnockback = function() {
+    if (!this._receivePush) { return; }
+    var world = this.world;
+    if (!world || !world.narrowphase) { return; }
+    var ghostBody = this._ghost;
+    var pb = this.body.linear_velocity;
+    var mP = this.mass;
+
+    var manifolds = world.narrowphase.manifolds.values();
+    for (var manifold = manifolds.next(); !manifold.done; manifold = manifolds.next()) {
+        var m = manifold.value;
+        var other =
+            m.bodyA === ghostBody ? m.bodyB :
+            m.bodyB === ghostBody ? m.bodyA : null;
+        // A player is a wall, not a pushable object — no knockback from another player's ghost.
+        if (other && other.bodyType === RigidBody.DYNAMIC && other._mass > 0 && !other.isKinematicCharacter) {
+            var mB = other._mass;
+            var ov = other.linear_velocity;
+            var nx = this._ghost.position.x - other.position.x;
+            var nz = this._ghost.position.z - other.position.z;
+            var nlen = Math.sqrt(nx * nx + nz * nz);
+            if (nlen > FPSC.EPS_LEN) { nx /= nlen; nz /= nlen; } else { nx = 0; nz = 0; }
+            // n points box->character. The knockback should trigger on how fast the BOX is coming at you
+            // (ov.n), NOT the relative closing speed (ov-pb).n. Using the relative speed folds in YOUR
+            // OWN approach velocity (-pb.n > 0 when you walk into the box), so pushing a box knocked you
+            // backward every tick — you push, it shoves you back, you re-approach: a limit cycle that
+            // renders as the box micro-oscillating toward/away from you at close range. Gating on the
+            // box's own inbound speed means a box only knocks you when IT carries momentum at you
+            // (someone else shoved it, an explosion) — your own push no longer bounces back. Opt-out via
+            // receiveSelfPush to restore the old relative-speed behavior.
+            var closing = this._receiveSelfPush ?
+                (ov.x - pb.x) * nx + (ov.z - pb.z) * nz :   // legacy: relative closing (self-push included)
+                ov.x * nx + ov.z * nz;                      // box's own inbound speed only
+            if (closing > FPSC.KB_CLOSING_MIN) {
+                var massRatio = mB / (mB + mP);
+                var kbv = massRatio * closing;
+                if (kbv > this._receiveMaxSpeed) { kbv = this._receiveMaxSpeed; }
+                kbv *= this._receiveKnockbackFraction;
+                // Cap the RESULTING along-n speed, not just this tick's increment: clamping only kb
+                // bounds each tick's contribution but not the running total, so sustained contact (a
+                // heavy object pressed against the character for many ticks) adds another kb-worth of speed
+                // every tick and blows straight past receiveMaxSpeed. Clamp what the character's velocity
+                // ALONG n would become after this tick's push to receiveMaxSpeed instead — a fresh hit
+                // (little/no existing along-n speed) still gets up to the full kb, but once already at
+                // the cap from prior contact, further ticks add nothing more.
+                var alongN = pb.x * nx + pb.z * nz;
+                var room = this._receiveMaxSpeed - alongN;
+                if (room > 0) { kbv = Math.min(kbv, room); } else { kbv = 0; }
+                if (kbv > FPSC.KB_MIN) {
+                    pb.x += nx * kbv;
+                    pb.z += nz * kbv;
+                    this.grounded = false;
+                    // This runs mid-tick, inside beginStep's ghost sync — the movement-state dispatch
+                    // for THIS tick already ran (it's earlier in beginStep), so this can't retroactively
+                    // change what velocity model owned this tick's motion. It CAN and must fix what the
+                    // NEXT tick sees: without this, next tick's dispatch would read the stale grounded
+                    // sub-state (WALK) and immediately re-clamp the character back onto the ground via
+                    // WALK's kinematic model, killing the knockback before it ever got airborne.
+                    this._moveState = FPSC.MOVE_AIRBORNE;
+                    if (this._groundSuppress < FPSC.GROUND_SUPPRESS_KB) { this._groundSuppress = FPSC.GROUND_SUPPRESS_KB; }
+                }
+            }
+            break;
+        }
+    }
+};
+
+
+// ==== src/character/fps/Collision.js ====
+// Kinematic wall/step collision: the character is excluded from the solver's own contact resolution
+// (collision_mask 1), so this file is what actually stops the character at walls, lets it climb steps,
+// and depenetrates it out of geometry it sank into. Shared by both the character body and its ghost
+// via _sweptCollideAndSlide.
+var proto = FPSCharacterController.prototype;
+var FPSC = FPSCharacterController.FPSC;
+
+/**
+ * Kinematic collide-and-slide. The character is excluded from the solver, so we stop
+ * ourselves at walls and slide along them here. For the current horizontal velocity
+ * we cast a fan of rays (across the footprint width, at a few heights) in the move
+ * direction; if a vertical wall is within the box's reach this step we remove the
+ * into-wall velocity component and re-test, so corners stop on both walls. Floors and
+ * ramps (normal.y >= 0.5) are ignored — those are handled by the ground clamp.
+ *
+ * @method _collideAndSlide
+ * @private
+ * @param {Number} vx - incoming horizontal velocity, x.
+ * @param {Number} vz - incoming horizontal velocity, z.
+ * @param {Number} dt
+ * @return {Object} result
+ * @return {Number} result.x - clipped horizontal velocity, x.
+ * @return {Number} result.z - clipped horizontal velocity, z.
+ */
+proto._collideAndSlide = function(vx, vz, dt) {
+    var res = this._sweptCollideAndSlide({
+        position: this.body.position,
+        width: this.width, depth: this.depth, height: this.height,
+        skin: this._skin, mass: this.mass, stepHeight: this.stepHeight,
+        selfBody: this.body, otherSelfBody: this._ghost || null,
+        // A SLIDE is exempt from the too-steep-can't-move-up block (the slide IS the climb — momentum,
+        // not input, is what carries it up). This must hold while AIRBORNE-sliding too: an airborne
+        // slide sweeping into a steep face otherwise wall-clips to zero speed mid-air, which kills the
+        // slide before it ever lands on the surface. _climbableSlopeAhead inside still tells real
+        // slopes from vertical walls, so walls keep stopping a slide. this._moveState is already
+        // MOVE_SLIDE on the true first-contact tick too — endStep decides movement state (including
+        // slide entry) BEFORE this function runs later in the same beginStep, so there's no
+        // "one tick behind" gap here to patch around.
+        climbSteepSlopes: this.climbSteepSlopes || this._moveState === FPSC.MOVE_SLIDE,
+        vx: vx, vz: vz, dt: dt,
+    });
+    // Depenetration is a horizontal position correction out of a wall, separate from the velocity move.
+    if (res.depenX !== 0 || res.depenZ !== 0) {
+        var bp = this.body.position;
+        this.body.position.set(bp.x + res.depenX, bp.y, bp.z + res.depenZ);
+        this.body.updateDerived();
+    }
+    return { x: res.x, z: res.z };
+};
+
+/**
+ * Sweeps an inset box along a horizontal velocity and clips it against blocking contacts,
+ * sub-stepped so long sweeps can't return a wrong-axis normal. Shared by the character body
+ * and its ghost so both get identical wall/mass-yield behavior from one implementation.
+ *
+ * @method _sweptCollideAndSlide
+ * @private
+ * @param {Object} opts
+ * @param {Vector3} opts.position - Sweep origin (box center).
+ * @param {Number} opts.width - Box width (x), pre-inset.
+ * @param {Number} opts.depth - Box depth (z), pre-inset.
+ * @param {Number} opts.height - Box height (y), pre-inset.
+ * @param {Number} opts.skin - Contact/sweep tolerance subtracted from each half-extent.
+ * @param {Number} opts.mass - Sweeping body's mass, used for the push mass-yield ratio.
+ * @param {Number} [opts.stepHeight=0] - Step-up height; 0 disables step-up entirely.
+ * @param {RigidBody} opts.selfBody - Body to exclude from its own sweep hits.
+ * @param {RigidBody} [opts.otherSelfBody] - A second body to exclude (e.g. the character
+ *   excludes its ghost, and vice versa).
+ * @param {Boolean} [opts.climbSteepSlopes=false] - Exempt too-steep floor-like faces that have a
+ *   climbable slope ahead from the wall-block rule.
+ * @param {Number} opts.vx - Incoming horizontal velocity, x.
+ * @param {Number} opts.vz - Incoming horizontal velocity, z.
+ * @param {Number} opts.dt - Tick duration in seconds.
+ * @return {Object} result
+ * @return {Number} result.x - Clipped horizontal velocity, x.
+ * @return {Number} result.z - Clipped horizontal velocity, z.
+ * @return {Number} result.depenX - Position correction out of a penetrated wall, x (0 if none).
+ * @return {Number} result.depenZ - Position correction out of a penetrated wall, z (0 if none).
+ */
+proto._sweptCollideAndSlide = function(opts) {
+    var vx = opts.vx, vz = opts.vz;
+    var position = opts.position, width = opts.width, depth = opts.depth, height = opts.height,
+        skin = opts.skin, mass = opts.mass, dt = opts.dt, selfBody = opts.selfBody, otherSelfBody = opts.otherSelfBody;
+    var stepHeight = opts.stepHeight || 0;
+    var climbSteepSlopes = !!opts.climbSteepSlopes;
+    var world = this.world;
+    if (!world || typeof world.shapeIntersect !== "function") { return { x: vx, z: vz, depenX: 0, depenZ: 0 }; }
+
+    // Original move heading, before any clipping this tick — used by the climb-slope-ahead probe
+    // so a mid-loop velocity clip doesn't collapse the probe direction.
+    var moveLen0 = Math.sqrt(vx * vx + vz * vz);
+    var mdx0 = moveLen0 > FPSC.EPS_DIR ? vx / moveLen0 : 0;
+    var mdz0 = moveLen0 > FPSC.EPS_DIR ? vz / moveLen0 : 0;
+
+    // Swept-box collide-and-slide: sweep an inset box along the move each tick and clip velocity
+    // against the real contact plane.
+    var p = position;
+    var halfW = width / 2 - skin;
+    var halfD = depth / 2 - skin;
+    // Lift the swept box a small amount off the feet so it doesn't graze the floor slab's top
+    // edge (which returns a degenerate near-vertical normal and fakes a wall), while staying low
+    // enough to still catch a steep ramp's toe.
+    var lift = skin * 2;
+    var halfH = Math.max(0.05, height / 2 - lift / 2);
+    var yOffset = lift / 2;
+    // Cache the swept probe box per caller (different callers may have different dimensions).
+    var cacheKey = selfBody === this.body ? "_sweepBox" : "_altSweepBox";
+    if (!this[cacheKey] || this[cacheKey + "W"] !== halfW || this[cacheKey + "H"] !== halfH || this[cacheKey + "D"] !== halfD) {
+        this[cacheKey] = new BoxShape(halfW, halfH, halfD);
+        this[cacheKey + "W"] = halfW; this[cacheKey + "H"] = halfH; this[cacheKey + "D"] = halfD;
+    }
+    var boxShape = this[cacheKey];
+    var minStandableNy = this._minStandableNormalY;
+
+    // Sub-step so each swept chunk stays well under the smallest half-extent (a long sweep can
+    // return a wrong-axis normal from EPA).
+    var chunkLen = Math.min(halfW, halfD) * FPSC.SUBSTEP_FRAC;
+    var full = Math.sqrt(vx * vx + vz * vz) * dt;
+    var nSub = Math.max(1, Math.ceil(full / Math.max(chunkLen, FPSC.EPS_LEN)));
+    var sdt = dt / nSub;
+
+    // shapeIntersect's contact normal points FROM the HIT SURFACE TOWARD THE SWEEPING MOVER (the
+    // reversed travel direction on a miss-then-touch sweep - see Queries._advance's own
+    // lastGoodNx/_finishHit(-ux,-uy,-uz)), not from the mover toward the object. Everything below
+    // (findBlock's `into` test, the vertical-wall clip direction, the depenetration back-probe) is
+    // written assuming the OPPOSITE convention ("points into the wall") — negating here, once, at
+    // the single place the raw query result enters this file, keeps that downstream math correct
+    // without hunting down every sign use individually. This was a REAL, confirmed bug: with the
+    // un-negated normal, `into = vx*n.x + vz*n.z` computed NEGATIVE while genuinely moving into a
+    // wall (an approaching mover's velocity and the surface-outward normal point opposite ways by
+    // definition), so `into <= 0` rejected every real block outright — two characters walked
+    // straight through each other for 100+ units with the block silently never firing, at ANY
+    // gap, not just the ghost-shadowing case fixed above. "Heading into this face" is v.n > 0
+    // (post-negation); pushing out of penetration moves along -n (also post-negation).
+    //
+    // World.shapeIntersect reports only the SINGLE nearest body, unlike the source's multi-hit
+    // query. A raw kinematic character body is never itself a wall (no mass to yield against — its
+    // ghost is the real solver stand-in for it, see Body.js), so it must be excluded from candidates
+    // at the QUERY level via `ignore`, not filtered after the fact: another controller's raw body
+    // sits at nearly the same place as its own ghost, so it is almost always the geometrically
+    // NEAREST hit and would permanently shadow the ghost behind it if only checked post-hoc - this
+    // was a real, confirmed bug (two characters walked straight through each other for 100+ units;
+    // the sweep found the other's raw kinematic body every time, discarded it as "not a wall," and
+    // never found the ghost sitting right behind it, since World.shapeIntersect only ever reports
+    // the SINGLE nearest hit). Every other kinematic-character body in the world (this body/ghost
+    // are already excluded via selfBody/otherSelfBody) is ignored at the query itself, so the
+    // nearest REAL hit - a wall, a pushable object, or another character's GHOST - is found
+    // directly.
+    //
+    // Nearest valid blocking contact for a sweep, or null. { n, pen, keep }.
+    var self_ = this;
+    var worldBodies = world.bodies;
+    var queryIgnore = otherSelfBody ? [selfBody, otherSelfBody] : [selfBody];
+    for (var ki = 0; ki < worldBodies.length; ki++) {
+        var kb = worldBodies[ki];
+        if (kb.isKinematicCharacter && !kb.isCharacterGhost && kb !== selfBody && kb !== otherSelfBody) {
+            queryIgnore.push(kb);
+        }
+    }
+    function findBlock(start, end) {
+        var h = world.shapeIntersect(boxShape, start, end, null, queryIgnore);
+        if (!h) { return null; }
+        var hn = h.normal;
+        if (!hn || !isFinite(hn.x) || !isFinite(hn.y) || !isFinite(hn.z)) { return null; }
+        var nlen = Math.sqrt(hn.x * hn.x + hn.y * hn.y + hn.z * hn.z);
+        if (nlen < FPSC.N_DEGENERATE) { return null; }
+        // Negate: see this function's own header comment for why the raw query result is flipped
+        // here, once, before any of the "points into the wall" math below reads it.
+        var n = { x: -hn.x, y: -hn.y, z: -hn.z };
+        if (Math.abs(n.y) >= minStandableNy) { return null; }
+        // Vertical wall: normal horizontal, points character->object; heading in is v.n > 0.
+        // Too-steep floor-like face (0.1 < n.y < cutoff): normal tilts up-and-back, so heading
+        // in is v.(n.x,n.z) < 0 — sign flipped below.
+        var floorLike = n.y > FPSC.NY_FLOORLIKE;
+        // A floor-like too-steep face is only a legitimate "slope ahead" block near the feet
+        // (walking into a ramp's toe). The same face type contacted up near head height is an
+        // OVERHANG (ramp underside above a wedged character), not a slope to stop forward
+        // progress on — treating it as a wall-slide clip can zero velocity in every direction,
+        // including retreat, trapping the character. Overhead clearance is the headroom gate's
+        // job; skip it here so a sideways/backward escape isn't blocked by the same contact.
+        if (floorLike && h.point && (h.point.y - (p.y - height / 2)) > height * FPSC.TOE_BAND_FRAC) { return null; }
+        if (climbSteepSlopes && self_._climbableSlopeAhead(start, mdx0, mdz0)) { return null; }
+        var into = floorLike ? -(vx * n.x + vz * n.z) : (vx * n.x + vz * n.z);
+        if (into <= 0) { return null; }
+        var keep = 0;
+        var b = h.body;
+        // Platforms never yield like a pushable object — they're scripted geometry. Another
+        // player's ghost is a full body-block too — a player is a wall, not a pushable box.
+        if (b && !b.isPlatform && !b.isCharacterGhost && b.bodyType === RigidBody.DYNAMIC && b._mass > 0 &&
+            b._mass <= self_._pushMassLimit) {
+            keep = mass / (mass + b._mass);
+        }
+        return { n: n, keep: keep };
+    }
+
+    // Contact test with no directional gate (unlike findBlock). Used by the recovery back-probe,
+    // since after velocity is clipped the body is no longer "moving into" the wall.
+    function contactAt(x, y, z) {
+        var pt = new Vector3(x, y, z);
+        var h = world.shapeIntersect(boxShape, pt, pt, null, queryIgnore);
+        if (!h) { return false; }
+        var n = h.normal;
+        if (!n || !isFinite(n.x) || !isFinite(n.y) || !isFinite(n.z)) { return false; }
+        if (Math.sqrt(n.x * n.x + n.y * n.y + n.z * n.z) < FPSC.N_DEGENERATE) { return false; }
+        if (Math.abs(n.y) >= minStandableNy) { return false; } // walkable ground/ramp — not a wall
+        return true;
+    }
+
+    var sy = p.y + yOffset;
+
+    // CLIP velocity against walls the move would hit this tick, and DEPENETRATE out of any wall
+    // sunk into (push along -n by overlap+skin so it rests just clear — the swept cast is
+    // penetration-based, so without this a fast move ends up inside and sticks). Velocity-only for
+    // the move; position correction only for depenetration. Sub-stepped for reliable normals.
+    var cx = p.x, cz = p.z;
+    var depenX = 0, depenZ = 0;
+    for (var s = 0; s < nSub; s++) {
+        for (var iter = 0; iter < 4; iter++) {
+            var speed = Math.sqrt(vx * vx + vz * vz);
+            if (speed < FPSC.EPS_DIR) { break; }
+            var start = new Vector3(cx, sy, cz);
+            var end = new Vector3(cx + vx * sdt, sy, cz + vz * sdt);
+            var blk = findBlock(start, end);
+            if (!blk) { break; }
+            // Step-up: before walling a near-vertical, non-yielding face, test if it's clear when
+            // swept raised by stepHeight — if so it's steppable, let the move through.
+            if (blk.keep < FPSC.KEEP_BLOCKED && Math.abs(blk.n.y) < FPSC.NY_NEAR_VERTICAL && stepHeight > 0) {
+                var upStart = new Vector3(cx, sy + stepHeight, cz);
+                var upEnd = new Vector3(cx + vx * sdt, sy + stepHeight, cz + vz * sdt);
+                if (!findBlock(upStart, upEnd)) { break; }
+            }
+            var n = blk.n, keep = blk.keep;
+            // Clip the into-face velocity using the horizontal blocking direction (never inject
+            // vertical; the ground clamp owns y).
+            var floorLike = n.y > FPSC.NY_FLOORLIKE;
+            var bx = floorLike ? -n.x : n.x, bz = floorLike ? -n.z : n.z;
+            var blen = Math.sqrt(bx * bx + bz * bz);
+            if (blen < FPSC.EPS_SPD) { break; }
+            bx /= blen; bz /= blen;
+            var dot = vx * bx + vz * bz;
+            if (dot > 0) {
+                vx -= dot * bx * (1 - keep);
+                vz -= dot * bz * (1 - keep);
+            }
+            // Depenetration is recovery-only: detect BURIED vs GRAZING with a back-probe (sweep one
+            // fixed small step along -n; if still in contact there, nudge out by that step), rather
+            // than trusting a reported penetration depth directly (this query never reports one -
+            // see findBlock's own comment; contactAt below is the real, load-bearing check, not an
+            // early-out guard). Vertical walls only; a floor-like too-steep toe is owned by the
+            // clamp / steep-slope path.
+            if (!floorLike && keep < FPSC.KEEP_BLOCKED) {
+                var step = Math.min(width, depth) * FPSC.BACKPROBE_WIDTH_FRAC;
+                if (contactAt(cx - n.x * step, sy, cz - n.z * step)) {
+                    depenX -= n.x * step; depenZ -= n.z * step;
+                    cx -= n.x * step; cz -= n.z * step;
+                }
+            }
+            if (keep > FPSC.KEEP_BLOCKED) { break; }
+        }
+        cx += vx * sdt;
+        cz += vz * sdt;
+    }
+    return { x: vx, z: vz, depenX: depenX, depenZ: depenZ };
+};
+
+
+// ==== src/character/fps/Probes.js ====
+// Ground/ceiling/ladder raycast probes: the hand-written spatial queries beginStep/endStep read each
+// tick to decide grounding, standable-slope classification, headroom, and ladder mounting. No probe
+// here writes any sim state itself — each one just reports what's in the world.
+var proto = FPSCharacterController.prototype;
+var FPSC = FPSCharacterController.FPSC;
+var raycast = FPSCharacterController._raycast;
+
+/**
+ * Multi-point ground probe (center + four edge midpoints). Returns ALL floor-like hits, highest
+ * first — NOT collapsed to a single "best" here, because the caller needs to fall back to a
+ * lower (but valid) hit when the highest one is rejected as too tall to step onto (e.g. one edge
+ * ray grazing a box pushed against the footprint, while the other four rays are still squarely
+ * over real floor). Collapsing to one hit here would throw the floor away before the caller ever
+ * gets a chance to prefer it.
+ * @method _probeGroundCandidates
+ * @private
+ * @param {Number} maxSnap - max downward reach (below the feet) to probe, before scale/skin margins.
+ * @return {Object[]} floor-like raycast hits, sorted highest point.y first.
+ */
+proto._probeGroundCandidates = function(maxSnap) {
+    var half = this.height / 2;
+    var p = this.body.position;
+    // Cast from the higher of this tick's start position and the current position, so a fast
+    // descent that penetrated the floor this tick doesn't miss it.
+    var topY = Math.max(this._prevY !== undefined ? this._prevY : p.y, p.y) + this._skin;
+    var bottomY = p.y - (half + maxSnap + this._skin);
+    var ix = this.width / 2 - this._skin;
+    var iz = this.depth / 2 - this._skin;
+    var offsets = [[0, 0], [ix, 0], [-ix, 0], [0, iz], [0, -iz]];
+
+    var candidates = [];
+    for (var i = 0; i < offsets.length; i++) {
+        var ox = offsets[i][0];
+        var oz = offsets[i][1];
+        var start = new Vector3(p.x + ox, topY, p.z + oz);
+        var end = new Vector3(p.x + ox, bottomY, p.z + oz);
+        var hit = raycast(this.world, start, end, this._ignoreSelf);
+        if (!hit || hit.normal.y < FPSC.NY_FLOORLIKE) { continue; }
+        // Exclude a pushable object as ground only when walking INTO its side (pushing it), not
+        // when it's roughly under our own center (standing on it).
+        var gBody = hit.object;
+        var gm = gBody && gBody._mass;
+        var isPushable = gBody && gBody.bodyType === RigidBody.DYNAMIC && gm > 0 && gm <= this._pushMassLimit;
+        if (isPushable) {
+            var gv = this.body.linear_velocity;
+            var toHitX = hit.point.x - p.x, toHitZ = hit.point.z - p.z;
+            var towardLen = Math.sqrt(toHitX * toHitX + toHitZ * toHitZ);
+            var movingIntoIt = towardLen > FPSC.EPS_LEN &&
+                (gv.x * toHitX + gv.z * toHitZ) / towardLen > FPSC.PUSH_INTO_MIN;
+            var nearCenter = towardLen < this.width * FPSC.NEAR_CENTER_FRAC;
+            if (movingIntoIt && !nearCenter) { continue; }
+        }
+        candidates.push(hit);
+    }
+    candidates.sort(function(a, b) { return b.point.y - a.point.y; });
+    return candidates;
+};
+
+/**
+ * Multi-ray UP probe across the footprint. Returns the LOWEST ceiling (down-facing
+ * surface) within `reachAboveFeet` of the feet, or null. Mirror of _probeGround; covers
+ * sloped overhead geometry (e.g. a ramp underside) that forward rays can't see.
+ *
+ * @method _probeCeiling
+ * @private
+ * @param {Number} reachAboveFeet - how far above the feet to scan.
+ * @return {Object|null} the lowest down-facing hit within reach, or null.
+ */
+proto._probeCeiling = function(reachAboveFeet) {
+    var p = this.body.position;
+    var feetY = p.y - this.height / 2;
+    var startY = feetY + this._skin;
+    var endY = feetY + reachAboveFeet + this._skin;
+    var ix = this.width / 2 - this._skin;
+    var iz = this.depth / 2 - this._skin;
+    var offsets = [[0, 0], [ix, 0], [-ix, 0], [0, iz], [0, -iz]];
+    var best = null;
+    for (var i = 0; i < offsets.length; i++) {
+        var ox = offsets[i][0];
+        var oz = offsets[i][1];
+        var hit = this._raycastSkipPlatforms(
+            new Vector3(p.x + ox, startY, p.z + oz),
+            new Vector3(p.x + ox, endY, p.z + oz)
+        );
+        if (!hit || hit.normal.y > FPSC.NY_CEILING) { continue; } // not a ceiling (must face downward)
+        if (!best || hit.point.y < best.point.y) { best = hit; }
+    }
+    return best;
+};
+
+/**
+ * Same contract as the private _raycast helper (excludes this body + its ghost, returns the
+ * nearest remaining hit), but ALSO skips a hit body tagged isPlatform. A scripted moving platform is
+ * deliberately excluded from the solver's own contact resolution (see _baseVelocity's constructor
+ * comment / platform()'s collision_mask) so a rider is carried via scripted base-velocity, never a
+ * real physical shove — but a raw raycast doesn't consult collision_mask at all, so without this a
+ * fast-rising platform that catches back up to a character mid-jump gets misread as a solid ceiling
+ * overhead by _ceilingSlide, capping the jump's vertical velocity and killing it a few ticks after
+ * liftoff, even though no real contact manifold ever forms between the two bodies (the phantom
+ * ceiling is a pure raycast/collision_mask mismatch, not a real collision). Used ONLY by
+ * _probeCeiling — _probeGround intentionally still sees platforms (that's how riding one works at
+ * all), and ordinary walls/ramps/props aren't tagged isPlatform so they're unaffected.
+ *
+ * Self+ghost exclusion goes through World.rayIntersect's own `ignore` parameter (bodies excluded
+ * from candidates BEFORE the nearest-hit search runs), not post-hoc name filtering on the single
+ * reported hit — a probe cast from the character's own body would otherwise almost always find
+ * itself as the "nearest hit" and get discarded, reporting no ceiling even when a real one is
+ * there. Platform exclusion still can't do the same (World.rayIntersect reports only the single
+ * nearest body, so a platform hit is reported as "no ceiling" rather than passed over to a real
+ * ceiling behind it) — narrower, left as a known gap.
+ *
+ * @method _raycastSkipPlatforms
+ * @private
+ * @param {Vector3} start
+ * @param {Vector3} end
+ * @return {Object|null} the nearest non-self, non-platform hit, or null.
+ */
+proto._raycastSkipPlatforms = function(start, end) {
+    var ignore = this._ghost ? [this.body, this._ghost] : this.body;
+    var hit = this.world.rayIntersect(start, end, ignore);
+    if (!hit) { return null; }
+    var b = hit.body;
+    if (b && b.isPlatform) { return null; }
+    return { object: b, point: hit.point, normal: hit.normal, t: hit.distance };
+};
+
+/**
+ * Is there room to stand up? (No ceiling within standHeight of the feet.)
+ * @method _canStand
+ * @private
+ * @return {Boolean}
+ */
+proto._canStand = function() {
+    var feetY = this.body.position.y - this.height / 2;
+    var ceil = this._probeCeiling(this.standHeight);
+    return !ceil || ceil.point.y - feetY >= this.standHeight - this._skin;
+};
+
+/**
+ * Single ray probe for a ladder ahead, along `dir` (horizontal, need not be unit length). Placed
+ * halfway between the feet and stepHeight above them rather than the body center. Returns the raw
+ * hit `{object, point, normal, t}` with the normal flipped to point OUT of the face (toward the
+ * caller), or null.
+ *
+ * @method _findLadderAhead
+ * @private
+ * @param {Vector3} dir
+ * @return {Object|null}
+ */
+proto._findLadderAhead = function(dir) {
+    var p = this.body.position;
+    var dlen = Math.sqrt(dir.x * dir.x + dir.z * dir.z);
+    if (dlen < FPSC.EPS_LEN) { return null; }
+    var dx = dir.x / dlen, dz = dir.z / dlen;
+    var reach = this.width / 2 + this.ladderMountReach;
+    var feetY = p.y - this.height / 2;
+    var probeY = feetY + this.stepHeight / 2;
+    var hit = raycast(this.world,
+        new Vector3(p.x, probeY, p.z),
+        new Vector3(p.x + dx * reach, probeY, p.z + dz * reach),
+        this._ignoreSelf);
+    if (!hit || !hit.object || !hit.object.isLadder) { return null; }
+    return hit;
+};
+
+/**
+ * Is there a too-steep-but-climbable slope surface rising just ahead of the move? Used only when
+ * climbSteepSlopes is on. Casts down-rays a short distance ahead and looks for an upward-tilted,
+ * too-steep-to-stand hit that is still a real slope (not flat floor, not a vertical wall).
+ * @method _climbableSlopeAhead
+ * @private
+ * @param {Vector3} start
+ * @param {Number} dx - unit-ish horizontal direction x
+ * @param {Number} dz - unit-ish horizontal direction z
+ * @return {Boolean}
+ */
+proto._climbableSlopeAhead = function(start, dx, dz) {
+    if (dx === 0 && dz === 0) { return false; }
+    var feetY = this.body.position.y - this.height / 2;
+    var base = this.depth / 2 + this._skin; // footprint edge (both scale with the character)
+    for (var mi = 0; mi < FPSC.CLIMB_PROBE_DEPTH_MULTS.length; mi++) {
+        var m = FPSC.CLIMB_PROBE_DEPTH_MULTS[mi];
+        var ahead = base + m * this.depth; // reach past the footprint in units of depth (scale-invariant)
+        var ax = start.x + dx * ahead;
+        var az = start.z + dz * ahead;
+        var hit = raycast(this.world,
+            new Vector3(ax, feetY + this.stepHeight + this._skin, az),
+            new Vector3(ax, feetY - this.stepHeight, az),
+            this._ignoreSelf);
+        if (hit && hit.normal.y > FPSC.NY_STEEP_MIN && hit.normal.y < this._minStandableNormalY) { return true; }
+    }
+    return false;
+};
+
+/**
+ * Lowest ceiling clearance over the footprint centered at (cx,cz). Infinity if nothing overhead.
+ * @method _ceilingClearanceAt
+ * @private
+ * @param {Number} cx
+ * @param {Number} cz
+ * @param {Number} feetY
+ * @return {Number} clearance in units above feetY, or Infinity.
+ */
+proto._ceilingClearanceAt = function(cx, cz, feetY) {
+    // Start above step-up height so a steppable obstacle (stair/low box) doesn't register as a
+    // low ceiling; anything below feet+stepHeight is the ground clamp's job, not the gate's.
+    var startY = feetY + this.stepHeight + this._skin;
+    var endY = feetY + this.standHeight + this._skin;
+    var ix = this.width / 2 - this._skin;
+    var iz = this.depth / 2 - this._skin;
+    var offsets = [[0, 0], [ix, 0], [-ix, 0], [0, iz], [0, -iz]];
+    var lowest = Infinity;
+    for (var i = 0; i < offsets.length; i++) {
+        var ox = offsets[i][0];
+        var oz = offsets[i][1];
+        var hit = raycast(this.world,
+            new Vector3(cx + ox, startY, cz + oz),
+            new Vector3(cx + ox, endY, cz + oz),
+            this._ignoreSelf);
+        if (!hit || hit.normal.y > FPSC.NY_CEILING) { continue; } // not a ceiling (must face downward)
+        // A dynamic/pushable object is never a "ceiling" — it's something the swept mover + push handle,
+        // not the headroom gate. Without this, an object being actively shoved forward can wobble a few
+        // degrees off-axis from contact torque, and its top face intermittently pokes above the
+        // stepHeight cutoff below on some ticks but not others, flickering the character's forward
+        // velocity to zero and back as the box jitters. Only STATIC geometry (mass===Infinity) counts
+        // as an overhang.
+        if (hit.object && hit.object.bodyType === RigidBody.DYNAMIC) { continue; }
+        var clr = hit.point.y - feetY;
+        // A "ceiling" clearance at or below step height is NOT an overhang — it's a low obstacle at
+        // shin/waist level that the swept mover + push handle, not the headroom gate. Without this, a
+        // low stepHeight drops the ray start (feetY+stepHeight) INTO a waist-high object ahead, and the
+        // ray reports a bogus ~stepHeight-clearance "ceiling", so the gate walls the character in open
+        // space in front of a pushable box (worse the lower stepHeight is). Only count genuine overhangs
+        // — clearance meaningfully above the step line — as ceilings.
+        if (clr <= this.stepHeight + this._skin) { continue; }
+        if (clr < lowest) { lowest = clr; }
+    }
+    return lowest;
+};
+
+/**
+ * The "too steep to stand on" rule — a floor whose normal tilts below the standable limit gives no
+ * footing (MOVE_SLIP). climbSteepSlopes opts out.
+ * @method _isSlipSurface
+ * @private
+ * @param {Object} normal - a surface normal (uses .y)
+ * @return {Boolean}
+ */
+proto._isSlipSurface = function(normal) {
+    return !this.climbSteepSlopes && normal.y < this._minStandableNormalY;
+};
+
+
+// ==== src/character/fps/View.js ====
+// View/aim/render-interpolation surface, plus the small read-only state accessors a caller polls
+// every frame (sliding, moveState, bodyId, raycastIgnore). None of this touches simulation state
+// except look()/setLook()/aim(), which are the caller's own facing/aim writes.
+var proto = FPSCharacterController.prototype;
+var FPSC = FPSCharacterController.FPSC;
+
+/**
+ * True while a slide is active this tick. Reads the single authoritative _moveState field that
+ * endStep sets — see the "Movement state machine" comment above endStep (Movement/Step.js).
+ * @property sliding
+ * @type {Boolean}
+ * @readOnly
+ */
+Object.defineProperty(proto, 'sliding', { get: function() { return this._moveState === FPSC.MOVE_SLIDE; } });
+
+/**
+ * This tick's movement state: one of FPSC.MOVE_LADDER / MOVE_AIRBORNE / MOVE_WALK / MOVE_SLIP /
+ * MOVE_SLIDE. Set exactly once per tick, by endStep, from a fresh ground probe — beginStep (which
+ * runs BEFORE endStep, on the state endStep decided last tick) only ever READS this, never
+ * re-derives it. See the "Movement state machine" comment above endStep for the full design.
+ * @property moveState
+ * @type {String}
+ * @readOnly
+ */
+Object.defineProperty(proto, 'moveState', { get: function() { return this._moveState; } });
+
+/**
+ * This controller's physics-body name (the value raycasts exclude to avoid self-hits).
+ * @property bodyId
+ * @type {String}
+ * @readOnly
+ */
+Object.defineProperty(proto, 'bodyId', { get: function() { return this._bodyName; } });
+
+/**
+ * The body-name list this controller's own probes ignore — pass to a game's own raycasts
+ * (weapons, line-of-sight) so a shooter's cast doesn't hit itself.
+ * @property raycastIgnore
+ * @type {String[]}
+ * @readOnly
+ */
+Object.defineProperty(proto, 'raycastIgnore', { get: function() { return this._ignoreSelf; } });
+
+// ---- Look --------------------------------------------------------------
+
+/**
+ * @method look
+ * @param {Number} deltaYaw
+ * @param {Number} deltaPitch
+ */
+proto.look = function(deltaYaw, deltaPitch) {
+    this.yaw += deltaYaw;
+    this.pitch += deltaPitch;
+    if (this.pitch > this.maxPitch) { this.pitch = this.maxPitch; }
+    if (this.pitch < -this.maxPitch) { this.pitch = -this.maxPitch; }
+};
+
+/**
+ * @method setLook
+ * @param {Number} yaw
+ * @param {Number} pitch
+ */
+proto.setLook = function(yaw, pitch) {
+    this.yaw = yaw;
+    this.pitch = pitch;
+};
+
+/**
+ * Full 3D look direction (includes pitch).
+ * @method getLookDirection
+ * @return {Vector3}
+ */
+proto.getLookDirection = function() {
+    var cp = Scalar.cos(this.pitch);
+    return new Vector3(Scalar.sin(this.yaw) * cp, Scalar.sin(this.pitch), Scalar.cos(this.yaw) * cp);
+};
+
+/**
+ * Set the LIVE, caller-owned aim — call once per render frame from your mouse-look. Render-only:
+ * this NEVER enters the simulation (it doesn't touch yaw/pitch, the command, or movement), it just
+ * keeps a viewmodel/camera glued to the present view instead of the 60Hz sim yaw — fixing the
+ * between-tick "dangle" in every mode.
+ *
+ * @method aim
+ * @param {Number} yaw
+ * @param {Number} pitch
+ */
+proto.aim = function(yaw, pitch) {
+    this._liveYaw = yaw;
+    this._livePitch = pitch;
+    this._liveAimSet = true;
+};
+
+/**
+ * The live aim's full 3D direction (render-only; from aim()). Falls back to the sim look.
+ * @method getLiveAimDirection
+ * @return {Vector3}
+ */
+proto.getLiveAimDirection = function() {
+    if (!this._liveAimSet) { return this.getLookDirection(); }
+    var cp = Scalar.cos(this._livePitch);
+    return new Vector3(Scalar.sin(this._liveYaw) * cp, Scalar.sin(this._livePitch), Scalar.cos(this._liveYaw) * cp);
+};
+
+/**
+ * Horizontal forward for a given yaw (defaults to current facing).
+ * @method getForwardHorizontal
+ * @param {Number} [yaw]
+ * @return {Vector3}
+ */
+proto.getForwardHorizontal = function(yaw) {
+    if (yaw === undefined) { yaw = this.yaw; }
+    return new Vector3(Scalar.sin(yaw), 0, Scalar.cos(yaw));
+};
+
+/**
+ * Horizontal right for a given yaw (defaults to current facing). Negated to match a
+ * left-handed view convention so DirRight strafes to the character's visual right.
+ * @method getRightHorizontal
+ * @param {Number} [yaw]
+ * @return {Vector3}
+ */
+proto.getRightHorizontal = function(yaw) {
+    if (yaw === undefined) { yaw = this.yaw; }
+    return new Vector3(-Scalar.cos(yaw), 0, Scalar.sin(yaw));
+};
+
+/**
+ * World-space eye position (camera goes here).
+ * @method getEyePosition
+ * @return {Vector3}
+ */
+proto.getEyePosition = function() {
+    var p = this.body.position;
+    return new Vector3(p.x, p.y + this.eyeHeight, p.z);
+};
+
+/**
+ * Return the artificial vertical eye displacement accumulated since the last call (step/landing
+ * snaps + crouch/scale swaps) and reset it. A camera folds this into a decaying offset so it
+ * eases over those discontinuities. Call once per render frame. Render-only — does not affect sim.
+ * @method consumeViewDisplacementY
+ * @return {Number}
+ */
+proto.consumeViewDisplacementY = function() {
+    var d = this._viewDisplacementY;
+    this._viewDisplacementY = 0;
+    return d;
+};
+
+/**
+ * Peek at the pending vertical eye displacement WITHOUT consuming it. A render-side smoother
+ * consumes (consumeViewDisplacementY); a caller that only wants to DETECT a discontinuity this
+ * frame (e.g. to snap interpolation instead of sliding the eye) reads this and leaves the value
+ * for the smoother. Read-only — never mutates sim or render state.
+ * @method peekViewDisplacementY
+ * @return {Number}
+ */
+proto.peekViewDisplacementY = function() {
+    return this._viewDisplacementY;
+};
+
+/**
+ * Stash this fixed tick's eye for sub-tick render interpolation. Call ONCE per REAL fixed step,
+ * right after the step settles. A teleport-sized jump (respawn / kill-plane / hard resync) or an
+ * artificial step/crouch eye snap snaps the interpolation — prev := curr — so the eye doesn't
+ * smear across the discontinuity.
+ *
+ * @method captureRenderState
+ */
+proto.captureRenderState = function() {
+    var e = this.getEyePosition();
+    var snap = !this._currEye;
+    if (this._currEye) {
+        var dx = e.x - this._currEye.x, dy = e.y - this._currEye.y, dz = e.z - this._currEye.z;
+        if (dx * dx + dy * dy + dz * dz > this._renderSnapDist2) { snap = true; } // teleport-sized
+    }
+    if (Math.abs(this.peekViewDisplacementY()) > FPSC.VIEW_DISP_SNAP) { snap = true; }
+    this._prevEye = snap ? e : this._currEye;
+    this._currEye = e;
+};
+
+/**
+ * The render-only eye position: the last two captured fixed-tick eyes lerped by the sub-tick factor
+ * `alpha` (0..1, the fraction into the current fixed step the renderer hands the draw call). Falls
+ * back to the live physics eye until two ticks have been captured.
+ *
+ * @method renderEye
+ * @param {Number} alpha
+ * @return {Vector3}
+ */
+proto.renderEye = function(alpha) {
+    if (!this._prevEye || !this._currEye) { return this.getEyePosition(); }
+    var a = alpha < 0 ? 0 : alpha > 1 ? 1 : alpha;
+    var ex = this._prevEye.x + (this._currEye.x - this._prevEye.x) * a;
+    var ey = this._prevEye.y + (this._currEye.y - this._prevEye.y) * a;
+    var ez = this._prevEye.z + (this._currEye.z - this._prevEye.z) * a;
+    return new Vector3(ex, ey, ez);
+};
+
+
+// ==== src/character/fps/Netcode.js ====
+// Entity interface (authoritative snapshots / reconciliation). beginStep/endStep (Movement/Step.js)
+// are the sim; getState/setState complete the duck-typed entity contract
+// {beginStep, endStep, getState, setState} an external framework can drive, and
+// beginResim/endResim bracket a rollback-and-resim of already-run commands.
+var proto = FPSCharacterController.prototype;
+var FPSC = FPSCharacterController.FPSC;
+
+/**
+ * Reconciliation hooks (opt-in, called by the caller around a ROLLBACK-AND-RESIM of already-run
+ * commands — distinct from a game "replay"). During resim the controller re-derives already-
+ * perceived state, so its step/crouch snaps must NOT feed a render smoother (that double-counts
+ * every step until the resim catches back up). Live ticks are unaffected.
+ * @method beginResim
+ */
+proto.beginResim = function() { this._resimulating = true; };
+/**
+ * @method endResim
+ */
+proto.endResim = function() { this._resimulating = false; };
+
+/**
+ * Snapshot this controller's authoritative state for the network.
+ * @method getState
+ * @return {Object} state
+ * @return {Number} state.x - body position x.
+ * @return {Number} state.y - body position y.
+ * @return {Number} state.z - body position z.
+ * @return {Number} state.vx - body linear velocity x.
+ * @return {Number} state.vy - body linear velocity y.
+ * @return {Number} state.vz - body linear velocity z.
+ * @return {Number} state.yaw - commanded facing yaw.
+ * @return {Number} state.pitch - commanded facing pitch.
+ * @return {Boolean} state.grounded
+ * @return {Number} state.w - collider width.
+ * @return {Number} state.h - collider height (reflects crouch).
+ * @return {String} state.moveState - one of FPSC.MOVE_LADDER/MOVE_AIRBORNE/MOVE_WALK/MOVE_SLIP/MOVE_SLIDE;
+ *   see the "Movement state machine" comment above endStep — serialized so resim re-adopts the exact
+ *   state live prediction was in, not a re-derived guess.
+ * @return {Boolean} state.sliding - plain boolean convenience view of moveState === MOVE_SLIDE, for
+ *   snapshot consumers that only care about this one bit (e.g. a body model tilting while sliding).
+ * @return {Number} state.gs - ground-suppress tick counter (see endStep's `suppressed`).
+ * @return {Number} state.ct - coyote-time timer remaining.
+ * @return {Number} state.jb - jump-buffer timer remaining.
+ * @return {Number} state.gnx - ground normal x.
+ * @return {Number} state.gny - ground normal y.
+ * @return {Number} state.gnz - ground normal z.
+ * @return {Boolean} state.climb - steep-slope walk allowance (can be granted/refused by an authority
+ *   outside this controller; serialized so prediction + resim read the authoritative value).
+ * @return {Boolean} state.onLadder - ladder mount state.
+ * @return {Number} state.lnx - ladder face normal x (points OUT of the ladder face).
+ * @return {Number} state.lnz - ladder face normal z.
+ * @return {*} state.userData - opaque consumer payload, passed through unexamined.
+ *
+ * NB: the ghost (the body that pushes objects) is deliberately NOT serialized. It's a local
+ * follow-the-character construct; setState re-derives it locally by snapping it to the
+ * authoritative character. Serializing it added bandwidth for identical results.
+ */
+proto.getState = function() {
+    var p = this.body.position;
+    var v = this.body.linear_velocity;
+    return {
+        x: p.x, y: p.y, z: p.z,
+        vx: v.x, vy: v.y, vz: v.z,
+        yaw: this.yaw, pitch: this.pitch,
+        grounded: this.grounded,
+        w: this.width, h: this.height,
+        moveState: this._moveState,
+        sliding: this._moveState === FPSC.MOVE_SLIDE,
+        gs: this._groundSuppress,
+        ct: this._coyoteTimer,
+        jb: this._jumpBufferTimer,
+        gnx: this.groundNormal.x, gny: this.groundNormal.y, gnz: this.groundNormal.z,
+        climb: this.climbSteepSlopes,
+        onLadder: this._onLadder,
+        lnx: this._ladderNormal.x, lnz: this._ladderNormal.z,
+        mantleActive: this._mantleActive,
+        mantleTimer: this._mantleTimer,
+        mantleSX: this._mantleStartX, mantleSY: this._mantleStartY, mantleSZ: this._mantleStartZ,
+        mantleTopY: this._mantleTopBodyY,
+        mantleLX: this._mantleLandX, mantleLZ: this._mantleLandZ,
+        userData: this.userData
+    };
+};
+
+/**
+ * Apply an authoritative state (from a snapshot). Sets position, velocity and grounded; does not
+ * touch yaw/pitch. Used for reconciliation before replaying already-run commands.
+ * @method setState
+ * @param {Object} s - a snapshot as produced by getState.
+ * @param {Number} s.x
+ * @param {Number} s.y
+ * @param {Number} s.z
+ * @param {Number} s.vx
+ * @param {Number} s.vy
+ * @param {Number} s.vz
+ * @param {Boolean} [s.grounded]
+ * @param {Number} [s.h] - collider height; a mismatch vs the current height rebuilds the collider
+ *   (and re-derives crouching) before position is adopted.
+ * @param {String} [s.moveState]
+ * @param {Number} [s.gs]
+ * @param {Number} [s.ct]
+ * @param {Number} [s.jb]
+ * @param {Number} [s.gnx]
+ * @param {Number} [s.gny]
+ * @param {Number} [s.gnz]
+ * @param {Boolean} [s.climb]
+ * @param {Boolean} [s.onLadder]
+ * @param {Number} [s.lnx]
+ * @param {Number} [s.lnz]
+ * @param {*} [s.userData]
+ */
+proto.setState = function(s) {
+    // Rebuild the collider at the authoritative center/height before adopting position, so the
+    // geometry matches the snapshot's before replay (a height mismatch would re-plant crouch from
+    // the wrong baseline every snapshot).
+    if (s.h !== undefined && Math.abs(s.h - this.height) > FPSC.EPS_SPEED_MARGIN) {
+        this.crouching = s.h < this.standHeight - FPSC.EPS_SPEED_MARGIN;
+        this.height = s.h;
+        this.eyeHeight = this.crouching ? this.standEye * this.crouchRatio : this.standEye;
+        this._buildBody(new Vector3(s.x, s.y, s.z));
+    }
+    this.body.position.set(s.x, s.y, s.z);
+    this.body.updateDerived();
+    var v = this.body.linear_velocity;
+    v.x = s.vx;
+    v.y = s.vy;
+    v.z = s.vz;
+    this.velocityY = s.vy;
+    // _ownVelocityX/Z aren't snapshot fields — re-derive them from gb so they don't go stale (see
+    // constructor comment).
+    this._ownVelocityX = v.x - this._baseVelocity.x;
+    this._ownVelocityZ = v.z - this._baseVelocity.z;
+    if (s.grounded !== undefined) { this.grounded = s.grounded; }
+    // Adopt the authoritative movement state directly — resim then starts from exactly the state
+    // live prediction was in (WALK/SLIP/SLIDE/AIRBORNE/LADDER), not a locally re-derived guess.
+    if (s.moveState !== undefined) { this._moveState = s.moveState; }
+    if (s.gs !== undefined) { this._groundSuppress = s.gs; }
+    if (s.ct !== undefined) { this._coyoteTimer = s.ct; }
+    if (s.jb !== undefined) { this._jumpBufferTimer = s.jb; }
+    if (s.gnx !== undefined) { this.groundNormal.set(s.gnx, s.gny, s.gnz); }
+    // Adopt the authoritative steep-slope allowance. This is the ONLY place the live flag is written
+    // from outside — a command only sets INTENT, an authority grants/refuses it, and the truth comes
+    // back here. Read live each tick by the mover/grounding, so no rebuild is needed.
+    if (s.climb !== undefined) { this.climbSteepSlopes = s.climb; }
+    if (s.onLadder !== undefined) { this._onLadder = s.onLadder; }
+    if (s.lnx !== undefined) { this._ladderNormal.set(s.lnx, 0, s.lnz); }
+    if (s.mantleActive !== undefined) { this._mantleActive = s.mantleActive; }
+    if (s.mantleTimer !== undefined) { this._mantleTimer = s.mantleTimer; }
+    if (s.mantleSX !== undefined) {
+        this._mantleStartX = s.mantleSX; this._mantleStartY = s.mantleSY; this._mantleStartZ = s.mantleSZ;
+    }
+    if (s.mantleTopY !== undefined) { this._mantleTopBodyY = s.mantleTopY; }
+    if (s.mantleLX !== undefined) { this._mantleLandX = s.mantleLX; this._mantleLandZ = s.mantleLZ; }
+    // Restore gravity if mantling — _updateMantle zeroes it on entry but setState re-adopts the
+    // arc mid-flight without re-running the entry code.
+    if (this._mantleActive) { this.body.setGravity(0, 0, 0); }
+    else { this.body.setGravity(this._gravityVec.x, this._gravityVec.y, this._gravityVec.z); }
+    // Re-baseline the ghost LOCALLY (not from the snapshot — the ghost isn't serialized). Snap it onto
+    // the just-adopted authoritative character, moving at the character's velocity, so every resim starts
+    // from the same consistent ghost state and re-pushes objects identically each time.
+    // Opt-out (hardsnapGhostOnReconcile=false): leave the ghost drifted.
+    if (this._ghost && this._hardsnapGhostOnReconcile) {
+        var bp = this.body.position, pv = this.body.linear_velocity;
+        this._ghost.position.set(bp.x, bp.y + (this._ghostGroundInset || 0) / 2, bp.z);
+        this._ghost.linear_velocity.set(pv.x, pv.y, pv.z);
+        this._ghostCommandedVel = { x: pv.x, y: pv.y, z: pv.z };
+    }
+    this._prevCrouch = this.crouching;
+    if (s.userData !== undefined) { this.userData = s.userData; }
+};
+
+
+// ==== src/character/fps/Movement/Airborne.js ====
+// Airborne assists: deflecting velocity off a ceiling on the way up (_ceilingSlide), and gating
+// horizontal advance into an overhang too low to fit under (_headroomGate). Neither owns a movement
+// state by itself — both act as filters on whatever velocity the active state produced this tick.
+var proto = FPSCharacterController.prototype;
+var FPSC = FPSCharacterController.FPSC;
+
+/**
+ * Deflect velocity along an overhead surface we're about to contact, instead of capping the
+ * rise to zero — a hard cap leaves no velocity to escape and glues us to ceilings, flat AND
+ * sloped. Projects out the into-surface component using the ceiling's own normal: v -= (v.n) n.
+ * A flat underside (n straight down) zeroes only the vertical, so horizontal motion survives; a
+ * sloped underside redirects the upward motion down-and-along the slope, sliding us out. Only
+ * acts when actually rising toward a ceiling within this tick's reach.
+ *
+ * @method _ceilingSlide
+ * @private
+ * @param {Number} vx
+ * @param {Number} vy
+ * @param {Number} vz
+ * @param {Number} dt
+ * @return {Object} result
+ * @return {Number} result.vx
+ * @return {Number} result.vy
+ * @return {Number} result.vz
+ */
+proto._ceilingSlide = function(vx, vy, vz, dt) {
+    if (vy <= 0) { return { vx: vx, vy: vy, vz: vz }; } // not rising -> nothing overhead to resolve
+    var reach = this.height + vy * dt + this._skin;
+    var ceil = this._probeCeiling(reach);
+    if (!ceil) { return { vx: vx, vy: vy, vz: vz }; }
+    var gap = ceil.point.y - (this.body.position.y + this.height / 2);
+    if (gap > vy * dt + this._skin) { return { vx: vx, vy: vy, vz: vz }; } // won't reach it this tick
+    var n = ceil.normal; // down-facing (n.y < 0)
+    var dot = vx * n.x + vy * n.y + vz * n.z;
+    if (dot < 0) {
+        // Heading into the surface: remove that component, leaving motion tangent to it.
+        vx -= dot * n.x;
+        vy -= dot * n.y;
+        vz -= dot * n.z;
+    }
+    return { vx: vx, vy: vy, vz: vz };
+};
+
+/**
+ * Treat insufficient headroom as a virtual wall: gate on ceiling clearance ahead (rather than
+ * surface normal, which a near-horizontal ramp underside can't provide) and slide along the
+ * horizontal gradient of increasing clearance.
+ * @method _headroomGate
+ * @private
+ * @param {Number} vx
+ * @param {Number} vz
+ * @param {Number} dt
+ * @return {Object} result
+ * @return {Number} result.x - gated horizontal velocity, x.
+ * @return {Number} result.z - gated horizontal velocity, z.
+ */
+proto._headroomGate = function(vx, vz, dt) {
+    var speed = Math.sqrt(vx * vx + vz * vz);
+    if (speed < FPSC.EPS_DIR) { return { x: vx, z: vz }; }
+
+    if (this.climbSteepSlopes && this._climbableSlopeAhead(this.body.position, vx / speed, vz / speed)) {
+        return { x: vx, z: vz };
+    }
+
+    var p = this.body.position;
+    var feetY = p.y - this.height / 2;
+    var need = this.height + this._skin;
+    var halfDiag = Math.sqrt((this.width / 2) * (this.width / 2) + (this.depth / 2) * (this.depth / 2));
+
+    // Check clearance centered at the CURRENT position, not a forward-projected point — _ceilingClearanceAt
+    // already samples +-(width/2-skin) / +-(depth/2-skin) around its center argument, which is the box's own
+    // full footprint including its leading edge. Projecting a "reach" forward on top of that double-counts.
+    // The footprint offsets ARE the reach.
+    if (this._ceilingClearanceAt(p.x, p.z, feetY) >= need) { return { x: vx, z: vz }; }
+
+    var eps = halfDiag + this._skin;
+    var cR = this._ceilingClearanceAt(p.x + eps, p.z, feetY);
+    var cL = this._ceilingClearanceAt(p.x - eps, p.z, feetY);
+    var cF = this._ceilingClearanceAt(p.x, p.z + eps, feetY);
+    var cB = this._ceilingClearanceAt(p.x, p.z - eps, feetY);
+
+    var cap = this.standHeight + this._skin;
+    function fin(c) { return isFinite(c) ? c : cap; }
+    var gx = fin(cR) - fin(cL);
+    var gz = fin(cF) - fin(cB);
+    var glen = Math.sqrt(gx * gx + gz * gz);
+    if (glen < FPSC.EPS_DIR) {
+        // Grounded: stop (forces a crouch). Airborne: let horizontal flow, ceiling slide owns vertical.
+        return this.grounded ? { x: 0, z: 0 } : { x: vx, z: vz };
+    }
+    gx /= glen;
+    gz /= glen;
+
+    var into = vx * gx + vz * gz;
+    if (into < 0) {
+        vx -= into * gx;
+        vz -= into * gz;
+    }
+    return { x: vx, z: vz };
+};
+
+
+// ==== src/character/fps/Movement/Vertical.js ====
+// Vertical motion: jump + gravity/landing hook. Gravity/landing itself is left to the solver; only
+// jump/jetpack thrust writes vertical velocity directly (see _updateVertical). Also the overridable
+// gait-speed hook (_getMoveSpeed), kept here since jump/speed are the two "kit" hooks a subclass
+// typically overrides together.
+var proto = FPSCharacterController.prototype;
+var FPSC = FPSCharacterController.FPSC;
+
+// ---- Overridable kit hooks --------------------------------------------
+
+/**
+ * Gait selection: sprint > walk > run, scaled by crouch. Override to change gait rules without
+ * touching ground/step/wall logic.
+ * @method _getMoveSpeed
+ * @protected
+ * @param {Object} cmd
+ * @return {Number} target horizontal speed for this tick.
+ */
+proto._getMoveSpeed = function(cmd) {
+    // Gait priority: sprint > walk > run. Crouch scales the chosen gait.
+    var gait = cmd.sprint ? this.sprintSpeed : cmd.walk ? this.walkSpeed : this.moveSpeed;
+    return cmd.crouch ? gait * this.crouchSpeedMult : gait;
+};
+
+/**
+ * Vertical hook. Base = grounded jump only (gravity/landing handled by the solver). A jump adds
+ * platform base velocity's Y component additively, not an overwrite — jumping off a rising
+ * platform flings the character higher than jumpSpeed alone would.
+ * @method _updateVertical
+ * @protected
+ * @param {Object} cmd
+ * @param {Number} dt
+ */
+proto._updateVertical = function(cmd, dt) {
+    var canJump = this.grounded || this._coyoteTimer > 0;
+    var wantJump = cmd.jumpPressed || this._jumpBufferTimer > 0;
+    if (canJump && wantJump) {
+        // VERTICAL: additive, not a bare overwrite — jumping off a platform that's currently rising
+        // carries its vertical base velocity into the jump (a "fling"), on top of whatever base
+        // velocity the character already had that tick. Gated by _jumpKeepsVerticalBaseVelocity
+        // (default true — the established, expected platforming feel; PL3 depends on it).
+        var vBase = this._jumpKeepsVerticalBaseVelocity ? this._baseVelocity.y : 0;
+        // The player's jump is a WISH to leave the surface — that wish should only ever be helped by
+        // the platform's current motion, never fought. A platform still RISING adds free height (the
+        // fling above, working as intended); a platform DESCENDING must not subtract from the jump —
+        // ignore negative vBase at the moment of jumping (default on; a project that wants a
+        // descending platform to actively suppress a jump can opt out). This is deliberately scoped to
+        // the JUMP MOMENT only, not standing/riding in general — normal ground-follow on a descending
+        // platform (not jumping) is unaffected and still correctly rides it down; only the instant the
+        // player presses jump does their intent take priority over the platform's own motion.
+        if (this._jumpIgnoresDescendingBaseVelocity && vBase < 0) { vBase = 0; }
+        this.body.linear_velocity.y = this.jumpSpeed + vBase;
+        // HORIZONTAL: gated by _jumpKeepsHorizontalBaseVelocity (default FALSE — opposite default from
+        // vertical). Applies to ANY platform's horizontal base velocity, linear or rotating alike —
+        // left alone, a jump off a fast-moving/spinning platform launches the rider sideways at
+        // whatever speed the platform was imparting, since nothing decays it once airborne. Needs BOTH
+        // zeroed when opted out, not just one:
+        //   - this.body.linear_velocity.x/z (= gb, a live alias set up earlier in beginStep): the
+        //     AIRBORNE movement-state dispatch that runs right after this call reads gb.x/z DIRECTLY as
+        //     its base velocity (`var cur = gb`) when there's no move input — zeroing only
+        //     _baseVelocity below does nothing for that path, gb itself must be clean.
+        //   - this._baseVelocity.x/z: also read a few lines later in the SAME beginStep call (the
+        //     dispatch's own bvx/bvz, added into the swept move regardless of movement state) — leaving
+        //     it non-zero re-adds the platform's speed right back even after gb is cleared above.
+        if (!this._jumpKeepsHorizontalBaseVelocity) {
+            this.body.linear_velocity.x = this._ownVelocityX;
+            this.body.linear_velocity.z = this._ownVelocityZ;
+            this._baseVelocity.x = 0;
+            this._baseVelocity.z = 0;
+        }
+        this.grounded = false;
+        // beginStep's movement-state dispatch runs right after this call, on the SAME tick — must
+        // see AIRBORNE now, not whatever grounded sub-state was true a moment ago.
+        this._moveState = FPSC.MOVE_AIRBORNE;
+        this._groundSuppress = FPSC.GROUND_SUPPRESS_JUMP;
+        // See endStep's `suppressed` — a FIXED tick count alone isn't enough here: it doesn't know
+        // how far the character actually needs to climb to clear the surface they jumped off. A
+        // still-rising surface underfoot (a platform still climbing, or a ramp whose OWN surface
+        // keeps rising ahead of a character sprinting up it) can have gb.y still healthily positive
+        // well past GROUND_SUPPRESS_JUMP's fixed window, and would otherwise get back in ground-clamp
+        // snap range the instant the countdown lapses, re-catching the jump before it ever really
+        // left. This flag extends suppression for as long as gb.y stays genuinely positive (checked
+        // in endStep), on top of (not instead of) the fixed countdown — so a jump still can't
+        // suppress forever if something keeps gb.y positive indefinitely (a runaway edge case), but a
+        // normal jump's natural gravity decay is what ends it, not an arbitrary tick count picked for
+        // a flat floor.
+        this._jumpRising = true;
+        this._coyoteTimer = 0;
+        this._jumpBufferTimer = 0;
+    } else if (cmd.jumpPressed) {
+        this._jumpBufferTimer = this.jumpBuffer;
+    }
+};
+
+
+// ==== src/character/fps/Movement/Step.js ====
+// Movement state machine core: beginStep (pre-physics velocity + assists) and endStep (post-physics
+// grounding + state decision) bracket a single physics world step. See the class doc on
+// FPSCharacterController.js for the beginStep/world.step/endStep contract, and the "MOVEMENT STATE
+// DECISION" comment inside endStep below for the full state-machine design.
+var proto = FPSCharacterController.prototype;
+var FPSC = FPSCharacterController.FPSC;
+
+/**
+ * PRE-physics: set this tick's horizontal velocity (slope/wall projected) + assists.
+ *
+ * Aim/sim separation: the movement basis comes from the COMMAND's yaw (`cmd.yaw`) — a per-tick
+ * input — not from any persistent "live aim". The live aim belongs to the caller (a camera reads
+ * it, never the sim), so replaying commands during reconciliation can't drag the view backward.
+ * We record the commanded yaw/pitch as this entity's facing (for getState/avatars) only when the
+ * command carries them; a caller that never sets yaw keeps driving facing via look() instead.
+ *
+ * Also applies platform base velocity into the horizontal move (see the constructor's
+ * _baseVelocity comment) immediately before collide-and-slide, so a rider is carried through real
+ * swept motion rather than a position teleport.
+ *
+ * @method beginStep
+ * @param {Object} command - pure-data input command struct; any field may be absent
+ * @param {Number} dt
+ */
+proto.beginStep = function(command, dt) {
+    var cmd = command || {};
+
+    if (this._jumpBufferTimer > 0) { this._jumpBufferTimer = Math.max(0, this._jumpBufferTimer - dt); }
+
+    if (cmd.scale !== undefined && Math.abs(cmd.scale - this.scale) > FPSC.EPS_LEN) { this.setScale(cmd.scale); }
+    // Steep-slope walk intent from the command. Applying it immediately lets local prediction climb
+    // right away; if an authority later overrules it, setState corrects the flag from the snapshot.
+    // Read live per-tick, so a plain assignment is enough.
+    if (cmd.climb !== undefined) { this.climbSteepSlopes = !!cmd.climb; }
+    var wantCrouch = !!cmd.crouch || (this.crouching && !this._canStand());
+    if (wantCrouch !== this.crouching) { this._setCrouch(wantCrouch); }
+
+    if (cmd.userData !== undefined) { this.userData = cmd.userData; }
+
+    var gb = this.body.linear_velocity;
+
+    this._prevY = this.body.position.y;
+
+    var moveYaw = cmd.yaw !== undefined ? cmd.yaw : this.yaw;
+    var movePitch = cmd.pitch !== undefined ? cmd.pitch : this.pitch;
+    if (cmd.yaw !== undefined) { this.yaw = cmd.yaw; }
+    if (cmd.pitch !== undefined) { this.pitch = cmd.pitch; }
+
+    var fwd = this.getForwardHorizontal(moveYaw);
+    var rgt = this.getRightHorizontal(moveYaw);
+    var cmdF = cmd.forward || 0;
+    var cmdR = cmd.right || 0;
+    var dirX = fwd.x * cmdF + rgt.x * cmdR;
+    var dirZ = fwd.z * cmdF + rgt.z * cmdR;
+    var dirLen = Math.sqrt(dirX * dirX + dirZ * dirZ);
+    var hasInput = dirLen > FPSC.EPS_DIR;
+    this._cmdIdle = !hasInput;
+    var speed = this._getMoveSpeed(cmd);
+    var wishX = 0;
+    var wishZ = 0;
+    if (hasInput) {
+        wishX = (dirX / dirLen) * speed;
+        wishZ = (dirZ / dirLen) * speed;
+    }
+
+    // Stashed for endStep (this same tick, after world.step) to use when it decides this tick's
+    // movement state from the fresh ground probe — see the "MOVEMENT STATE DECISION" block there.
+    this._wantCrouch = wantCrouch;
+    this._hasMoveInput = hasInput;
+
+    var onMantleThisTick = this._updateMantle(cmd, moveYaw, dt);
+
+    // _updateLadder mounts/dismounts and, while mounted, owns velocity fully — checked first since
+    // it can override every other state this tick (a ladder grab works even mid-air or mid-slide).
+    var onLadderThisTick = !onMantleThisTick && this._updateLadder(cmd, moveYaw, movePitch, dt);
+
+    var vx, vz;
+    if (onLadderThisTick || onMantleThisTick) {
+        // LADDER / MANTLE: the hook already wrote gb.x/y/z; velocity is fully its.
+        vx = gb.x;
+        vz = gb.z;
+    } else {
+        // A jump flips grounded→airborne HERE, before the dispatch below reads this._moveState —
+        // _updateVertical updates this._moveState directly on a jump so the same-tick dispatch
+        // correctly takes the AIRBORNE branch instead of the stale GROUNDED one.
+        this._updateVertical(cmd, dt);
+
+        // ================================================================================
+        // MOVEMENT STATE DISPATCH — reads this._moveState, set authoritatively by LAST tick's
+        // endStep (or by _updateVertical just above, on a jump this tick). Never re-derives the
+        // state from other flags; each branch below is a fully self-contained velocity model for
+        // that one state, duplicated rather than shared, so there is exactly one thing to read
+        // (this._moveState) to know which branch is live and exactly one place per state that
+        // decides its velocity. See the "Movement state machine" comment above endStep.
+        // ================================================================================
+        if (this._moveState === FPSC.MOVE_SLIDE && this.grounded) {
+            // SLIDE, GROUNDED: crouch-at-speed, owns velocity via _updateSlide's surface-tracking
+            // model. _updateSlide is a pure per-tick evolver here — it does NOT decide entry/exit
+            // anymore (endStep already decided this tick IS a slide); it only advances the
+            // slide's velocity one tick (slope accel, friction, steering) from gb, which endStep
+            // already set to the correct tangential speed for this tick.
+            var slideResult = this._updateSlide(cmd, wishX, wishZ, dt);
+            vx = slideResult.vx;
+            vz = slideResult.vz;
+            gb.y = slideResult.vy;
+        } else if (this._moveState === FPSC.MOVE_SLIDE && !this.grounded) {
+            // SLIDE, AIRBORNE: a slide that left the ground (ramp lip, drop-off) — see endStep's
+            // "genuinely airborne" branch for the condition that keeps this state through the
+            // launch. Carried ballistically (gravity, no air-control degradation, no slope model —
+            // there's no surface under the character to track) until it lands or slows below
+            // slideEndSpeed, at which point endStep drops it to AIRBORNE.
+            this.body.setGravity(this._gravityVec.x, this._gravityVec.y, this._gravityVec.z);
+            if (gb.y < -this._maxFall) { gb.y = -this._maxFall; }
+            vx = gb.x;
+            vz = gb.z;
+        } else if (this._moveState === FPSC.MOVE_SLIP) {
+            // SLIP: too-steep surface, gravity-fed, weak air-control.
+            this.body.setGravity(0, 0, 0);
+            var n = this.groundNormal;
+            var slopeMag = Math.sqrt(n.x * n.x + n.z * n.z);
+            var dxu = slopeMag > FPSC.EPS_LEN ? n.x / slopeMag : 0;
+            var dzu = slopeMag > FPSC.EPS_LEN ? n.z / slopeMag : 0;
+            var g = -this._gravityVec.y;
+            // Project the incoming 3D velocity onto the plane ONLY on the tick contact is new
+            // (endStep left gb.y raw, non-zero, from the fall/toss, on that one tick — see the
+            // "MOVEMENT STATE DECISION" comment in endStep). On every later slip tick, endStep
+            // zeroes gb.y (the kinematic model owns vertical here, not the solver), so gb.x/gb.z
+            // are ALREADY the correctly-accumulated tangential speed from the previous tick's
+            // formula below — re-projecting again would read that zeroed gb.y as "no vertical
+            // motion yet" and subtract a spurious correction, fighting the accumulation into a
+            // false plateau instead of letting speed build tick over tick.
+            var gbx = gb.x, gbz = gb.z;
+            if (this._slipJustEntered) {
+                var dot0 = gb.x * n.x + gb.y * n.y + gb.z * n.z;
+                gbx = gb.x - dot0 * n.x;
+                gbz = gb.z - dot0 * n.z;
+                this._slipJustEntered = false;
+            }
+            vx = gbx + dxu * g * slopeMag * dt;
+            vz = gbz + dzu * g * slopeMag * dt;
+            if (hasInput) {
+                var twx = wishX, twz = wishZ;
+                var up = -(twx * dxu + twz * dzu);
+                if (up > 0) { twx += dxu * up; twz += dzu * up; }
+                vx += (twx - vx) * this.airControl;
+                vz += (twz - vz) * this.airControl;
+                var along2 = vx * dxu + vz * dzu;
+                if (along2 < 0) { vx -= dxu * along2; vz -= dzu * along2; }
+            }
+            var alongOut = vx * dxu + vz * dzu;
+            gb.y = -alongOut * slopeMag / Math.max(n.y, 0.1);
+        } else if (this._moveState === FPSC.MOVE_WALK) {
+            // WALK: ordinary input-driven ground movement, projected tangent to groundNormal.
+            // KINEMATIC GROUND: gravity off; endStep clamps the feet to the surface. Fully
+            // deterministic, doesn't rely on the solver to hold us on a slope (which jittered).
+            this.body.setGravity(0, 0, 0);
+            var n2 = this.groundNormal;
+            var mx, mz;
+            if (hasInput) {
+                // When slowing while still moving, bleed excess speed at sprintDecay instead of
+                // snapping to the lower target speed. _ownVelocityX/Z, not gb.x/z — gb may
+                // already carry a platform's base velocity baked in (see the constructor
+                // comment); reading it here would re-seed "current speed" with the platform's
+                // own speed already added, which then gets base velocity added AGAIN below
+                // every tick instead of decaying.
+                var cvx = this._ownVelocityX;
+                var cvz = this._ownVelocityZ;
+                var curSp = Math.sqrt(cvx * cvx + cvz * cvz);
+                var wishSp = Math.sqrt(wishX * wishX + wishZ * wishZ);
+                if (curSp > wishSp + FPSC.EPS_LEN) {
+                    var target = Math.max(wishSp, curSp - this.sprintDecay * dt);
+                    var kf = curSp > FPSC.EPS_DIR ? target / curSp : 0;
+                    mx = cvx * kf;
+                    mz = cvz * kf;
+                } else {
+                    mx = wishX;
+                    mz = wishZ;
+                }
+            } else {
+                // Carry current ground velocity; endStep's groundStopDecel is the sole stop
+                // authority. _ownVelocityX/Z, NOT gb.x/z — same reasoning as above.
+                mx = this._ownVelocityX;
+                mz = this._ownVelocityZ;
+            }
+            var dot = mx * n2.x + mz * n2.z;
+            vx = mx - dot * n2.x;
+            vz = mz - dot * n2.z;
+            gb.y = -dot * n2.y;
+        } else {
+            // AIRBORNE: gravity + air control own velocity.
+            this.body.setGravity(this._gravityVec.x, this._gravityVec.y, this._gravityVec.z);
+            var cur = gb;
+            if (cur.y < -this._maxFall) { gb.y = -this._maxFall; }
+            var curSp2 = Math.sqrt(cur.x * cur.x + cur.z * cur.z);
+            var wishSp2 = Math.sqrt(wishX * wishX + wishZ * wishZ);
+            if (hasInput) {
+                if (wishSp2 >= curSp2) {
+                    vx = cur.x + (wishX - cur.x) * this.airControl;
+                    vz = cur.z + (wishZ - cur.z) * this.airControl;
+                } else {
+                    // Steer heading toward wish at the same magnitude, without bleeding speed.
+                    var wl = wishSp2 || 1;
+                    var tx = (wishX / wl) * curSp2;
+                    var tz = (wishZ / wl) * curSp2;
+                    vx = cur.x + (tx - cur.x) * this.airControl;
+                    vz = cur.z + (tz - cur.z) * this.airControl;
+                }
+            } else {
+                vx = cur.x;
+                vz = cur.z;
+            }
+        }
+    }
+
+    if (!onLadderThisTick && !onMantleThisTick) {
+        var cs = this._ceilingSlide(vx, gb.y, vz, dt);
+        vx = cs.vx;
+        vz = cs.vz;
+        gb.y = cs.vy;
+    }
+
+    // Headroom gate: stop us advancing into an overhang too low to fit under (a ramp
+    // underside closing onto the floor). A near-horizontal overhang has almost no
+    // horizontal surface normal, so collide-and-slide can't see it — we gate on
+    // ceiling CLEARANCE instead. Runs before collide-and-slide so walls act on the
+    // already-gated velocity.
+    var gated = this._headroomGate(vx, vz, dt);
+
+    // Platform base velocity: added in immediately before the swept move so a rider is carried
+    // through the SAME collide-and-slide every other velocity goes through (real swept motion, not
+    // a position teleport). Stays in gb.x/z afterward — see the constructor's comment for why.
+    var bvx = (onLadderThisTick || onMantleThisTick) ? 0 : this._baseVelocity.x;
+    var bvz = (onLadderThisTick || onMantleThisTick) ? 0 : this._baseVelocity.z;
+
+    // Step-up/step-down are emergent: collide-and-slide ignores anything shorter than
+    // stepHeight, and the ground clamp in endStep raises/lowers us onto it. _collideAndSlide reads
+    // this._moveState itself (see its own comment) to exempt an active slide from the too-steep
+    // wall rule.
+    var slid = this._collideAndSlide(gated.x + bvx, gated.z + bvz, dt);
+    gb.x = slid.x;
+    gb.z = slid.z;
+    this._ownVelocityX = slid.x - bvx;
+    this._ownVelocityZ = slid.z - bvz;
+
+    this._prevCrouch = !!cmd.crouch;
+};
+
+/**
+ * POST-physics: decide grounded and clamp the feet to the ground surface. Also acquires this
+ * tick's platform base velocity (see the constructor's _baseVelocity comment) from whatever
+ * isPlatform-tagged body the ground probe lands on, read fresh every tick.
+ * @method endStep
+ * @param {Number} dt
+ */
+proto.endStep = function(dt) {
+    var gb = this.body.linear_velocity;
+
+    // While mounted on a ladder or mid-mantle arc, skip the ground clamp — it would otherwise
+    // re-snap the character onto the floor every tick while being carried upward.
+    if (this._onLadder || this._mantleActive) {
+        this.velocityY = gb.y;
+        if (!this._resimulating || this._driveGhostDuringResim) { this._syncGhost(dt); }
+        return;
+    }
+
+    if (this._groundSuppress > 0) { this._groundSuppress--; }
+    // Only suppress grounding while rising (just jumped/thrust); while falling the ground
+    // catch must stay live or the body tunnels through the floor. _jumpRising extends this past the
+    // fixed countdown for as long as the character is STILL genuinely ascending — see its own
+    // comment at the jump site for why a flat tick count alone isn't enough (a still-rising surface
+    // underfoot, platform or ramp, can re-enter snap range before the countdown's fixed window would
+    // ever expect it to). Cleared the moment gb.y decays past the threshold, so this can't suppress
+    // indefinitely — ordinary gravity decay is what ends it.
+    if (this._jumpRising && gb.y <= 1) { this._jumpRising = false; }
+    var suppressed = this._groundSuppress > 0 && gb.y > 1;
+
+    var half = this.height / 2;
+    var maxStick = this.grounded ? this.stepDownDist + this._skin : this._groundTol;
+
+    // Walk candidates highest-first and take the first that ISN'T too tall to step onto (relative
+    // to current feet, only while already grounded — see tooHighToStep below). Falling through to
+    // a lower, valid candidate keeps grounding honest when a taller obstacle (e.g. a box shoved
+    // against the footprint) is also in reach.
+    var candidates = this._probeGroundCandidates(this.stepDownDist);
+    // Slide launch off a ramp apex — only while SLIDING and rising (walking off the same edge just
+    // follows the ground down). ANGLE-BLIND: a slide treats every slope identically regardless of
+    // steepness, so this gate never asks "is this too steep" — only "is this still the surface I'm
+    // riding." Two ways the true edge shows up in the probe, both handled here:
+    //   1. The highest surface RECEDES: the ramp face we were climbing runs out ahead, so the highest
+    //      remaining ramp hit drops vs last tick. Clamping to it would hug us down a one-tick dip.
+    //   2. A MISMATCHED face (e.g. the ramp's own end-cap) becomes the highest candidate: taller than
+    //      the ramp face but not the surface we're riding (normal meaningfully off groundNormal). It can
+    //      mask signal #1 by sitting on top, so we test it independently — riding a ramp, the candidate
+    //      still ON that same face keeps matching every tick and never trips this; only a genuinely
+    //      different face (the real edge) does.
+    var topCandidate = candidates.length > 0 ? candidates[0] : null;
+    var topCandidateY = topCandidate ? topCandidate.point.y : null;
+    var wasSliding = this._moveState === FPSC.MOVE_SLIDE;
+    if (this.grounded && wasSliding && gb.y > FPSC.EPS_LEN && topCandidate !== null) {
+        var receded = this._prevTopCandidateY !== null && topCandidateY < this._prevTopCandidateY - FPSC.EPS_LEN;
+        var normalDot = topCandidate.normal.x * this.groundNormal.x +
+            topCandidate.normal.y * this.groundNormal.y +
+            topCandidate.normal.z * this.groundNormal.z;
+        var mismatched = normalDot < this._minStandableNormalY;
+        if (receded || mismatched) { candidates = []; this._slideLaunched = true; }
+    }
+    // A slide apex launch is latched, not a one-tick decision: the tick it fires, grounded flips false
+    // immediately, so the gate above (which requires it true) can never re-arm to catch a second graze
+    // later in the same arc. Without this latch, a low/shallow launch that skims just above the ramp's
+    // tail gets ground-clamped straight back down the very next tick the probe happens to reach it — a
+    // one-tick "dip" mid-arc. Sliding off an apex must NEVER re-hug the geometry, full stop, so once
+    // latched we force every candidate away regardless of what the probe finds, for as long as the arc
+    // is still rising. The latch clears once gb.y stops climbing (the arc has peaked and started to
+    // fall) — from that point a real landing is legitimate and ground detection must resume normally.
+    if (this._slideLaunched) {
+        if (gb.y > FPSC.EPS_LEN) { candidates = []; }
+        else { this._slideLaunched = false; }
+    }
+    this._prevTopCandidateY = topCandidateY;
+    var probe = null, tooHighToStep = false;
+    for (var ci = 0; ci < candidates.length; ci++) {
+        var c = candidates[ci];
+        var rise = (c.point.y + half) - this.body.position.y;
+        var tooHigh = this.grounded && rise > this.stepHeight + this._skin;
+        if (!tooHigh) { probe = c; tooHighToStep = false; break; }
+        if (!probe) { probe = c; tooHighToStep = true; } // keep the highest as a fallback reference
+    }
+
+    // feetGap > 0 = feet above ground; < 0 = penetrating (always clamp back out).
+    var feetGap = probe ? this.body.position.y - half - probe.point.y : Infinity;
+
+    if (!suppressed && probe && feetGap <= maxStick && !tooHighToStep) {
+        var p = this.body.position;
+        var clampedY = probe.point.y + half;
+        if (!this._resimulating) { this._viewDisplacementY += clampedY - p.y; }
+        this.body.position.set(p.x, clampedY, p.z);
+        this.body.updateDerived();
+
+        // Save the OUTGOING base velocity before overwriting it below — gb (about to be split into
+        // own-vs-base components further down) was built by LAST tick's beginStep using THIS old
+        // value, not the new one we're about to acquire. Splitting gb against the NEW value instead
+        // manufactures a one-tick phantom "own velocity" spike whenever the platform's velocity
+        // changes abruptly between ticks (a reversing elevator/shuttle, or a rotating platform
+        // changing direction each tick): gb still reflects the old speed, so subtracting the new
+        // speed leaves a large bogus residual that then has to visibly bleed off via the idle
+        // ground-stop decay below. Using the OLD value here keeps the split correct for the
+        // tick gb was actually built on; the NEW value (acquired below) still lands in
+        // this._baseVelocity for beginStep to pick up fresh next tick, same as always.
+        var outgoingBaseVelocityX = this._baseVelocity.x, outgoingBaseVelocityZ = this._baseVelocity.z;
+        var standingOn = probe.object;
+        if (standingOn && standingOn.isPlatform) {
+            var pv = standingOn.linear_velocity;
+            var bvx = pv.x, bvy = pv.y, bvz = pv.z;
+            // Rotating platform: carry the character along the platform's own EXACT arc this tick,
+            // Y-axis spin only (the only axis a standable platform can usefully spin on). Recomputed
+            // fresh every tick from the CURRENT offset (not cached), so as the character walks
+            // toward/away from the pivot the imparted speed tracks the true radius, and so it decays
+            // to zero at the pivot itself.
+            //
+            // NOT a naive omega x r tangential velocity: that's only the arc's INSTANTANEOUS tangent,
+            // and applying it as a straight line for a full tick always overshoots the true curve —
+            // every tick's move ends up very slightly outside the circle, and next tick's tangent is
+            // computed from that already-drifted position, so the error compounds tick over tick into
+            // an outward spiral (visible at high spin rates as being "flung off the platform"). Fix:
+            // compute the CHORD velocity instead — the constant velocity that carries the rider from
+            // its current offset to the offset EXACTLY rotated by theta=omegaY*dt, i.e.
+            // (rotated - current) / dt. This reproduces the platform's real circular motion exactly
+            // regardless of angular speed, instead of approximating it.
+            if (standingOn.isRotatingPlatform && standingOn.angular_velocity) {
+                var omegaY = standingOn.angular_velocity.y;
+                if (omegaY && dt > 0) {
+                    var center = standingOn.position;
+                    var rx = this.body.position.x - center.x;
+                    var rz = this.body.position.z - center.z;
+                    var theta = omegaY * dt;
+                    var cosT = Scalar.cos(theta), sinT = Scalar.sin(theta);
+                    // Matches the engine's own rotation convention (verified against RigidBody's quaternion
+                    // integration directly, not assumed): for omegaY > 0, the rotated offset is
+                    // (rx*cos+rz*sin, rz*cos-rx*sin) — the same sense that produced the correct
+                    // (omegaY*rz, -omegaY*rx) instantaneous tangent this replaces.
+                    var rxRot = rx * cosT + rz * sinT;
+                    var rzRot = rz * cosT - rx * sinT;
+                    bvx += (rxRot - rx) / dt;
+                    bvz += (rzRot - rz) / dt;
+                }
+            }
+            this._baseVelocity.set(bvx, bvy, bvz);
+        } else {
+            this._baseVelocity.set(0, 0, 0);
+        }
+
+        // ================================================================================
+        // MOVEMENT STATE DECISION — the ONE place per tick this is decided, from the ONE real
+        // ground probe this tick has. beginStep (next tick) only ever reads this._moveState; it
+        // never re-derives sliding/slipping/walking from other flags.
+        // ================================================================================
+        var pn = probe.normal;
+        var probeSlope = Math.sqrt(pn.x * pn.x + pn.z * pn.z);
+
+        // Project the incoming 3D velocity onto the surface plane ONCE, here, on every grounding
+        // tick — not just the first-contact tick. (v -= (v·n)n): removes the into-surface
+        // component, keeps the along-surface (tangential) component. On a tick where the body was
+        // already resting on this same surface last tick too, this is a no-op (gb is already
+        // tangent), so it's safe to always run — no separate "first contact only" special case.
+        var vdotn = gb.x * pn.x + gb.y * pn.y + gb.z * pn.z;
+        var tangentX = gb.x - vdotn * pn.x;
+        var tangentZ = gb.z - vdotn * pn.z;
+        var horizTangentSpeed = Math.sqrt(tangentX * tangentX + tangentZ * tangentZ);
+
+        // TRUE along-the-ground speed, for the slide entry/sustain SPEED test only (tangentX/Z above,
+        // which DOES include platform velocity, is what actually gets written to gb). Platform
+        // velocity is excluded from this speed reading — otherwise a fast rotating platform's own
+        // tangential speed alone can exceed moveSpeed with zero player effort, launching an unwanted
+        // slide on crouch while just riding. Reconstructs true 3D along-surface speed the same way a
+        // slope converts fall speed to horizontal (divide the along-slope component by ny).
+        var vdotnOwn = (gb.x - outgoingBaseVelocityX) * pn.x + gb.y * pn.y + (gb.z - outgoingBaseVelocityZ) * pn.z;
+        var tangentOwnX = (gb.x - outgoingBaseVelocityX) - vdotnOwn * pn.x;
+        var tangentOwnZ = (gb.z - outgoingBaseVelocityZ) - vdotnOwn * pn.z;
+        var horizTangentOwnSpeed = Math.sqrt(tangentOwnX * tangentOwnX + tangentOwnZ * tangentOwnZ);
+
+        var slopeMag0 = probeSlope;
+        var ny0 = Math.max(pn.y, 0.1);
+        var groundSp;
+        if (slopeMag0 > FPSC.EPS_LEN) {
+            var dxu0 = pn.x / slopeMag0, dzu0 = pn.z / slopeMag0;
+            var alongH = tangentOwnX * dxu0 + tangentOwnZ * dzu0;
+            var crossSq = Math.max(0, horizTangentOwnSpeed * horizTangentOwnSpeed - alongH * alongH);
+            var surfFall = alongH / ny0;
+            groundSp = Math.sqrt(surfFall * surfFall + crossSq);
+        } else {
+            groundSp = horizTangentOwnSpeed;
+        }
+        var tangentSpeed = groundSp;
+
+        var isSlipSurface = this._isSlipSurface(pn);
+        // Slide ENTRY/SUSTAIN uses the SAME rule regardless of whether this is the first contact
+        // tick or the 500th tick of an already-active slide: crouch held, and (on a slope, ride
+        // until crouch releases; on flat, need speed above slideEndSpeed to keep going / above
+        // moveSpeed to start). This mirrors _updateSlide's old entry/sustain split, but evaluated
+        // ONCE, with this tick's own fresh probe normal and true tangential speed — not the
+        // previous tick's groundNormal, not a landing-only special case.
+        var slopeSlideEligible = probeSlope >= this.slideSlopeMin;
+        var hasMoveInputThisTick = this._hasMoveInput;
+        var slideInputOk = !this.slideRequiresMoveInput || hasMoveInputThisTick ||
+            (this.slideAllowLandingWithoutInput && !this.grounded);
+        var slideSustainOk = slopeSlideEligible || tangentSpeed >= this.slideEndSpeed;
+        var slideEntryOk = slideInputOk && tangentSpeed > this.moveSpeed + FPSC.EPS_SPEED_MARGIN;
+        var wantsSlide = !!this._wantCrouch && (wasSliding ? slideSustainOk : slideEntryOk);
+
+        if (wantsSlide) {
+            this._moveState = FPSC.MOVE_SLIDE;
+            var enteringSlide = !wasSliding;
+            // slideBoost applied HERE, on the exact entry tick, directly to the velocity endStep is
+            // about to commit — not inside _updateSlide (which only runs the FOLLOWING tick, in
+            // beginStep). Applying it there would show the boost one tick later than the state
+            // transition itself, which is observably wrong (a caller reading "just started
+            // sliding" this tick would see un-boosted speed).
+            var boostedX = tangentX, boostedZ = tangentZ;
+            if (enteringSlide && this.slideBoost !== 1) {
+                boostedX *= this.slideBoost;
+                boostedZ *= this.slideBoost;
+            }
+            gb.x = boostedX;
+            gb.z = boostedZ;
+            // gb.y is left for _updateSlide's onSlope solve to derive from the tangential speed
+            // above — writing a raw projected vertical here overshoots the surface-follow value
+            // and skips the character off the ramp for a tick (a bounce).
+            gb.y = 0;
+        } else if (isSlipSurface) {
+            // Entry edge: this tick starts a NEW slip iff last tick wasn't already one. beginStep's
+            // SLIP branch only re-projects gb onto
+            // groundNormal on that one entry tick (see its own comment) — every later tick, gb.y
+            // is already 0 (set below) and gb.x/gb.z already hold the correctly-accumulated
+            // tangential speed from beginStep's own per-tick formula, so re-projecting again would
+            // corrupt that accumulation into a false plateau.
+            var enteringSlip = this._moveState !== FPSC.MOVE_SLIP;
+            this._slipJustEntered = enteringSlip;
+            this._moveState = FPSC.MOVE_SLIP;
+            // Keep the RAW incoming gb.x/gb.z/gb.y (NOT the tangential projection) on the entry
+            // tick — beginStep's SLIP branch does its own plane projection from this.groundNormal
+            // next tick, gated to _slipJustEntered, and needs gb.y to still be the real incoming
+            // fall speed to project. From the SECOND slip tick on, gb.y is zeroed here as usual —
+            // beginStep's per-tick formula derives its own vy from there on, and leaving a stale
+            // gb.y would double-count it.
+            if (!enteringSlip) { gb.y = 0; }
+        } else {
+            this._moveState = FPSC.MOVE_WALK;
+            gb.x = tangentX;
+            gb.z = tangentZ;
+            gb.y = 0;
+        }
+        // Split against the OUTGOING (pre-acquire) base velocity, not the freshly-acquired one — see
+        // the comment above outgoingBaseVelocityX/Z's declaration for why.
+        this._ownVelocityX = gb.x - outgoingBaseVelocityX;
+        this._ownVelocityZ = gb.z - outgoingBaseVelocityZ;
+
+        // Idle ground-stop: WALK only. Bleeds horizontal speed toward zero at groundStopDecel.
+        // Reads/writes _ownVelocityX/Z (the character's OWN component), NOT gb.x/z directly — gb
+        // may already carry a platform's base velocity baked in, and decaying THAT would fight
+        // the ride. The decayed own-component is added back onto base velocity so gb ends up
+        // carrying: decayed own motion + full undecayed platform motion.
+        if (this._cmdIdle && this._moveState === FPSC.MOVE_WALK) {
+            var cvx = this._ownVelocityX || 0;
+            var cvz = this._ownVelocityZ || 0;
+            var sp = Math.sqrt(cvx * cvx + cvz * cvz);
+            var target = Math.max(0, sp - this.groundStopDecel * dt);
+            var kf = sp > FPSC.EPS_SPD ? target / sp : 0;
+            this._ownVelocityX = cvx * kf;
+            this._ownVelocityZ = cvz * kf;
+            gb.x = this._ownVelocityX + this._baseVelocity.x;
+            gb.z = this._ownVelocityZ + this._baseVelocity.z;
+        }
+
+        this.grounded = true;
+        this.groundNormal.set(probe.normal.x, probe.normal.y, probe.normal.z);
+    } else if (tooHighToStep) {
+        // Refusing to climb something too tall (e.g. a box shoved into the footprint) must NOT be
+        // treated as leaving the ground: the feet haven't moved, there's no gap, no fall — the
+        // character is exactly where it was a moment ago, still resting on whatever it was resting
+        // on. Staying grounded on rejection keeps the height-limit check
+        // (this.grounded && rise > stepHeight) honest on the next tick too.
+        gb.y = 0;
+        // Movement state is UNCHANGED here on purpose: the character is exactly where it was,
+        // still resting on whatever it was resting on, so whatever state that was is still true.
+    } else {
+        this.grounded = false;
+        // A slide that leaves the ground (ramp lip, drop-off) stays MOVE_SLIDE through the airborne
+        // arc — carried mostly ballistically rather than air-controlled — as long as horizontal
+        // speed is still above slideEndSpeed (the same floor flat sliding itself uses to decide
+        // "still going") and crouch is still held. beginStep's SLIDE branch has its own airborne vs.
+        // grounded sub-cases for exactly this reason. Landing re-enters the ordinary MOVEMENT STATE
+        // DECISION above on the fresh probe normal, so it naturally continues sliding (onto a ramp)
+        // or drops to WALK/SLIP there — no separate landing special-case needed here.
+        var wasSlideBeforeLoss = this._moveState === FPSC.MOVE_SLIDE;
+        var stillFastEnough = Math.sqrt(gb.x * gb.x + gb.z * gb.z) >= this.slideEndSpeed;
+        if (wasSlideBeforeLoss && this._wantCrouch && stillFastEnough) {
+            this._moveState = FPSC.MOVE_SLIDE;
+        } else {
+            this._moveState = FPSC.MOVE_AIRBORNE;
+        }
+        // Genuinely airborne — no ground entity to inherit velocity from. A jump already captured
+        // baseVelocity.y additively the tick it fired (_updateVertical); clearing here only stops
+        // FUTURE ticks from reading a stale platform velocity while falling free.
+        this._baseVelocity.set(0, 0, 0);
+    }
+
+    // Coyote window: refill while grounded, bleed down once airborne. No-op when coyoteTime=0.
+    if (this.grounded) { this._coyoteTimer = this.coyoteTime; }
+    else if (this._coyoteTimer > 0) { this._coyoteTimer = Math.max(0, this._coyoteTimer - dt); }
+
+    this.velocityY = gb.y;
+
+    // Drive the ghost every tick, INCLUDING during resim: the ghost is how the character pushes objects,
+    // and object pushes must be reproduced when already-run commands get rolled back and resimulated
+    // (otherwise a pushed object is predicted live but snaps back every snapshot — rubber-banding). The
+    // ghost drive is deterministic given the character's state. What must NOT run during resim is the
+    // knockback READBACK from the ghost into the character (see _syncGhost / _readGhostKnockback): feeding
+    // a solver body's contact velocity back into the character mid-rollback is what injects non-determinism
+    // into the reconciled character path. That readback is gated inside _syncGhost.
+    // Opt-out (driveGhostDuringResim=false): freeze the ghost during resim (older behavior).
+    if (!this._resimulating || this._driveGhostDuringResim) { this._syncGhost(dt); }
+};
+
+
+// ==== src/character/fps/Movement/Slide.js ====
+// Crouch-at-speed slide: the per-tick velocity evolver for an active slide (slope acceleration,
+// friction, steering). Entry/exit decisions themselves live in endStep's "MOVEMENT STATE DECISION"
+// block (Movement/Step.js) — this file only advances an already-active slide by one tick.
+var proto = FPSCharacterController.prototype;
+var FPSC = FPSCharacterController.FPSC;
+
+/**
+ * Slide velocity EVOLVER — advances one tick of the slide's surface-tracking model (slope accel,
+ * friction, steering). Pure: only called from beginStep's MOVE_SLIDE branch, which is only reached
+ * when endStep has ALREADY decided this tick is a slide (see the "MOVEMENT STATE DECISION" block
+ * in endStep) and has already written the correct starting tangential velocity into gb — including
+ * the one-time entry boost (slideBoost), applied there rather than here so it lands on the exact
+ * tick the state transition itself is observable, not one tick later. This function does not
+ * decide whether to slide — it has no entry gate, no exit gate, no stored flag. It reads gb (this
+ * tick's starting velocity, already tangent to groundNormal), advances it one tick, and returns
+ * the result.
+ *
+ * @method _updateSlide
+ * @private
+ * @param {Object} cmd
+ * @param {Number} wishX - desired horizontal velocity x from input (unsteered).
+ * @param {Number} wishZ - desired horizontal velocity z from input (unsteered).
+ * @param {Number} dt
+ * @return {Object} result
+ * @return {Number} result.vx - this tick's slide velocity, x.
+ * @return {Number} result.vy - this tick's slide velocity, y (surface-follow component).
+ * @return {Number} result.vz - this tick's slide velocity, z.
+ */
+proto._updateSlide = function(cmd, wishX, wishZ, dt) {
+    // _ownVelocityX/Z, NOT gb.x/z — gb carries the platform's base velocity baked in (see the
+    // constructor's _baseVelocity comment). Evolving the raw gb value would re-seed the slide's own
+    // momentum with the platform's speed already added, which then compounds every tick instead of
+    // properly decaying (the platform reads as if its own speed were the character's own build-up —
+    // a "boost pad" while sliding on a moving platform).
+    var vx = this._ownVelocityX;
+    var vz = this._ownVelocityZ;
+    var sp = Math.sqrt(vx * vx + vz * vz);
+
+    var n = this.groundNormal;
+    var slopeMag = Math.sqrt(n.x * n.x + n.z * n.z);
+    var gy = this._gravityVec.y;
+    var onSlope = slopeMag >= this.slideSlopeMin;
+    // Downhill fall-line unit vector, used both by the slope-accel step below and by the reversal
+    // brake's uphill test further down. Only meaningful when onSlope; 0 otherwise (unused there).
+    var dx = onSlope ? n.x / slopeMag : 0;
+    var dz = onSlope ? n.z / slopeMag : 0;
+
+    if (onSlope) {
+        // Gravity accelerates the fall-line (downhill) component; the cross-slope (sideways)
+        // part bleeds lightly. Returned as full 3D so the grounded branch doesn't re-project it.
+        var along = vx * dx + vz * dz;
+        var crossX = vx - along * dx;
+        var crossZ = vz - along * dz;
+        // Along-slope gravitational accel is g*sin(theta) — slopeMag alone (sin of the tilt from
+        // horizontal). An extra n.y (cos theta) factor here would be wrong: sin(theta)*cos(theta)
+        // PEAKS at 45° and falls back off toward vertical, so a 55°+ face would decelerate barely
+        // harder than a 20° one, and a near-vertical wall almost not at all — backwards from real
+        // physics, where steeper always means more deceleration, up to g at 90°.
+        along += -gy * slopeMag * this.slideSlopeAccel * dt;
+        var cs = Math.sqrt(crossX * crossX + crossZ * crossZ);
+        var cn = Math.max(0, cs - this.slideSlopeFriction * dt);
+        var cf = cs > FPSC.EPS_DIR ? cn / cs : 0;
+        crossX *= cf;
+        crossZ *= cf;
+        vx = along * dx + crossX;
+        vz = along * dz + crossZ;
+        sp = Math.sqrt(vx * vx + vz * vz);
+    } else {
+        var next = Math.max(0, sp - this.slideFriction * dt);
+        var f = sp > FPSC.EPS_DIR ? next / sp : 0;
+        vx *= f;
+        vz *= f;
+        sp = next;
+    }
+
+    // Rotate the slide heading toward input without adding speed (renormalize to sp).
+    var wl = Math.sqrt(wishX * wishX + wishZ * wishZ);
+    if (this.slideControl > 0 && wl > FPSC.EPS_DIR && sp > FPSC.EPS_DIR) {
+        var wnx = wishX / wl, wnz = wishZ / wl;
+        // Wish opposing current motion (e.g. holding backward mid-slide) is a deliberate reversal,
+        // not a carve — the ordinary partial blend below would slowly rotate the heading through an
+        // arc instead of braking straight back. Detect that case (wish nearly opposite current
+        // velocity) and brake toward zero along the CURRENT heading instead of blending toward
+        // wish; once speed has bled down, the same blend below is what picks the (now-reversed)
+        // heading back up, so the reversal itself still ends up sliding in the wish direction — it
+        // just brakes-then-goes instead of curving through it. Applies on flat ground too: without
+        // this, flat sliding's own friction decay would bleed speed down to the slideEndSpeed exit
+        // threshold WHILE the un-braked blend was arcing the heading toward wish, so a backward
+        // hold curved through a U-turn on its way out instead of braking straight.
+        var brakeRate = onSlope ? this.slideSlopeFriction * this.slideReversalBrakeMult
+            : this.slideFriction * this.slideReversalBrakeMult;
+        var vnx = vx / sp, vnz = vz / sp;
+        var facing = wnx * vnx + wnz * vnz; // 1 = same direction, -1 = dead opposite
+        // ANGLE-BLIND: on ANY slope, gravity always wins the fall-line — you can't carve a slide uphill
+        // against it, only brake. A wish with any uphill component (against the downhill fall-line
+        // dx/dz) must BRAKE toward a stop, not carve; otherwise the carve below redirects the blocked
+        // uphill momentum into a cross-slope skid off the side. On flat there's no fall-line to fight,
+        // so only a near-opposite wish counts as a reversal there (unchanged).
+        var uphillOnSlope = onSlope && (wnx * dx + wnz * dz) < 0;
+        if (uphillOnSlope || facing < FPSC.SLIDE_REVERSAL_DOT) {
+            var braked = Math.max(0, sp - brakeRate * dt);
+            var bf = sp > FPSC.EPS_DIR ? braked / sp : 0;
+            vx *= bf;
+            vz *= bf;
+        } else {
+            var tx = vx + (wnx * sp - vx) * this.slideControl;
+            var tz = vz + (wnz * sp - vz) * this.slideControl;
+            var tl = Math.sqrt(tx * tx + tz * tz) || 1;
+            vx = (tx / tl) * sp;
+            vz = (tz / tl) * sp;
+        }
+    }
+
+    var vy = 0;
+    if (onSlope) {
+        var inv2 = 1 / slopeMag;
+        var alongOut = vx * (n.x * inv2) + vz * (n.z * inv2);
+        vy = -alongOut * slopeMag / Math.max(n.y, 0.1);
+        // The velocity returned here is already tangent to the surface — including on a TOO-STEEP slope.
+        // The too-steep-can't-move-up rules don't re-clip it: an active slide is exempt everywhere they
+        // apply (see _collideAndSlide's climbSteepSlopes opt) — the slide IS the climb.
+    }
+    // Flat ground (!onSlope): groundNormal.y is ~1, so gb.y should stay ~0 — the caller (beginStep's
+    // ground clamp path, same as WALK) doesn't need a nonzero vy to track a surface that's already
+    // level. vy=0 here is that "no vertical correction needed" case, not a special flat-only shape.
+    return { vx: vx, vy: vy, vz: vz };
+};
+
+
+// ==== src/character/fps/Movement/Ladder.js ====
+// Ladder climbing: a fourth movement state alongside grounded/slip/airborne/slide, resolved once per
+// beginStep before the main movement dispatch runs (see _updateLadder's call site in Step.js).
+var proto = FPSCharacterController.prototype;
+var FPSC = FPSCharacterController.FPSC;
+
+/**
+ * Ladder state transitions + climb velocity. A fourth movement state alongside grounded /
+ * noTraction / airborne, resolved once per beginStep before that branch runs. The ladder body is
+ * never excluded from collision — _collideAndSlide still runs afterward on whatever velocity this
+ * writes, so ordinary contact resolution is what holds the character against the face tick over tick.
+ *
+ * Mount requires movement intent toward the ladder (wishdir), not mere proximity — probing along
+ * the current input direction rather than scanning all directions means jumping away from a ladder
+ * and holding the opposite key back toward it, or passing a ladder mid-air, can't remount it a
+ * frame later while disconnected from it.
+ *
+ * Forward/back and strafe contributions to climb velocity are summed independently, without
+ * normalizing the combined wish vector — holding both diagonally into the face climbs strictly
+ * faster than either alone. Look pitch steers climb direction: the forward axis is the full
+ * pitched look direction, not flattened, so holding forward while looking down descends.
+ *
+ * Jump dismounts with a purely horizontal shove away from the face — no vertical component.
+ *
+ * @method _updateLadder
+ * @private
+ * @param {Object} cmd
+ * @param {Number} moveYaw
+ * @param {Number} movePitch
+ * @param {Number} dt
+ * @return {Boolean} true if this tick's velocity is fully owned by the ladder branch
+ */
+proto._updateLadder = function(cmd, moveYaw, movePitch, dt) {
+    var gb = this.body.linear_velocity;
+
+    var hit;
+    if (this._onLadder) {
+        var probeDir = new Vector3(-this._ladderNormal.x, 0, -this._ladderNormal.z);
+        hit = this._findLadderAhead(probeDir);
+    } else {
+        var fwdH = this.getForwardHorizontal(moveYaw);
+        var rgtH = this.getRightHorizontal(moveYaw);
+        var cmdF0 = cmd.forward || 0;
+        var cmdR0 = cmd.right || 0;
+        var wishdir = new Vector3(
+            fwdH.x * cmdF0 + rgtH.x * cmdR0, 0, fwdH.z * cmdF0 + rgtH.z * cmdR0
+        );
+        hit = this._findLadderAhead(wishdir);
+    }
+
+    if (cmd.jumpPressed && this._onLadder) {
+        var n0 = this._ladderNormal;
+        gb.x = n0.x * this.ladderDismountPushSpeed;
+        gb.z = n0.z * this.ladderDismountPushSpeed;
+        gb.y = 0;
+        this._onLadder = false;
+        // While mounted the character's own box is genuinely embedded roughly width/2 INTO the
+        // ladder (mounting at the ladder face means the box's near edge reaches past the face into
+        // the ladder's own volume, by design - see this file's own header comment: "the ladder body
+        // is never excluded from collision"). This same-tick dismount shove used to need a manual
+        // position-based depenetration nudge here before _collideAndSlide ran, because the sweep's
+        // exact-touch/embedded-start case (Queries._advance) fell back to the reversed TRAVEL
+        // direction for its normal instead of real surface geometry, so a shove starting from
+        // inside the ladder's own volume got swept-and-clipped right back to zero every time -
+        // jump-dismount never actually moved the character, leaving it frozen at the mount point.
+        // Fixed at the root in Queries._advance (the overlapping-sweep case now runs EPA on GJK's
+        // own simplex for a real geometric normal, same as the narrowphase/overlap-test paths
+        // already did) - verified directly (a position trace with the nudge removed shows the
+        // dismount sweep clearing the ladder normally, L6 passes unmodified), so the nudge here was
+        // removed rather than kept as a belt-and-braces duplicate of a fix that now lives upstream.
+        // The push flings the character off the ladder into the air — next tick's beginStep
+        // dispatch (before endStep gets a chance to re-probe) must see AIRBORNE, not whatever
+        // ground state was true before this ladder mount.
+        this._moveState = FPSC.MOVE_AIRBORNE;
+        this.body.setGravity(this._gravityVec.x, this._gravityVec.y, this._gravityVec.z);
+        return true;
+    }
+
+    if (!hit) {
+        this._onLadder = false;
+        this.body.setGravity(this._gravityVec.x, this._gravityVec.y, this._gravityVec.z);
+        return false;
+    }
+
+    var hasMoveInput = (cmd.forward || 0) !== 0 || (cmd.right || 0) !== 0;
+    if (!this._onLadder && !hasMoveInput) { return false; }
+
+    this._onLadder = true;
+    this.grounded = false;
+    // Mounting owns movement now — any grounded state carried in from the tick before must not read
+    // as still active while climbing (or linger stale after a later dismount): beginStep's dispatch
+    // only reads this._moveState when NOT on a ladder, so nothing else would ever clear this.
+    this._moveState = FPSC.MOVE_LADDER;
+    this._ladderNormal.set(hit.normal.x, 0, hit.normal.z);
+    var nl = Math.sqrt(this._ladderNormal.x * this._ladderNormal.x + this._ladderNormal.z * this._ladderNormal.z);
+    if (nl > FPSC.EPS_LEN) { this._ladderNormal.x /= nl; this._ladderNormal.z /= nl; }
+
+    this.body.setGravity(0, 0, 0);
+    if (!hasMoveInput) { gb.x = 0; gb.y = 0; gb.z = 0; return true; }
+
+    var cp = Scalar.cos(movePitch);
+    var fwd = new Vector3(Scalar.sin(moveYaw) * cp, Scalar.sin(movePitch), Scalar.cos(moveYaw) * cp);
+    var rgt = this.getRightHorizontal(moveYaw);
+    var cmdF = cmd.forward || 0;
+    var cmdR = cmd.right || 0;
+
+    var velX = fwd.x * cmdF * this.ladderClimbSpeed + rgt.x * cmdR * this.ladderStrafeSpeed;
+    var velY = fwd.y * cmdF * this.ladderClimbSpeed;
+    var velZ = fwd.z * cmdF * this.ladderClimbSpeed + rgt.z * cmdR * this.ladderStrafeSpeed;
+
+    var n = this._ladderNormal;
+    var out = velX * n.x + velZ * n.z;
+    gb.x = velX - out * n.x;
+    gb.z = velZ - out * n.z;
+    gb.y = velY - out;
+
+    // Descent is blocked against solid ground here (rather than in endStep's ground clamp, which is
+    // skipped while mounted so it doesn't re-snap the character onto the floor near the ladder's base
+    // even while climbing up). Uses the same _probeGroundCandidates primitive endStep itself uses.
+    //
+    // The ladder body itself is excluded from candidates. While mounted, the character's own collider
+    // sits embedded in (or flush against) the ladder volume it's climbing - a downward probe cast
+    // from inside that volume can report the ladder's OWN top-facing surface as "ground" directly
+    // below (GJK/EPA's exact-touch/embedded case has no unique normal - see GJK.js's "EXACT-TOUCHING
+    // IS UNDECIDABLE" - and can report an arbitrary near point at the probe's own height). This was
+    // a REAL, confirmed bug: looking down while climbing made the character "step up" onto its own
+    // current position on the ladder every descent tick instead of climbing down, because the probe
+    // found the ladder itself a few centimeters below and clamped onto it as if it were a floor -
+    // climbing the ladder like stairs, straight off the top, regardless of look direction.
+    if (gb.y < 0) {
+        var half = this.height / 2;
+        var reach2 = -gb.y * dt + this._skin;
+        var descentCandidates = this._probeGroundCandidates(reach2);
+        var ground = null;
+        for (var gi = 0; gi < descentCandidates.length; gi++) {
+            if (!descentCandidates[gi].object || !descentCandidates[gi].object.isLadder) { ground = descentCandidates[gi]; break; }
+        }
+        if (ground) {
+            var feetGap = this.body.position.y - half - ground.point.y;
+            if (feetGap <= reach2) {
+                var clampedY = ground.point.y + half;
+                if (!this._resimulating) { this._viewDisplacementY += clampedY - this.body.position.y; }
+                this.body.position.set(this.body.position.x, clampedY, this.body.position.z);
+                this.body.updateDerived();
+                gb.y = 0;
+                this.grounded = true;
+                // Still LADDER for as long as _onLadder stays true this tick (movement is fully
+                // owned above) — this only matters for the tick AFTER dismounting, so beginStep's
+                // dispatch sees WALK rather than a stale pre-mount state.
+                this._moveState = FPSC.MOVE_WALK;
+                this.groundNormal.set(ground.normal.x, ground.normal.y, ground.normal.z);
+            }
+        }
+    }
+    return true;
+};
+
+
+// ==== src/character/fps/Movement/Mantle.js ====
+// Mantle: two-phase kinematic arc (lift, then vault) onto a ledge too tall to step onto.
+var proto = FPSCharacterController.prototype;
+var FPSC = FPSCharacterController.FPSC;
+var raycast = FPSCharacterController._raycast;
+
+/**
+ * Probe forward for a near-vertical face, then down from the hit for its top surface.
+ * @method _probeLedgeAhead
+ * @private
+ * @param {Number} dx
+ * @param {Number} dz
+ * @return {Object|null} { faceNormal, topPoint, topNormal, probeDx, probeDz }
+ */
+proto._probeLedgeAhead = function(dx, dz) {
+    var dlen = Math.sqrt(dx * dx + dz * dz);
+    if (dlen < FPSC.EPS_LEN) { return null; }
+    dx /= dlen; dz /= dlen;
+
+    var p = this.body.position;
+    var feetY = p.y - this.height / 2;
+    var headY = p.y + this.height / 2;
+
+    var reach = this.width / 2 + this.mantleReach;
+    // Probe at several heights so a ledge is found whether level, jumped above, or low.
+    var probeHeights = [feetY + this.mantleHeight, p.y, feetY + this.stepHeight];
+
+    for (var hi = 0; hi < probeHeights.length; hi++) {
+        var probeY = probeHeights[hi];
+        var fwdHit = raycast(
+            this.world,
+            new Vector3(p.x, probeY, p.z),
+            new Vector3(p.x + dx * reach, probeY, p.z + dz * reach),
+            this._ignoreSelf
+        );
+        if (!fwdHit) { continue; }
+        if (Math.abs(fwdHit.normal.y) > FPSC.NY_GROUNDISH) { continue; } // not a near-vertical face
+
+        var topProbeX = fwdHit.point.x + dx * this._skin;
+        var topProbeZ = fwdHit.point.z + dz * this._skin;
+        var scanTop = feetY + this.mantleHeight + this._skin;
+        var scanBot = feetY + this.stepHeight + this._skin;
+        if (scanTop <= scanBot) { continue; }
+
+        // World.rayIntersect reports only the single NEAREST body along the down-probe. Walk past any
+        // surface that doesn't belong to the grabbed face's own object (e.g. a ceiling or disconnected
+        // surface above it) by adding each mismatched hit to the query's own `ignore` list and
+        // re-querying, restoring the "skip past it, find the real one" behavior a single-hit query
+        // can't give for free. This was a REAL, confirmed bug: a ledge with a low ceiling directly
+        // above it (a common "duck under this, mantle that" layout) made the down-probe find the
+        // ceiling's OWN surface first, discard it as a mismatch, and give up outright — reporting no
+        // ledge top at all instead of the real one just below, indistinguishable from "no ledge here."
+        var downIgnore = this._ghost ? [this.body, this._ghost] : [this.body];
+        var downHit = null;
+        for (var dtries = 0; dtries < 4; dtries++) {
+            var dh = this.world.rayIntersect(
+                new Vector3(topProbeX, scanTop, topProbeZ),
+                new Vector3(topProbeX, scanBot, topProbeZ),
+                downIgnore
+            );
+            if (!dh) { break; }
+            if (dh.body === fwdHit.object && dh.normal.y >= FPSC.NY_FLOORLIKE) {
+                downHit = { point: dh.point, normal: dh.normal, object: dh.body };
+                break;
+            }
+            downIgnore.push(dh.body);
+        }
+        if (!downHit) { continue; }
+
+        return {
+            faceNormal: fwdHit.normal,
+            topPoint: downHit.point,
+            topNormal: downHit.normal,
+            probeDx: dx,
+            probeDz: dz
+        };
+    }
+    return null;
+};
+
+/**
+ * Mantle state machine, mirrors _updateLadder's contract. Called once per beginStep before the
+ * main dispatch; returns true while the arc owns the tick.
+ * @method _updateMantle
+ * @private
+ * @param {Object} cmd
+ * @param {Number} moveYaw
+ * @param {Number} dt
+ * @return {Boolean}
+ */
+proto._updateMantle = function(cmd, moveYaw, dt) {
+    var gb = this.body.linear_velocity;
+    var p = this.body.position;
+
+    // Active arc: drives position directly (bypasses _collideAndSlide, which would otherwise
+    // treat the grabbed face as a blocking wall).
+    if (this._mantleActive) {
+        this._mantleTimer += dt;
+        var total = this.mantleDuration;
+        var liftEnd = total * this.mantleLiftFrac;
+        var frac = Math.min(1, this._mantleTimer / total);
+
+        var newX, newY, newZ;
+        if (this._mantleTimer <= liftEnd) {
+            var liftFrac = Math.min(1, this._mantleTimer / Math.max(liftEnd, FPSC.EPS_LEN));
+            newX = this._mantleStartX;
+            newZ = this._mantleStartZ;
+            newY = this._mantleStartY + (this._mantleTopBodyY - this._mantleStartY) * liftFrac;
+        } else {
+            var vaultFrac = Math.min(1, (this._mantleTimer - liftEnd) / Math.max(total - liftEnd, FPSC.EPS_LEN));
+            newX = this._mantleStartX + (this._mantleLandX - this._mantleStartX) * vaultFrac;
+            newZ = this._mantleStartZ + (this._mantleLandZ - this._mantleStartZ) * vaultFrac;
+            newY = this._mantleTopBodyY;
+        }
+
+        gb.x = 0; gb.y = 0; gb.z = 0;
+        this.body.position.set(newX, newY, newZ);
+        this.body.updateDerived();
+
+        var done = frac >= 1;
+        if (done) {
+            this._mantleActive = false;
+            this._mantleTimer = 0;
+            this._moveState = FPSC.MOVE_AIRBORNE;
+            this.body.setGravity(this._gravityVec.x, this._gravityVec.y, this._gravityVec.z);
+            gb.x = 0; gb.y = 0; gb.z = 0;
+            return false; // release to normal dispatch this tick so endStep can land us
+        }
+
+        return true;
+    }
+
+    // Detection: only on an explicit tap.
+    if (!cmd.mantle) { return false; }
+
+    var fwd = this.getForwardHorizontal(moveYaw);
+    var ledge = this._probeLedgeAhead(fwd.x, fwd.z);
+    if (!ledge) { return false; }
+
+    var feetY = p.y - this.height / 2;
+    var rise = ledge.topPoint.y - feetY;
+
+    if (rise <= this.stepHeight + this._skin) { return false; } // step-up handles it
+    if (rise > this.mantleHeight) { return false; } // out of reach
+    // Above chest height, a grounded tap is refused — must already be airborne to grab it.
+    var chestHeight = this.standHeight * FPSC.MANTLE_CHEST_HEIGHT_FRAC;
+    if (rise > chestHeight && this.grounded) { return false; }
+
+    // Landing point: advance from the grab point past the face by the character's own depth,
+    // stepping back toward the face if that overshoots a shallow ledge, until solid standable
+    // ground is found.
+    var dx = ledge.probeDx, dz = ledge.probeDz;
+    var topBodyY = ledge.topPoint.y + this.height / 2;
+    var desiredAdvance = this.depth;
+    var landX = p.x, landZ = p.z, landFound = false;
+    var steps = 4;
+    for (var s = steps; s >= 1; s--) {
+        var advance = desiredAdvance * (s / steps);
+        var tryX = ledge.topPoint.x + dx * advance;
+        var tryZ = ledge.topPoint.z + dz * advance;
+        var landHit = raycast(
+            this.world,
+            new Vector3(tryX, topBodyY, tryZ),
+            new Vector3(tryX, ledge.topPoint.y - this._skin - this.mantleHeight, tryZ),
+            this._ignoreSelf
+        );
+        if (landHit && landHit.normal.y >= FPSC.NY_FLOORLIKE &&
+            Math.abs(landHit.point.y - ledge.topPoint.y) < this.stepHeight + this._skin) {
+            landX = tryX; landZ = tryZ; landFound = true;
+            break;
+        }
+    }
+    if (!landFound) { return false; }
+
+    // The arc drives position directly, so nothing else checks headroom along the way — verify
+    // both the grab point and the landing point can stand up.
+    var clearanceAtGrab = this._ceilingClearanceAt(p.x, p.z, ledge.topPoint.y);
+    if (clearanceAtGrab < this.standHeight - this._skin) { return false; }
+    var clearanceAtLand = this._ceilingClearanceAt(landX, landZ, ledge.topPoint.y);
+    if (clearanceAtLand < this.standHeight - this._skin) { return false; }
+
+    this._mantleActive = true;
+    this._mantleTimer = 0;
+    this._mantleStartX = p.x;
+    this._mantleStartY = p.y;
+    this._mantleStartZ = p.z;
+    this._mantleTopBodyY = topBodyY;
+    this._mantleLandX = landX;
+    this._mantleLandZ = landZ;
+
+    this._moveState = FPSC.MOVE_MANTLE;
+    this.grounded = false;
+    this._groundSuppress = FPSC.GROUND_SUPPRESS_JUMP;
+    this._jumpRising = true;
+    this.body.setGravity(0, 0, 0);
+    gb.x = 0; gb.y = 0; gb.z = 0;
+
+    return true;
+};
 
 
 // ==== src/outro.js ====

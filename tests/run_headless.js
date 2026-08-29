@@ -26,14 +26,45 @@ if (!fs.existsSync(buildFile)) {
 var stampLine = fs.readFileSync(buildFile, 'utf8').split(/\r?\n/)[0];
 console.log(stampLine.replace(/^\/\/\s*/, '=== ') + ' ===');
 
+// Skipped from headless runs: the two perf-settle scenes are pure timing benchmarks, not pass/fail
+// correctness tests, and dominate wall-clock time; skipped by explicit standing instruction until
+// told otherwise. The files are untouched, just unloaded here; remove an entry to fold it back into
+// every run.
+//
+// pyramid.js (385-box pyramid, 1200 ticks) was skipped here too while box-box fell through to
+// GJK/EPA's single-point contacts and the perf was untenable for routine runs. Box-box now has its
+// own closed-form multi-point manifold (see src/phases/BoxBox.js) and the perf is good - re-enabled
+// as the primary correctness stress target for box-box: it is pure box-on-box, at scale, with hard
+// asserts (no sink, no rise, exact layer spacing, no drift, no tilt, full rest) rather than soft ones.
+var SKIP_FILES = {
+	'perf-settle-scene.js': true,
+	'perf-settle-scene-compound.js': true,
+};
+
 // Suite files. A leading _ marks a shared helper, loaded first and never treated as a suite.
 var suitesDir = path.join(HERE, 'js', 'suites');
 var utilFile = path.join(suitesDir, '_util.js');
 if (fs.existsSync(utilFile)) require(utilFile);
 fs.readdirSync(suitesDir)
-	.filter(function (f) { return f.endsWith('.js') && f.charAt(0) !== '_'; })
+	.filter(function (f) { return f.endsWith('.js') && f.charAt(0) !== '_' && !SKIP_FILES[f]; })
 	.sort()
 	.forEach(function (f) { require(path.join(suitesDir, f)); });
+
+// Tom's suite: a separate directory (not folded into js/suites/) of scene-style FPS/physics
+// regression tests, kept apart because it has its own shared helpers (_util.js, _util_fps.js) and
+// naming conventions distinct from the base engine suite. Loaded the same way - _-prefixed files
+// first (as plain requires, not test files), then everything else.
+var tomDir = path.join(HERE, 'js', 'tom');
+if (fs.existsSync(tomDir)) {
+	fs.readdirSync(tomDir)
+		.filter(function (f) { return f.endsWith('.js') && f.charAt(0) === '_'; })
+		.sort()
+		.forEach(function (f) { require(path.join(tomDir, f)); });
+	fs.readdirSync(tomDir)
+		.filter(function (f) { return f.endsWith('.js') && f.charAt(0) !== '_' && !SKIP_FILES[f]; })
+		.sort()
+		.forEach(function (f) { require(path.join(tomDir, f)); });
+}
 
 var onlySuite = null, only = null, showLogs = false;
 process.argv.slice(2).forEach(function (a) {

@@ -1,6 +1,5 @@
-// Axis is local Y. halfHeight is a half-extent (see plan.md, Units and conventions) — this is
-// the deliberate departure from the predecessor, whose capsule took total height and silently
-// broke callers written in half-extents everywhere else.
+// Axis is local Y. halfHeight is a half-extent, matching every other shape's convention
+// (CapsuleShape's total-height constructor is the one deliberate exception).
 class CylinderShape extends Shape {
     constructor(radius, halfHeight) {
         super('cylinder');

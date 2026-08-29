@@ -1,6 +1,3 @@
-// Matrix3 (inertia tensors) and Matrix4 (rigid transforms). The load-bearing tests are the round-trips:
-// a matrix that inverts wrongly, or disagrees with the quaternion it was built from, produces bodies
-// that drift or spin for no visible reason.
 (function (Runner) {
 	Runner.suite('math');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;
@@ -21,8 +18,6 @@
 		for (var i = 0; i < M3_KEYS.length; i++) t.check(a[M3_KEYS[i]], b[M3_KEYS[i]], tol, label + '.' + M3_KEYS[i]);
 	}
 
-	// ---- Matrix3 ----
-
 	test('math/matrix3', 'default is identity', function (t) {
 		var v = new V(1, 2, 3);
 		new M3().transformVector3(v);
@@ -35,8 +30,6 @@
 		vecIs(t, v, 2, 3, 4, 'diagonal scale');
 	});
 
-	// If these disagree, a body's world inertia tensor stops matching its orientation and it picks up
-	// spin from nothing.
 	test('math/matrix3', 'fromQuaternion agrees with the quaternion it came from', function (t) {
 		var q = new Q().setAxisAngle(new V(0.3, 0.7, -0.5), 1.1);
 		var m = new M3().fromQuaternion(q);
@@ -67,8 +60,6 @@
 		m3Is(t, new M3().multiplyFrom(m, inv), new M3(), 1e-13, 'M * M^-1');
 	});
 
-	// Reachable: a body with zero inertia about some axis. Reporting it lets the caller decide rather
-	// than propagating Infinity through every later step.
 	test('math/matrix3', 'a singular matrix reports failure instead of producing Infinity', function (t) {
 		var inv = new M3().setDiagonal(new V(1, 0, 1));
 		t.checkEqual(inv.invert(), false, 'reports singular');
@@ -93,20 +84,12 @@
 		m3Is(t, alias, expected, 1e-15, 'out === a');
 	});
 
-	// ---- Matrix4 ----
-	// Float32Array(16), column-major, operated on by statics. Physics uses fromRotationTranslation to
-	// build a body transform, invert for its inverse, and multiplyVector to move points into and out of
-	// local space.
-
 	function xform(m, x, y, z) {
 		var out = [0, 0, 0, 0];
 		M4.multiplyVector(out, m, [x, y, z, 1]);
 		return { x: out[0], y: out[1], z: out[2] };
 	}
 
-	// Directions go through transformNormal, which applies rotation only. multiplyVector cannot express
-	// this: it reads vec[3] as `vec[3] || 1.0`, so a w of 0 silently becomes 1 and the translation is
-	// applied anyway. Applying translation to a normal or a velocity is a silent, hard-to-spot error.
 	function xformDir(m, x, y, z) {
 		return M4.transformNormal({ x: x, y: y, z: z }, m);
 	}
@@ -172,8 +155,7 @@
 		var q = new Q().setAxisAngle(new V(0.3, 0.7, -0.5), 1.1);
 		var m = M4.createPrecise();
 		M4.fromQuat(m, q);
-		// transformNormal normalises its result, which is right for normals - so compare against unit
-		// inputs only.
+
 		var srcs = [new V(1, 0, 0), new V(0, 1, 0), new V(0, 0, 1), V.normalizeInto(new V(), new V(1, 2, 3))];
 		for (var i = 0; i < srcs.length; i++) {
 			var byQuat = srcs[i].clone();
@@ -182,5 +164,4 @@
 			vecIs(t, byMat, byQuat.x, byQuat.y, byQuat.z, 'agreement for ' + srcs[i].toString());
 		}
 	});
-
 })(typeof module !== 'undefined' && module.exports ? require('../runner.js') : window.APRunner);

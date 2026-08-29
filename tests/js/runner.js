@@ -1,13 +1,12 @@
 /**
- * ActionPhysics test runner — the tiny, dependency-free framework the whole suite is built on.
+ * ActionPhysics test runner - the dependency-free framework the whole suite is built on.
  *
- * No mocha, no chai. This owns: test registration, the per-test context (assertions + world/body
- * helpers), the runner, and suite ordering (Chandler's Suite before Tom's). It holds NO tests itself
- * — test files (js/chandler/*.js, js/tom/*.js) require/use this and register into it.
+ * No mocha, no chai. Owns: test registration, the per-test context (assertions + world/body
+ * helpers), the runner, and suite ordering (suite keys in SUITE_ORDER, unlisted suites last).
+ * Holds no tests itself - suite files require/use this and register into it.
  *
- * Every test is fully STANDALONE: it builds its own world and bodies, sets full state explicitly, and
- * asserts. There is no shared state between tests, so any test passes (or fails) on its own — which is
- * what makes the browser "watch" view honest: re-running one test alone reproduces its real result.
+ * Every test is fully STANDALONE: it builds its own world and bodies, sets full state explicitly,
+ * and asserts. No shared state between tests - re-running one test alone reproduces its result.
  *
  * Loadable in both node (require) and the browser (global APRunner).
  */
@@ -23,19 +22,20 @@
 
 	var tests = [];
 
-	// Suite currently being registered. Test files call Runner.suite('chandler') / Runner.suite('tom')
-	// at the top, then register their tests. Drives run order and the frontend's suite picker.
+	// Suite currently being registered. Test files call Runner.suite(key) at the top, then register
+	// their tests. Drives run order and the frontend's suite picker.
 	var _currentSuite = 'math';
 	function suite(key) { _currentSuite = key; }
 
 	// Display order. An unlisted suite still runs, it just sorts last.
-	var SUITE_ORDER = ['math', 'shapes', 'collision', 'solver', 'character'];
+	var SUITE_ORDER = ['math', 'shapes', 'collision', 'solver', 'character', 'tom'];
 	var SUITE_NAMES = {
 		math: 'Math',
 		shapes: 'Shapes',
 		collision: 'Collision',
 		solver: 'Solver',
-		character: 'Character'
+		character: 'Character',
+		tom: "Tom's Suite"
 	};
 
 	// A failed assertion throws this; a real code error is anything else. The runner distinguishes them.
@@ -50,8 +50,8 @@
 	 * meta.visual      — can this be watched in the browser?
 	 * meta.steps       — for animated (dynamics) visual tests, how many frames the viewer animates. A
 	 *                    visual test with steps===0 is a STATIC diagram (geometry: gjk / raytracing).
-	 * meta.page        — which of Chandler's original .html pages this test came from (the collapsible
-	 *                    section it lives under). Defaults to the group with any "/suffix" stripped.
+	 * meta.page        — the collapsible section this test lives under in the viewer.
+	 *                    Defaults to the group with any "/suffix" stripped.
 	 * meta.description — plain-English idea + pass criteria, shown when the row's "?" is expanded.
 	 */
 	function test(group, name, fn, meta) {
@@ -251,6 +251,7 @@
 			if (opts.vel) b.linear_velocity.set(opts.vel[0] || 0, opts.vel[1] || 0, opts.vel[2] || 0);
 			if (opts.avel) b.angular_velocity.set(opts.avel[0] || 0, opts.avel[1] || 0, opts.avel[2] || 0);
 			if (opts.friction != null) b.friction = opts.friction;
+			if (opts.angular_friction != null) b.angular_friction = opts.angular_friction;
 			if (opts.restitution != null) b.restitution = opts.restitution;
 			if (opts.linear_damping != null) b.linear_damping = opts.linear_damping;
 			if (opts.angular_damping != null) b.angular_damping = opts.angular_damping;
@@ -268,7 +269,7 @@
 		return ctx;
 	}
 
-	// Tests in run order: chandler before tom, registration order within a suite.
+	// Tests in run order: SUITE_ORDER first, registration order within a suite.
 	function orderedTests() {
 		var out = [], s, i;
 		for (s = 0; s < SUITE_ORDER.length; s++)

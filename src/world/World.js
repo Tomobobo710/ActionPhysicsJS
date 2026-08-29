@@ -1,12 +1,5 @@
-/**
- * World: the pipeline glue. Owns the body list and drives one tick through every stage in order -
- * broadphase, midphase, narrowphase, solver - exactly the pipeline table in plan.md, nothing more.
- *
- * Public surface matches plan.md's API surface table: addRigidBody, removeRigidBody, step(dt),
- * gravity. addConstraint/removeConstraint/rayIntersect/shapeIntersect are later-stage features
- * (joints, queries) and are not implemented yet - present as documented no-ops would be worse than
- * absent, so they are simply not here until built for real.
- */
+// Pipeline glue: owns the body list, drives one tick through broadphase -> midphase/narrowphase ->
+// solver. Query methods delegate to Queries.js.
 class World {
     constructor(broadphase, narrowphase, solver) {
         this.broadphase = broadphase;
@@ -14,7 +7,31 @@ class World {
         this.solver = solver;
         this.midphase = new Midphase();
         this.gravity = new Vector3(0, -9.81, 0);
-        this.bodies = []; // all bodies, static and dynamic alike - broadphase filters by type itself
+        this.bodies = [];
+        this.constraints = [];
+        this._listeners = {};
+    }
+
+    addListener(event, fn) {
+        (this._listeners[event] || (this._listeners[event] = [])).push(fn);
+        return this;
+    }
+
+    emit(event, arg) {
+        const list = this._listeners[event];
+        if (!list) return;
+        for (let i = 0; i < list.length; i++) list[i](arg);
+    }
+
+    addConstraint(constraint) {
+        this.constraints.push(constraint);
+        return this;
+    }
+
+    removeConstraint(constraint) {
+        const i = this.constraints.indexOf(constraint);
+        if (i !== -1) this.constraints.splice(i, 1);
+        return this;
     }
 
     addRigidBody(body) {
@@ -33,30 +50,34 @@ class World {
         return this;
     }
 
-    // Advances the whole world by `dt`: broadphase -> midphase/narrowphase (fused inside
-    // NarrowPhase.step, which owns calling into Midphase per plan.md's phases split) -> solver.
-    // Every dynamic body's derived state (world AABB, world inverse inertia) is refreshed BEFORE
-    // broadphase runs, so broadphase's own "AABBs are current" assumption (Rule 1) holds for
-    // this tick's bodies, including ones the solver moved last tick.
     step(dt) {
+        this.emit('stepStart', dt);
         for (let i = 0; i < this.bodies.length; i++) this.bodies[i].updateDerived(dt);
 
         const pairs = this.broadphase.computePairs();
         const manifolds = this.narrowphase.step(pairs, this.midphase, dt);
 
-        // Interleaved detect-then-solve: the solver re-measures contact geometry against each
-        // substep's predicted positions via this callback (see Solver.step and
-        // NarrowPhase.refreshManifoldGeometry), which is what keeps rotating/corner contacts stable.
+        // refresh callback: re-measures contact geometry against predicted positions each substep.
         const narrowphase = this.narrowphase;
         this.solver.step(this.bodies, manifolds, this.gravity, dt, function (mans) {
             narrowphase.refreshManifoldGeometry(mans);
-        });
+        }, this.constraints);
 
-        // The solver moved bodies; their derived state (AABB, world inertia) is stale until the
-        // NEXT tick's pass above runs. Nothing within this tick reads it again after this point,
-        // so refreshing here would be wasted work - narrowphase/broadphase for THIS tick already
-        // ran against the pre-solve state, which is correct (Rule 1: each stage assumes the state
-        // handed to it, not a moving target updated out from under it mid-tick).
+        // Forces are per-tick: cleared once here, after the solver used this tick's value.
+        for (let i = 0; i < this.bodies.length; i++) {
+            const b = this.bodies[i];
+            if (b.bodyType === RigidBody.DYNAMIC) b.clearForces();
+        }
+
+        this.emit('stepEnd', dt);
+    }
+
+    rayIntersect(start, end, ignore) {
+        return Queries.rayIntersect(this.bodies, start, end, ignore);
+    }
+
+    shapeIntersect(shape, start, end, rotation, ignore) {
+        return Queries.shapeIntersect(this.bodies, shape, start, end, rotation, ignore);
     }
 }
 
