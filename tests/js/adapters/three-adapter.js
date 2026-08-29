@@ -86,25 +86,39 @@
 	}
 
 	// Geometry for one primitive shape. Every ActionPhysics shape the tests use is handled here.
+	// Property names here must track src/shapes/*.js exactly — this file has no authority of its own.
 	function geoForShape(s) {
 		if (s instanceof AP.SphereShape) return new THREE.SphereGeometry(s.radius, 24, 16);
-		if (s instanceof AP.BoxShape) return new THREE.BoxGeometry(s.half_width * 2, s.half_height * 2, s.half_depth * 2);
-		if (s instanceof AP.CylinderShape) return new THREE.CylinderGeometry(s.radius, s.radius, s.half_height * 2, 24);
-		if (s instanceof AP.ConeShape) return new THREE.CylinderGeometry(0, s.radius, s.half_height * 2, 24);
-		if (s instanceof AP.PlaneShape) return new THREE.BoxGeometry(s._half_width * 2 || 0.04, s._half_height * 2 || 0.04, s._half_depth * 2 || 0.04);
+		if (s instanceof AP.BoxShape) return new THREE.BoxGeometry(s.halfWidth * 2, s.halfHeight * 2, s.halfDepth * 2);
+		if (s instanceof AP.CylinderShape) return new THREE.CylinderGeometry(s.radius, s.radius, s.halfHeight * 2, 24);
+		if (s instanceof AP.ConeShape) return new THREE.CylinderGeometry(0, s.radius, s.halfHeight * 2, 24);
+		if (s instanceof AP.PlaneShape) {
+			// Zero-thickness by construction; draw a thin slab so it's visible. halfW/halfL run
+			// along the two axes perpendicular to orientation, same cyclic convention as the shape.
+			var thin = 0.02;
+			if (s.orientation === 'x') return new THREE.BoxGeometry(thin, s.halfW * 2, s.halfL * 2);
+			if (s.orientation === 'y') return new THREE.BoxGeometry(s.halfL * 2, thin, s.halfW * 2);
+			return new THREE.BoxGeometry(s.halfW * 2, s.halfL * 2, thin);
+		}
+		if (s instanceof AP.TriangleShape) {
+			var g3 = new THREE.Geometry();
+			g3.vertices.push(new THREE.Vector3(s.a.x, s.a.y, s.a.z), new THREE.Vector3(s.b.x, s.b.y, s.b.z), new THREE.Vector3(s.c.x, s.c.y, s.c.z));
+			g3.faces.push(new THREE.Face3(0, 1, 2));
+			g3.computeFaceNormals();
+			return g3;
+		}
+		if (s instanceof AP.LineSweptShape) return geoForShape(s.shape); // approximate: draw the base shape only
 		if (s instanceof AP.ConvexShape) {
-			var verts = s.vertices.map(function (v) { return new THREE.Vector3(v.x, v.y, v.z); });
+			var verts = s.points.map(function (v) { return new THREE.Vector3(v.x, v.y, v.z); });
 			return new THREE.ConvexGeometry(verts);
 		}
 		if (s instanceof AP.MeshShape) {
 			var g = new THREE.Geometry();
-			s.triangles.forEach(function (tri) {
-				var base = g.vertices.length;
-				g.vertices.push(new THREE.Vector3(tri.a.x, tri.a.y, tri.a.z),
-					new THREE.Vector3(tri.b.x, tri.b.y, tri.b.z),
-					new THREE.Vector3(tri.c.x, tri.c.y, tri.c.z));
-				g.faces.push(new THREE.Face3(base, base + 1, base + 2));
-			});
+			s.vertices.forEach(function (v) { g.vertices.push(new THREE.Vector3(v.x, v.y, v.z)); });
+			for (var i = 0; i < s.triangleCount; i++) {
+				var base = i * 3;
+				g.faces.push(new THREE.Face3(s.indices[base], s.indices[base + 1], s.indices[base + 2]));
+			}
 			g.computeFaceNormals();
 			return g;
 		}
@@ -118,22 +132,22 @@
 		var s = b.shape, color = b._color ? parseInt(b._color.replace('#', '0x')) : 0x4488ff;
 		if (s instanceof AP.CompoundShape) {
 			var grp = new THREE.Group();
-			s.child_shapes.forEach(function (child) {
+			s.children.forEach(function (child) {
 				var cm = litMesh(geoForShape(child.shape), color);
-				cm.position.set(child.position.x, child.position.y, child.position.z);
-				cm.quaternion.set(child.rotation.x, child.rotation.y, child.rotation.z, child.rotation.w);
+				cm.position.set(child.localPosition.x, child.localPosition.y, child.localPosition.z);
+				cm.quaternion.set(child.localRotation.x, child.localRotation.y, child.localRotation.z, child.localRotation.w);
 				grp.add(cm);
 			});
 			return grp;
 		}
 		if (s instanceof AP.CapsuleShape) {
 			var cap = new THREE.Group();
-			cap.add(litMesh(new THREE.CylinderGeometry(s.radius, s.radius, s.cylinder_height, 24), color));
+			cap.add(litMesh(new THREE.CylinderGeometry(s.radius, s.radius, s.segmentHalfLength * 2, 24), color));
 			var half = Math.PI / 2;
 			var topCap = litMesh(new THREE.SphereGeometry(s.radius, 24, 12, 0, Math.PI * 2, 0, half), color);
-			topCap.position.y = s.cylinder_half_height; cap.add(topCap);
+			topCap.position.y = s.segmentHalfLength; cap.add(topCap);
 			var botCap = litMesh(new THREE.SphereGeometry(s.radius, 24, 12, 0, Math.PI * 2, half, half), color);
-			botCap.position.y = -s.cylinder_half_height; cap.add(botCap);
+			botCap.position.y = -s.segmentHalfLength; cap.add(botCap);
 			return cap;
 		}
 		return litMesh(geoForShape(s), color);

@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-23T23:40:18.512Z
+// ActionPhysics 0.1.0 — built 2026-08-24T01:55:40.368Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine.
@@ -3329,6 +3329,407 @@ class LineSweptShape extends Shape {
 }
 
 ActionPhysics.LineSweptShape = LineSweptShape;
+
+
+// ==== src/bodies/RigidBody.js ====
+// Body type, as a first-class concept (plan.md: "What mature engines have that Goblin doesn't" #2).
+// Checked in exactly one place per stage, never as scattered mass===Infinity comparisons.
+const BODY_STATIC = 0;
+const BODY_KINEMATIC = 1;
+const BODY_DYNAMIC = 2;
+
+let _nextBodyId = 1;
+
+/**
+ * A rigid body: shape + world transform + (for dynamic bodies) mass/motion state. Broadphase and
+ * midphase only need shape + transform + AABB; the mass/motion/material fields exist now rather
+ * than being bolted on at the solver stage, so this class is not rebuilt twice (plan.md's "one
+ * owner per concern" applies to the body's own field layout too - Mass is owned here, not
+ * scattered across whichever stage happens to need it first).
+ *
+ * Field groups match the API surface table in plan.md: Transform, Motion, Forces, Material, Mass,
+ * Filtering, Identity.
+ */
+class RigidBody {
+    constructor(shape, mass) {
+        // ---- Identity ----
+        this.id = _nextBodyId++;
+        this.shape = shape;
+        this.debugName = null;
+        this.world = null; // set by World.addRigidBody
+        this.bodyType = mass > 0 ? BODY_DYNAMIC : BODY_STATIC;
+
+        // ---- Transform ----
+        this.position = new Vector3(0, 0, 0);
+        this.rotation = new Quaternion(0, 0, 0, 1);
+        this._aabb = new AABB();
+        this._aabbDirty = true;
+
+        // ---- Mass ----
+        // mass===0 is a static/kinematic body: infinite effective mass, zero inverse.
+        this._mass = mass || 0;
+        this._massInverted = this._mass > 0 ? 1 / this._mass : 0;
+        this.inertiaTensor = new Matrix3();       // local-space, set by setMassFromShape()
+        this.inverseInertiaTensor = new Matrix3(); // local-space inverse
+        this._worldInverseInertiaTensor = new Matrix3(); // R * I^-1_local * R^T, refreshed by updateDerived()
+        if (shape && this._mass > 0) this.setMassFromShape(shape, this._mass);
+
+        // ---- Motion ----
+        this.linear_velocity = new Vector3(0, 0, 0);
+        this.angular_velocity = new Vector3(0, 0, 0);
+        this.linear_factor = new Vector3(1, 1, 1);   // per-axis velocity mask, e.g. lock an axis with 0
+        this.angular_factor = new Vector3(1, 1, 1);
+
+        // ---- Forces ----
+        this.accumulated_force = new Vector3(0, 0, 0);
+        this.accumulated_torque = new Vector3(0, 0, 0);
+        this.gravity = null; // null = use World.gravity; setGravity() overrides per-body
+
+        // ---- Material ----
+        this.friction = 0.5;
+        this.restitution = 0;
+        this.linear_damping = 0;
+        this.angular_damping = 0;
+
+        // ---- Filtering ----
+        this.collision_mask = 0xFFFFFFFF;
+        this.collision_groups = 1;
+
+        // ---- Events ----
+        this._listeners = {};
+
+        // Sleep (owned entirely by the sleep manager once it exists - plan.md, Sleep). Present
+        // here only as the state a body carries; no stage but the sleep manager writes to it.
+        this.isAwake = true;
+        this.sleepTimer = 0;
+    }
+
+    get is_static() { return this.bodyType === RigidBody.STATIC; }
+    get mass() { return this._mass; }
+
+    // Scales the shape's density-1 inertia by (mass / shape.volume()), per Shape's contract
+    // (src/shapes/Shape.js) — computeMassData() always returns density-1 values.
+    setMassFromShape(shape, mass) {
+        this._mass = mass;
+        this._massInverted = mass > 0 ? 1 / mass : 0;
+        if (mass <= 0) {
+            this.inertiaTensor.zero();
+            this.inverseInertiaTensor.zero();
+            return;
+        }
+        const data = shape.computeMassData();
+        const volume = shape.volume();
+        const scale = volume > 0 ? mass / volume : 0;
+        this.inertiaTensor.copy(data.inertia);
+        this.inertiaTensor.e00 *= scale; this.inertiaTensor.e01 *= scale; this.inertiaTensor.e02 *= scale;
+        this.inertiaTensor.e10 *= scale; this.inertiaTensor.e11 *= scale; this.inertiaTensor.e12 *= scale;
+        this.inertiaTensor.e20 *= scale; this.inertiaTensor.e21 *= scale; this.inertiaTensor.e22 *= scale;
+        this.inverseInertiaTensor.invertInto(this.inertiaTensor);
+    }
+
+    setGravity(x, y, z) {
+        this.gravity = new Vector3(x, y, z);
+        return this;
+    }
+
+    // Refresh everything derived from position/rotation: the world AABB and the world-space
+    // inverse inertia tensor. Called once per body per tick by whichever stage owns "current" -
+    // narrowphase and the solver assume it has already run (Rule 1: stage contracts are absolute).
+    updateDerived() {
+        this._recomputeAABB();
+        this._recomputeWorldInverseInertia();
+        return this;
+    }
+
+    _recomputeAABB() {
+        const local = RigidBody._scratchLocalAABB;
+        this.shape.localAABBInto(local);
+        // Conservative rotated bound via the 8-corner sweep, same technique CompoundShape uses for
+        // its own children - correct for any rotation, not just axis-aligned ones.
+        const rotMat = RigidBody._scratchMat3;
+        rotMat.fromQuaternion(this.rotation);
+        const corner = RigidBody._scratchVec;
+        this._aabb.setEmpty();
+        for (let cx = 0; cx < 2; cx++) for (let cy = 0; cy < 2; cy++) for (let cz = 0; cz < 2; cz++) {
+            corner.x = cx ? local.max.x : local.min.x;
+            corner.y = cy ? local.max.y : local.min.y;
+            corner.z = cz ? local.max.z : local.min.z;
+            rotMat.transformVector3(corner);
+            corner.addInPlace(this.position);
+            if (corner.x < this._aabb.min.x) this._aabb.min.x = corner.x;
+            if (corner.y < this._aabb.min.y) this._aabb.min.y = corner.y;
+            if (corner.z < this._aabb.min.z) this._aabb.min.z = corner.z;
+            if (corner.x > this._aabb.max.x) this._aabb.max.x = corner.x;
+            if (corner.y > this._aabb.max.y) this._aabb.max.y = corner.y;
+            if (corner.z > this._aabb.max.z) this._aabb.max.z = corner.z;
+        }
+        this._aabbDirty = false;
+    }
+
+    _recomputeWorldInverseInertia() {
+        if (this._massInverted === 0) { this._worldInverseInertiaTensor.zero(); return; }
+        const rotMat = RigidBody._scratchMat3;
+        rotMat.fromQuaternion(this.rotation);
+        const rotT = RigidBody._scratchMat3b;
+        rotT.transposeInto(rotMat);
+        this._worldInverseInertiaTensor.multiplyFrom(rotMat, this.inverseInertiaTensor);
+        this._worldInverseInertiaTensor.multiply(rotT);
+    }
+
+    // Broadphase's required primitive: the body's CURRENT world AABB. Assumes updateDerived() has
+    // already run this tick (Rule 1) - getAABB() never recomputes on its own, so a stale call is a
+    // caller bug surfaced as a stale box, not silently patched over here.
+    getAABB() {
+        return this._aabb;
+    }
+
+    addListener(event, fn) {
+        (this._listeners[event] || (this._listeners[event] = [])).push(fn);
+        return this;
+    }
+
+    emit(event, arg) {
+        const list = this._listeners[event];
+        if (!list) return;
+        for (let i = 0; i < list.length; i++) list[i](arg);
+    }
+}
+
+// Scratch objects for the allocation-free AABB/inertia recompute above. Per-class, not shared
+// across unrelated algorithms (plan.md: "scratch memory: per-stage arenas, never global") - these
+// three are private to RigidBody's own derived-state recompute and touched nowhere else.
+RigidBody._scratchLocalAABB = new AABB();
+RigidBody._scratchMat3 = new Matrix3();
+RigidBody._scratchMat3b = new Matrix3();
+RigidBody._scratchVec = new Vector3();
+
+RigidBody.STATIC = BODY_STATIC;
+RigidBody.KINEMATIC = BODY_KINEMATIC;
+RigidBody.DYNAMIC = BODY_DYNAMIC;
+
+ActionPhysics.RigidBody = RigidBody;
+
+
+// ==== src/spatial/BVH.js ====
+/**
+ * Static BVH over a fixed set of leaves, built once. Flattened array layout - array indexing, not
+ * pointer chasing (plan.md, Spatial). One implementation, three call sites: compound children,
+ * mesh triangles, swept queries.
+ *
+ * Construction takes a leaf count and two callbacks:
+ *   leafAABBInto(out, leafIndex)   writes the leaf's AABB into `out`
+ * The tree never touches what a "leaf" IS - a compound child, a mesh triangle, whatever - it only
+ * knows AABBs and indices, so this file has no per-caller special cases.
+ *
+ * Nodes are stored in three parallel typed arrays: min/max as Float64Array (3 components each),
+ * and an Int32Array carrying (left, right, leafIndex) - leafIndex is -1 for an internal node.
+ * A leaf node has left = right = -1 implicitly (never read); an internal node has leafIndex = -1.
+ */
+class BVH {
+    constructor() {
+        this.nodeCount = 0;
+        this._capacity = 0;
+        this.minX = null; this.minY = null; this.minZ = null;
+        this.maxX = null; this.maxY = null; this.maxZ = null;
+        this.left = null; this.right = null; this.leafIndex = null;
+        this.root = -1;
+    }
+
+    _ensureCapacity(n) {
+        if (n <= this._capacity) return;
+        this._capacity = n;
+        this.minX = new Float64Array(n); this.minY = new Float64Array(n); this.minZ = new Float64Array(n);
+        this.maxX = new Float64Array(n); this.maxY = new Float64Array(n); this.maxZ = new Float64Array(n);
+        this.left = new Int32Array(n).fill(-1);
+        this.right = new Int32Array(n).fill(-1);
+        this.leafIndex = new Int32Array(n).fill(-1);
+    }
+
+    // Builds the tree over `leafCount` leaves. leafAABBInto(out, i) must fill `out` (an AABB) with
+    // leaf i's bound. A degenerate call (leafCount === 0) leaves the tree empty (root === -1);
+    // querying an empty tree is not an error, it just visits nothing.
+    build(leafCount, leafAABBInto) {
+        this.nodeCount = 0;
+        this.root = -1;
+        if (leafCount === 0) return this;
+
+        // Up to 2*leafCount-1 nodes for a full binary tree over leafCount leaves.
+        this._ensureCapacity(Math.max(1, 2 * leafCount - 1));
+
+        const scratch = new AABB();
+        const indices = new Int32Array(leafCount);
+        const centerX = new Float64Array(leafCount), centerY = new Float64Array(leafCount), centerZ = new Float64Array(leafCount);
+        const leafMinX = new Float64Array(leafCount), leafMinY = new Float64Array(leafCount), leafMinZ = new Float64Array(leafCount);
+        const leafMaxX = new Float64Array(leafCount), leafMaxY = new Float64Array(leafCount), leafMaxZ = new Float64Array(leafCount);
+        for (let i = 0; i < leafCount; i++) {
+            leafAABBInto(scratch, i);
+            indices[i] = i;
+            leafMinX[i] = scratch.min.x; leafMinY[i] = scratch.min.y; leafMinZ[i] = scratch.min.z;
+            leafMaxX[i] = scratch.max.x; leafMaxY[i] = scratch.max.y; leafMaxZ[i] = scratch.max.z;
+            centerX[i] = (scratch.min.x + scratch.max.x) * 0.5;
+            centerY[i] = (scratch.min.y + scratch.max.y) * 0.5;
+            centerZ[i] = (scratch.min.z + scratch.max.z) * 0.5;
+        }
+
+        const self = this;
+        function boundsOf(lo, hi) {
+            let bx0 = Infinity, by0 = Infinity, bz0 = Infinity, bx1 = -Infinity, by1 = -Infinity, bz1 = -Infinity;
+            for (let k = lo; k < hi; k++) {
+                const i = indices[k];
+                if (leafMinX[i] < bx0) bx0 = leafMinX[i]; if (leafMaxX[i] > bx1) bx1 = leafMaxX[i];
+                if (leafMinY[i] < by0) by0 = leafMinY[i]; if (leafMaxY[i] > by1) by1 = leafMaxY[i];
+                if (leafMinZ[i] < bz0) bz0 = leafMinZ[i]; if (leafMaxZ[i] > bz1) bz1 = leafMaxZ[i];
+            }
+            return { minX: bx0, minY: by0, minZ: bz0, maxX: bx1, maxY: by1, maxZ: bz1 };
+        }
+
+        // Median split on the widest axis of [lo, hi)'s combined bound. A cheap, deterministic
+        // heuristic (no SAH) - correct measured cost per plan.md is 1.38 children visited per
+        // query, which came from exactly this kind of structure; revisit only if a stress test
+        // shows it isn't good enough.
+        function buildRange(lo, hi) {
+            const b = boundsOf(lo, hi);
+            const nodeIdx = self.nodeCount++;
+            self.minX[nodeIdx] = b.minX; self.minY[nodeIdx] = b.minY; self.minZ[nodeIdx] = b.minZ;
+            self.maxX[nodeIdx] = b.maxX; self.maxY[nodeIdx] = b.maxY; self.maxZ[nodeIdx] = b.maxZ;
+
+            if (hi - lo === 1) {
+                self.leafIndex[nodeIdx] = indices[lo];
+                self.left[nodeIdx] = -1; self.right[nodeIdx] = -1;
+                return nodeIdx;
+            }
+
+            const sx = b.maxX - b.minX, sy = b.maxY - b.minY, sz = b.maxZ - b.minZ;
+            let axis = 0, getCenter = centerX;
+            if (sy >= sx && sy >= sz) { axis = 1; getCenter = centerY; }
+            else if (sz >= sx && sz >= sy) { axis = 2; getCenter = centerZ; }
+
+            // Partition indices[lo,hi) around the median center on the chosen axis, in place.
+            const sub = indices.subarray(lo, hi);
+            Array.prototype.sort.call(sub, function (ia, ib) { return getCenter[ia] - getCenter[ib]; });
+            const mid = lo + ((hi - lo) >> 1);
+
+            self.leafIndex[nodeIdx] = -1;
+            self.left[nodeIdx] = buildRange(lo, mid);
+            self.right[nodeIdx] = buildRange(mid, hi);
+            return nodeIdx;
+        }
+
+        this.root = buildRange(0, leafCount);
+        return this;
+    }
+
+    // Visits every leaf whose node AABB intersects `queryAABB`, calling onLeaf(leafIndex) for
+    // each. No allocation - an explicit stack in a plain array, reused across calls via `_stack`.
+    query(queryAABB, onLeaf) {
+        if (this.root === -1) return;
+        const qminx = queryAABB.min.x, qminy = queryAABB.min.y, qminz = queryAABB.min.z;
+        const qmaxx = queryAABB.max.x, qmaxy = queryAABB.max.y, qmaxz = queryAABB.max.z;
+
+        const stack = this._stack || (this._stack = []);
+        let sp = 0;
+        stack[sp++] = this.root;
+        while (sp > 0) {
+            const node = stack[--sp];
+            if (this.minX[node] > qmaxx || this.maxX[node] < qminx ||
+                this.minY[node] > qmaxy || this.maxY[node] < qminy ||
+                this.minZ[node] > qmaxz || this.maxZ[node] < qminz) continue;
+
+            if (this.leafIndex[node] !== -1) { onLeaf(this.leafIndex[node]); continue; }
+            stack[sp++] = this.left[node];
+            stack[sp++] = this.right[node];
+        }
+    }
+}
+
+ActionPhysics.BVH = BVH;
+
+
+// ==== src/phases/SAPBroadphase.js ====
+/**
+ * Sweep-and-prune broadphase over AABBs, sorted along a single axis.
+ *
+ * Produces: candidate body pairs, no false negatives (plan.md, Broadphase). May assume AABBs are
+ * current - it never recomputes one, only reads body.getAABB(). Must never test actual shapes;
+ * the only thing this file knows about a body is its AABB.
+ *
+ * ONE axis, not three. The classic SAP maintains sorted lists on all three axes and intersects
+ * them; a single axis with a good pick (the one with the most spread, recomputed occasionally)
+ * gets most of the culling at a third of the bookkeeping. The remaining axes are checked directly
+ * per candidate pair below, which is cheap because the axis sort has already thrown out most of
+ * the O(n^2) pairs.
+ */
+class SAPBroadphase {
+    constructor() {
+        // Sorted by AABB min on the sweep axis. Re-sorted every update() - insertion-sort cost is
+        // fine because frame-to-frame the order barely changes (temporal coherence), and an O(n
+        // log n) sort with no coherence assumption is simpler to trust than a persistent structure
+        // during this stage's first pass.
+        this._entries = [];   // { body, aabb } - aabb is a snapshot reference, not a copy
+        this._axis = 'x';
+    }
+
+    // Body lifecycle - the World is the only expected caller.
+    add(body) {
+        this._entries.push({ body: body, aabb: body.getAABB() });
+    }
+
+    remove(body) {
+        for (let i = 0; i < this._entries.length; i++) {
+            if (this._entries[i].body === body) { this._entries.splice(i, 1); return; }
+        }
+    }
+
+    // Re-picks the sweep axis from the current AABB spread. Cheap (O(n)) and only needs to be
+    // roughly right - a wrong axis costs candidate-pair quality, never correctness, because every
+    // axis is still checked directly on each candidate pair in _sweep().
+    _pickAxis() {
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, minZ = Infinity, maxZ = -Infinity;
+        for (let i = 0; i < this._entries.length; i++) {
+            const c = this._entries[i].aabb;
+            if (c.min.x < minX) minX = c.min.x; if (c.max.x > maxX) maxX = c.max.x;
+            if (c.min.y < minY) minY = c.min.y; if (c.max.y > maxY) maxY = c.max.y;
+            if (c.min.z < minZ) minZ = c.min.z; if (c.max.z > maxZ) maxZ = c.max.z;
+        }
+        const sx = maxX - minX, sy = maxY - minY, sz = maxZ - minZ;
+        this._axis = (sx >= sy && sx >= sz) ? 'x' : (sy >= sz ? 'y' : 'z');
+    }
+
+    // Returns candidate pairs as [bodyA, bodyB][], A.id < B.id always, so downstream pairing (a
+    // manifold cache keyed by two ids) has one canonical order without the caller sorting again.
+    computePairs() {
+        const n = this._entries.length;
+        const pairs = [];
+        if (n < 2) return pairs;
+
+        this._pickAxis();
+        const axis = this._axis;
+        this._entries.sort(function (a, b) { return a.aabb.min[axis] - b.aabb.min[axis]; });
+
+        for (let i = 0; i < n; i++) {
+            const ei = this._entries[i];
+            const maxOnAxis = ei.aabb.max[axis];
+            for (let j = i + 1; j < n; j++) {
+                const ej = this._entries[j];
+                // Sorted by min on the sweep axis: once ej's min passes ei's max, no later entry
+                // can overlap ei on this axis either (their mins only increase from here).
+                if (ej.aabb.min[axis] > maxOnAxis) break;
+                if (!ei.aabb.intersects(ej.aabb)) continue; // confirms the other two axes
+                const a = ei.body, b = ej.body;
+                // Two statics/kinematics never need a contact between each other - nothing can
+                // move them into or out of overlap from this pair alone. Filtered here rather
+                // than downstream so midphase/narrowphase never see a pair that can't matter.
+                if (a.bodyType !== RigidBody.DYNAMIC && b.bodyType !== RigidBody.DYNAMIC) continue;
+                if ((a.collision_mask & b.collision_groups) === 0) continue;
+                if ((b.collision_mask & a.collision_groups) === 0) continue;
+                if (a.id < b.id) pairs.push([a, b]); else pairs.push([b, a]);
+            }
+        }
+        return pairs;
+    }
+}
+
+ActionPhysics.SAPBroadphase = SAPBroadphase;
 
 
 // ==== src/outro.js ====

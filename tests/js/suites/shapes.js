@@ -9,13 +9,29 @@
 	var DESC = "Shapes provide, in local space: a support function (farthest point along a direction - " +
 		"the one primitive GJK/EPA need), a tight local AABB, and mass properties (volume, inertia " +
 		"tensor, center of mass) for a shape of density 1.";
-	function test(group, name, fn) { Runner.test(group, name, fn, { page: 'shapes', description: DESC }); }
+	function test(group, name, fn, opts) {
+		opts = opts || {};
+		Runner.test(group, name, fn, { page: 'shapes', description: DESC, visual: !!opts.visual, steps: 0 });
+	}
 
 	function vecIs(t, v, x, y, z, label, eps) {
 		eps = eps == null ? 1e-9 : eps;
 		t.check(v.x, x, eps, label + '.x');
 		t.check(v.y, y, eps, label + '.y');
 		t.check(v.z, z, eps, label + '.z');
+	}
+
+	// Support-function tests are geometry, not simulation - no World/RigidBody exists yet (that's a
+	// later stage). Draw a bare {shape, position, rotation} the adapter can read structurally, plus
+	// ctx.support so the bench shows the query direction (arrow) and the resulting point (red dot)
+	// against the shape itself. This is the STATIC-diagram path in render.js (steps===0, no bodies
+	// simulated) - not the live/animated one.
+	function drawSupport(t, shape, direction) {
+		var out = new V();
+		shape.supportInto(out, direction);
+		t.bodies.push({ shape: shape, position: new V(0, 0, 0), rotation: new AP.Quaternion(), _color: '#4af' });
+		t.support = { dir: [direction.x, direction.y, direction.z], point: [out.x, out.y, out.z] };
+		return out;
 	}
 
 	// ---- AABB ----
@@ -71,8 +87,13 @@
 		vecIs(t, s.supportInto(out, new V(1, 0, 0)), 1, 2, 3, '+X dir');
 		vecIs(t, s.supportInto(out, new V(-1, 0, 0)), -1, 2, 3, '-X dir');
 		vecIs(t, s.supportInto(out, new V(0, -1, 0)), 1, -2, 3, '-Y dir');
-		vecIs(t, s.supportInto(out, new V(0.3, 0.3, 0.3)), 1, 2, 3, 'off-axis dir picks the far corner');
 	});
+
+	test('shapes/box', 'off-axis direction picks the far corner', function (t) {
+		var s = new AP.BoxShape(1, 2, 3);
+		var got = drawSupport(t, s, new V(0.3, 0.3, 0.3));
+		vecIs(t, got, 1, 2, 3, 'off-axis dir picks the far corner');
+	}, { visual: true });
 
 	test('shapes/box', 'local AABB matches the half-extents', function (t) {
 		var s = new AP.BoxShape(1, 2, 3);
@@ -101,9 +122,13 @@
 		var out = new V();
 		vecIs(t, s.supportInto(out, new V(1, 0, 0)), 2, 0, 0, '+X');
 		vecIs(t, s.supportInto(out, new V(0, 0, -1)), 0, 0, -2, '-Z');
-		s.supportInto(out, new V(1, 1, 1));
-		t.check(out.length(), 2, 1e-9, 'off-axis support point still has radius length');
 	});
+
+	test('shapes/sphere', 'off-axis support point still has radius length', function (t) {
+		var s = new AP.SphereShape(2);
+		var got = drawSupport(t, s, new V(1, 1, 1));
+		t.check(got.length(), 2, 1e-9, 'off-axis support point still has radius length');
+	}, { visual: true });
 
 	test('shapes/sphere', 'zero-length direction does not produce NaN', function (t) {
 		var s = new AP.SphereShape(1);
@@ -128,12 +153,16 @@
 	test('shapes/cylinder', 'support point on the rim at mid-height, cap at the poles', function (t) {
 		var s = new AP.CylinderShape(2, 3);
 		var out = new V();
-		s.supportInto(out, new V(1, 0, 0));
-		t.check(out.x, 2, 1e-9, 'rim x at radius');
-		t.check(out.y, 3, 1e-9, 'rim support still picks the +Y cap (tie-break)');
 		vecIs(t, s.supportInto(out, new V(0, 1, 0)), 0, 3, 0, 'straight up picks the top cap center axis point');
 		vecIs(t, s.supportInto(out, new V(0, -1, 0)), 0, -3, 0, 'straight down picks the bottom cap');
 	});
+
+	test('shapes/cylinder', 'off-axis direction lands on the rim, tie-broken to the +Y cap', function (t) {
+		var s = new AP.CylinderShape(2, 3);
+		var got = drawSupport(t, s, new V(1, 0, 0));
+		t.check(got.x, 2, 1e-9, 'rim x at radius');
+		t.check(got.y, 3, 1e-9, 'rim support still picks the +Y cap (tie-break)');
+	}, { visual: true });
 
 	test('shapes/cylinder', 'volume and axis/side inertia match the closed-form result', function (t) {
 		var s = new AP.CylinderShape(2, 3); // r=2, h=6
@@ -156,11 +185,10 @@
 
 	test('shapes/cone', 'support along the base rim direction stays on the base circle', function (t) {
 		var s = new AP.ConeShape(2, 3);
-		var out = new V();
-		s.supportInto(out, new V(1, -0.01, 0));
-		t.check(out.y, -3, 1e-9, 'rim point sits on the base plane');
-		t.check(Math.sqrt(out.x * out.x + out.z * out.z), 2, 1e-6, 'rim point is at radius 2');
-	});
+		var got = drawSupport(t, s, new V(1, -0.01, 0));
+		t.check(got.y, -3, 1e-9, 'rim point sits on the base plane');
+		t.check(Math.sqrt(got.x * got.x + got.z * got.z), 2, 1e-6, 'rim point is at radius 2');
+	}, { visual: true });
 
 	test('shapes/cone', 'volume matches the closed-form result', function (t) {
 		var s = new AP.ConeShape(2, 3); // r=2, h=6
@@ -193,13 +221,12 @@
 
 	test('shapes/capsule', 'support point off-axis lies on the correct hemisphere at radius', function (t) {
 		var s = new AP.CapsuleShape(1, 6);
-		var out = new V();
-		s.supportInto(out, new V(1, 0, 0));
-		t.check(out.x, 1, 1e-9, 'radius reached at the equator');
+		var got = drawSupport(t, s, new V(1, 0, 0));
+		t.check(got.x, 1, 1e-9, 'radius reached at the equator');
 		// direction.y === 0 ties to the +Y pole (>= 0 branch), so the support sits at the top of
 		// the cylindrical segment (segmentHalfLength), not the capsule's true equator.
-		t.check(out.y, 2, 1e-9, 'zero y-component ties to the +Y segment cap');
-	});
+		t.check(got.y, 2, 1e-9, 'zero y-component ties to the +Y segment cap');
+	}, { visual: true });
 
 	test('shapes/capsule', 'volume is cylinder core plus two hemisphere caps (one full sphere)', function (t) {
 		var s = new AP.CapsuleShape(1, 6); // segmentHalfLength = 2
@@ -220,10 +247,11 @@
 	test('shapes/convex', 'support scans the point cloud for the true maximum along a direction', function (t) {
 		var pts = [new V(1, 0, 0), new V(-1, 0, 0), new V(0, 1, 0), new V(0, -1, 0), new V(0, 0, 1), new V(0, 0, -1)];
 		var s = new AP.ConvexShape(pts);
+		var got = drawSupport(t, s, new V(1, 0, 0));
+		vecIs(t, got, 1, 0, 0, '+X');
 		var out = new V();
-		vecIs(t, s.supportInto(out, new V(1, 0, 0)), 1, 0, 0, '+X');
 		vecIs(t, s.supportInto(out, new V(0, 0, -1)), 0, 0, -1, '-Z');
-	});
+	}, { visual: true });
 
 	test('shapes/convex', 'local AABB is the tight bound of the point cloud', function (t) {
 		var pts = [new V(2, -1, 0), new V(-3, 4, 1), new V(0, 0, -5)];
@@ -238,10 +266,9 @@
 
 	test('shapes/plane', 'support point always lies exactly on the plane', function (t) {
 		var s = new AP.PlaneShape('y', 5, 10);
-		var out = new V();
-		s.supportInto(out, new V(0.2, 3, 0.1));
-		t.check(out.y, 0, 1e-9, 'y-oriented plane support has zero y regardless of direction');
-	});
+		var got = drawSupport(t, s, new V(0.2, 3, 0.1));
+		t.check(got.y, 0, 1e-9, 'y-oriented plane support has zero y regardless of direction');
+	}, { visual: true });
 
 	test('shapes/plane', 'carries zero mass, matching a static/kinematic-only shape', function (t) {
 		var s = new AP.PlaneShape('y', 5, 10);
@@ -251,11 +278,12 @@
 
 	test('shapes/triangle', 'support point is whichever vertex is farthest along the direction', function (t) {
 		var s = new AP.TriangleShape(new V(0, 0, 0), new V(1, 0, 0), new V(0, 1, 0));
+		var got = drawSupport(t, s, new V(1, 1, 0));
+		vecIs(t, got, 1, 0, 0, 'ties resolve to the first max found (b, scanned before c)');
 		var out = new V();
-		vecIs(t, s.supportInto(out, new V(1, 0, 0)), 1, 0, 0, 'picks b');
 		vecIs(t, s.supportInto(out, new V(0, 1, 0)), 0, 1, 0, 'picks c');
 		vecIs(t, s.supportInto(out, new V(-1, -1, 0)), 0, 0, 0, 'picks a');
-	});
+	}, { visual: true });
 
 	// ---- Compound ----
 
@@ -263,12 +291,13 @@
 		var c = new AP.CompoundShape();
 		c.addChild(new AP.SphereShape(1), new V(2, 0, 0), new AP.Quaternion());
 		c.addChild(new AP.SphereShape(1), new V(-2, 0, 0), new AP.Quaternion());
+		t.bodies.push({ shape: c, position: new V(0, 0, 0), rotation: new AP.Quaternion(), _color: '#4af' });
 		var sphereVolume = (4 / 3) * Math.PI;
 		t.check(c.volume(), sphereVolume * 2, 1e-6, 'summed volume');
 		var data = c.computeMassData();
 		t.check(data.mass, sphereVolume * 2, 1e-6, 'summed mass');
 		vecIs(t, data.centerOfMass, 0, 0, 0, 'symmetric placement centers the compound', 1e-9);
-	});
+	}, { visual: true });
 
 	test('shapes/compound', 'parallel-axis theorem increases inertia for offset children', function (t) {
 		var c = new AP.CompoundShape();
@@ -285,12 +314,13 @@
 
 	test('shapes/lineswept', 'support extends the base shape support by the segment endpoint', function (t) {
 		var s = new AP.LineSweptShape(new AP.SphereShape(1), 5);
+		var got = drawSupport(t, s, new V(0, 1, 0));
+		vecIs(t, got, 0, 6, 0, '+Y: sphere radius plus half-length');
 		var out = new V();
-		vecIs(t, s.supportInto(out, new V(0, 1, 0)), 0, 6, 0, '+Y: sphere radius plus half-length');
 		vecIs(t, s.supportInto(out, new V(0, -1, 0)), 0, -6, 0, '-Y: sphere radius plus half-length');
 		s.supportInto(out, new V(1, 0, 0));
 		t.check(out.x, 1, 1e-9, 'perpendicular direction unaffected by the sweep length');
-	});
+	}, { visual: true });
 
 	// ---- Mesh ----
 
@@ -298,12 +328,13 @@
 		var verts = [new V(0, 0, 0), new V(1, 0, 0), new V(0, 1, 0), new V(0, 0, 1)];
 		var indices = [0, 1, 2, 1, 2, 3];
 		var m = new AP.MeshShape(verts, indices);
+		t.bodies.push({ shape: m, position: new V(0, 0, 0), rotation: new AP.Quaternion(), _color: '#4af' });
 		t.checkEqual(m.triangleCount, 2, 'two triangles from six indices');
 		var a = new V(), b = new V(), c = new V();
 		m.triangleAt(1, a, b, c);
 		vecIs(t, a, 1, 0, 0, 'tri 1 vertex a');
 		vecIs(t, b, 0, 1, 0, 'tri 1 vertex b');
 		vecIs(t, c, 0, 0, 1, 'tri 1 vertex c');
-	});
+	}, { visual: true });
 
 }(typeof module !== 'undefined' && module.exports ? require('../runner.js') : window.APRunner));

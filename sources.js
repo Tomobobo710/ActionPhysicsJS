@@ -38,5 +38,15 @@ module.exports = [
     'src/shapes/CompoundShape.js',
     'src/shapes/LineSweptShape.js',
 
+    // Bodies - RigidBody references AABB, Matrix3, and the shape contract above.
+    'src/bodies/RigidBody.js',
+
+    // Spatial (part 2) - BVH is independent of RigidBody but grouped with phases since midphase
+    // is its main consumer.
+    'src/spatial/BVH.js',
+
+    // Phases - broadphase needs RigidBody (reads .getAABB(), .bodyType, .id, .collision_mask/groups).
+    'src/phases/SAPBroadphase.js',
+
     'src/outro.js'
 ];
