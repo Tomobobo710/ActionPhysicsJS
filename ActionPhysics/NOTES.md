@@ -94,3 +94,42 @@ other gates (closing-speed floor, max-speed cap, self-push exclusion) still hold
 mass ratio was purely redundant, not load-bearing. This retired the pyramid-vs-knockback
 "opposite directions" tension entirely: iterations:4 and full K1 knockback now coexist, no
 velocity-gating needed.
+
+## Box-box flat-drop lateral drift: resolve the face patch at its centroid (fixed)
+
+A perfectly symmetric flat box dropped onto a much larger box (`box-box/single`) picked up
+~36 mm of lateral drift the instant it landed — a long-standing open item (see snapshots 52–54).
+The cause is a sequential-Gauss-Seidel symmetry break in the VELOCITY pass, not the position
+pass. A flat landing produces a 4-point coplanar face manifold with one shared normal. Solving
+restitution + friction point-by-point spins the body a hair (each off-centre normal impulse from
+the box's default restitution 0.33 applies torque; the next point reads the spun state, so the
+four impulses stop cancelling), and friction then converts that residual spin into a net sideways
+velocity. Restitution is the dominant contributor: forcing box restitution to 0 drops the drift
+from 0.036 to 0.011, and the 0.011 remainder is the same effect seeded by the position solve's own
+tiny asymmetry instead.
+
+Fix (`src/solver/VelocitySolve.js` `_boxFacePatchVelocity`, called from
+`Solver._solveContactVelocities`): when — and ONLY when — both shapes are actual `BoxShape`s and
+every engaged manifold point shares a single normal (a genuine face patch, `COPLANAR_NORMAL_DOT`),
+resolve restitution and friction ONCE at the patch centroid instead of per-point. A centroid solve
+of a symmetric patch is exactly symmetric, so it leaves zero residual spin or drift. Every other
+contact (edge/corner box hits, meshes, spheres, compounds, non-coplanar manifolds) keeps the
+per-point solve untouched.
+
+WHY NOT the "Jacobi-style manifold solve" snapshots 52–54 pointed at: it was tried here and every
+variant regressed. Full Jacobi on the velocity pass (all points measured off one frozen velocity,
+applied together) zeroes the drift but explodes the 385-box pyramid and breaks the mesh-box stacks
+— coupled stacks need the sequential information flow. Jacobi on the position pass alone regresses
+11 tests and doesn't even fix the drift (the velocity pass reintroduces it). Aggregating restitution
+alone at the centroid breaks the exact restitution-ratio tests (`e=0.5/0.8/1` want per-point exit
+speed to 1e-6). Aggregating BOTH restitution and friction, but for ALL multi-point manifolds, fixes
+the drift but adds tail jitter to two "box stacked on box" tests — which are box-shaped MESH stacks,
+not `BoxBox`. Gating the whole thing on real `BoxShape` pairs is what threads the needle: the mesh
+stacks keep their stable per-point path, the flat box-drop gets the symmetric centroid path. Full
+headless suite 769/769 after this.
+
+The sibling `box-box/offset-stack` failure was a separate, unrelated test-data bug: it spawned unit
+(2-tall) boxes with a 2.2 vertical GAP, leaving a 0.2 gap per layer, then measured settling drift
+against the SPAWN height (< 0.05) — impossible, the boxes fall 0.2/0.4/0.6 onto each other. Changed
+GAP to 2.0 (= box height) so the stack spawns already resting, which is the "inset horizontally"
+shape the test describes.

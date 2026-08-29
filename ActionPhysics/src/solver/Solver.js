@@ -125,8 +125,13 @@ class Solver {
     _solveContactVelocities(manifolds, gravity, h) {
         for (const manifold of manifolds.values()) {
             const bodyA = manifold.bodyA, bodyB = manifold.bodyB;
-            for (let i = 0; i < manifold.points.length; i++) {
-                this._solveContactVelocity(manifold.points[i], bodyA, bodyB, gravity, h);
+            // A flat box-on-box face patch is resolved once at its centroid (order-independent, no
+            // fabricated drift); every other manifold keeps the per-point solve. See
+            // VelocitySolve.js._boxFacePatchVelocity.
+            if (!this._boxFacePatchVelocity(manifold, bodyA, bodyB, gravity, h)) {
+                for (let i = 0; i < manifold.points.length; i++) {
+                    this._solveContactVelocity(manifold.points[i], bodyA, bodyB, gravity, h);
+                }
             }
             if (manifold.points.length > 0) {
                 // Reference point for angular friction: the most-engaged one (largest |normalLambda|),
