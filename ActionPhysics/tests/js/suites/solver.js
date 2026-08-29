@@ -1,9 +1,8 @@
 // XPBD solver core mechanic in isolation: a single position correction resolves a known overlap
-// exactly, warm start carries lambda across ticks, velocity derives from the position delta.
-//
-// Deliberately NOT claimed here: full-scene settling stability. A body SPAWNED deep in overlap gets
-// the full undamped one-shot correction (velocity = delta/h, no clamp by design); speculative
-// contacts prevent ARRIVING deep, they do not rescue an embedded spawn. Every test is one tick.
+// exactly, warm start carries lambda across ticks, velocity derives from the position delta - split
+// by how much of it the body's own real velocity can explain (see Solver.js's own header). A body
+// SPAWNED deep in overlap, with zero real velocity behind it, settles instantly with zero derived
+// velocity rather than launching. Every test is one tick unless noted otherwise.
 (function (Runner) {
 	Runner.suite('solver');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;
@@ -109,21 +108,28 @@
 		t.simulate(world, 1);
 	});
 
-	// ---- the known, expected instability without speculative contacts ----
+	// ---- deep-spawn overlap: velocity is only what the body's own real motion can explain ----
 
-	test('solver/core', 'a body SPAWNED already deep in overlap gets the full undamped one-shot correction', function (t) {
-		// Placed inside the ground, not arrived there: speculative detection cannot retroactively
-		// soften an embedded spawn, so this resolves as one undamped correction, v = delta/h,
-		// exactly per the no-clamp rule. (Contrast the speculative suite, where a FALLING box
-		// settles with no such kick.)
+	// PRIOR BEHAVIOR (no longer correct - kept only as history): a body constructed already deep in
+	// overlap got the ENTIRE overlap corrected in one undamped substep, producing derived velocity =
+	// correction/h with no bound - a real, confirmed bug (see the settling test below: this exact
+	// setup used to launch the body to y=53+ under gravity). THE FIX: _solvePoint splits each
+	// correction by how much of it the body's own real, already-measured closing velocity could
+	// explain - a spawn/teleport overlap has ZERO real velocity behind it, so almost none of a large
+	// correction is recognized as explainable, and it resolves as a pure position edit instead of
+	// becoming derived velocity. See Solver.js's own header for the full reasoning and the two
+	// narrower approaches (a flat magnitude cap, a fixed Baumgarte fraction) that were tried first and
+	// failed for different reasons.
+	test('solver/core', 'a body spawned deep in overlap settles instantly with zero fabricated velocity', function (t) {
 		var world = t.makeWorld({ gravity: 0 }); world.solver.substeps = 1;
 		t.box(world, 10, 0.5, 10, 0, { pos: [0, -0.5, 0], color: '#556' });
-		var box = t.box(world, 0.5, 0.5, 0.5, 1, { pos: [0, 0.4, 0], color: '#f55' }); // overlapping by 0.1
+		var box = t.box(world, 0.5, 0.5, 0.5, 1, { pos: [0, 0.4, 0], color: '#f55' }); // overlapping by 0.1, zero real velocity behind it
 
-		var dt = 1 / 60;
-		var expectedVelocity = 0.1 / dt; // the full correction, undamped, over one substep
-		t.expect('derived velocity equals the raw correction / h, exactly as designed - no clamp', function () {
-			return { ok: Math.abs(box.linear_velocity.y - expectedVelocity) < 1e-6, detail: 'vy=' + box.linear_velocity.y.toFixed(4) + ' (expected ' + expectedVelocity.toFixed(4) + ')' };
+		t.expect('resolved to exactly the correct rest height', function () {
+			return { ok: Math.abs(box.position.y - 0.5) < 1e-9, detail: 'y=' + box.position.y.toFixed(10) };
+		});
+		t.expect('zero derived velocity - the correction was entirely non-explainable, so entirely bias', function () {
+			return { ok: Math.abs(box.linear_velocity.y) < 1e-9, detail: 'vy=' + box.linear_velocity.y.toExponential(3) };
 		});
 		t.simulate(world, 1);
 	});
