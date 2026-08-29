@@ -1,5 +1,5 @@
 (function (Runner) {
-	Runner.suite('collision'); // queries sit with the rest of the geometry-heavy suites
+	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;
 	var V = AP.Vector3;
 	var DESC = "World.rayIntersect(start, end) / shapeIntersect(shape, start, end): ray and shape " +
@@ -12,8 +12,6 @@
 	function mkWorld() {
 		return new AP.World(new AP.SAPBroadphase(), new AP.NarrowPhase(), new AP.Solver());
 	}
-
-	// ---- rayIntersect: a straight hit reports the exact face point and outward normal ----
 
 	test('queries/ray', 'a ray straight through a box hits the near face at the exact point, with the correct outward normal', function (t) {
 		var world = mkWorld();
@@ -37,8 +35,6 @@
 		t.simulate(world, 1);
 	});
 
-	// ---- rayIntersect: a genuine miss, not a false hit from a loose broadphase reject ----
-
 	test('queries/ray', 'a ray that passes well clear of every body reports no hit at all', function (t) {
 		var world = mkWorld();
 		t.box(world, 0.5, 0.5, 0.5, 1, { pos: [0, 0, 0], color: '#4af' });
@@ -49,8 +45,6 @@
 		});
 		t.simulate(world, 1);
 	});
-
-	// ---- the NEAREST of several candidates, not just any hit ----
 
 	test('queries/ray', 'a ray through two boxes in a row reports the NEARER one, not just any hit', function (t) {
 		var world = mkWorld();
@@ -67,8 +61,6 @@
 		t.simulate(world, 1);
 	});
 
-	// ---- starting already inside a body: fraction 0, not a crash or a false miss ----
-
 	test('queries/ray', 'a ray that starts already inside a box reports an immediate hit at fraction 0', function (t) {
 		var world = mkWorld();
 		var box = t.box(world, 0.5, 0.5, 0.5, 1, { pos: [0, 0, 0], color: '#4af' });
@@ -80,11 +72,9 @@
 		t.simulate(world, 1);
 	});
 
-	// ---- a static body is an ordinary query target ----
-
 	test('queries/ray', 'a ray straight down hits a large static ground plane at the exact surface height', function (t) {
 		var world = mkWorld();
-		t.box(world, 50, 0.5, 50, 0, { pos: [0, -10, 0], color: '#888' }); // static ground
+		t.box(world, 50, 0.5, 50, 0, { pos: [0, -10, 0], color: '#888' });
 		var hit;
 		t.expect('the ray hits the ground top surface at y = -9.5, exactly', function () {
 			hit = world.rayIntersect(new V(0, 5, 0), new V(0, -20, 0));
@@ -97,8 +87,6 @@
 		t.simulate(world, 1);
 	});
 
-	// ---- swept shape hits offset by its own radius - the concept a zero-radius ray cannot exercise ----
-
 	test('queries/shape', 'a swept sphere hits a box earlier than a zero-radius ray would, by exactly its own radius', function (t) {
 		var world = mkWorld();
 		t.box(world, 0.5, 0.5, 0.5, 1, { pos: [0, 0, 0], color: '#4af' });
@@ -110,22 +98,20 @@
 		});
 		t.expect('the sweep stops exactly one sphere radius short of the ray-equivalent contact point (0.25 further back, within 1e-6)', function () {
 			rayHit = world.rayIntersect(new V(-5, 0, 0), new V(5, 0, 0));
-			var expectedX = rayHit.point.x - sphere.radius; // sphere center stops 0.25 before the surface hit
+			var expectedX = rayHit.point.x - sphere.radius;
 			return { ok: sweepHit && Math.abs(sweepHit.point.x - expectedX) < 1e-6,
 				detail: sweepHit ? 'sweep x=' + sweepHit.point.x.toFixed(6) + ' expected=' + expectedX.toFixed(6) : 'no hit' };
 		});
 		t.simulate(world, 1);
 	});
 
-	// ---- orientation is respected: same swept shape at two rotations reaches the target at two distances ----
-
 	test('queries/shape', 'a swept box reaches a target box at a different distance depending on its own held rotation', function (t) {
 		var world = mkWorld();
-		t.box(world, 0.5, 0.5, 0.5, 1, { pos: [3, 0, 0], color: '#4af' }); // target: an axis-aligned box
-		var sweptShape = new AP.BoxShape(0.5, 0.1, 0.1); // long (half-extent 0.5) along local X, thin (0.1) along local Y/Z
+		t.box(world, 0.5, 0.5, 0.5, 1, { pos: [3, 0, 0], color: '#4af' });
+		var sweptShape = new AP.BoxShape(0.5, 0.1, 0.1);
 
-		var longAxisLeading = new AP.Quaternion(0, 0, 0, 1); // long half-extent leads: bulk reaches out farther
-		var thinAxisLeading = AP.Quaternion.fromAxisAngle(new V(0, 0, 1), Math.PI / 2); // thin extent leads: center can approach closer before contact
+		var longAxisLeading = new AP.Quaternion(0, 0, 0, 1);
+		var thinAxisLeading = AP.Quaternion.fromAxisAngle(new V(0, 0, 1), Math.PI / 2);
 
 		var hitLong = null, hitThin = null;
 		t.expect('with its long extent leading (pointing at the target), the shape touches earlier - its own bulk reaches out further', function () {
@@ -142,8 +128,6 @@
 		});
 		t.simulate(world, 1);
 	});
-
-	// ---- a too-short sweep is a genuine miss; segment length is respected ----
 
 	test('queries/shape', 'a sweep too short to reach a distant box reports no hit, even though the shape is heading straight at it', function (t) {
 		var world = mkWorld();

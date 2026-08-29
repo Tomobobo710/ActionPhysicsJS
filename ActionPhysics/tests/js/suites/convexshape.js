@@ -47,7 +47,7 @@
 	}
 
 	supportTest('box: support point (corner)', BOX, '#45B7D1', [-1, -1, -1], [-1, -1, -1], 'support toward a corner');
-	// Tied max-dot support: first max in point-array order wins, not any particular tied vertex.
+
 	supportTest('box: support point (face)', BOX, '#45B7D1', [1, 0, 0], [1, -1, -1], 'support toward a face (first tied max in point order)');
 	supportTest('box: support point (edge)', BOX, '#45B7D1', [0, 1, 1], [1, 1, 1], 'support toward an edge');
 	supportTest('pyramid: support point (corner)', PYR, '#F4D35E', [-1, -1, -1], [-1, -1, -1], 'support toward a base corner');

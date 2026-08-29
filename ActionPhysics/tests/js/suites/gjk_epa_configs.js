@@ -1,7 +1,3 @@
-// Concrete box/sphere collision configs checked against known-correct penetration depth and
-// normal direction. Contact-point assertions are omitted for the box configs, which use a
-// degenerate zero-width plate (BoxShape(0, 0.5, 0.5)) - the witness point along its zero-thickness
-// axis is ambiguous and any correct EPA may pick a different valid one.
 (function (Runner) {
 	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;
@@ -19,7 +15,6 @@
 		return { shape: shape, position: pos || new V(0, 0, 0), rotation: rot || new Q(0, 0, 0, 1) };
 	}
 
-	// Normal sign: GJK/EPA normals point B to A (see GJK.js); normalDir/dotExp follow that.
 	function collide(t, shapeA, posA, rotA, shapeB, posB, rotB, depth, normalDir, dotExp) {
 		var a = placed(shapeA, new V(posA[0], posA[1], posA[2]), rotA && new Q(rotA[0], rotA[1], rotA[2], rotA[3]).normalize());
 		var b = placed(shapeB, new V(posB[0], posB[1], posB[2]), rotB && new Q(rotB[0], rotB[1], rotB[2], rotB[3]).normalize());
@@ -32,8 +27,6 @@
 		var dot = epa.normal.x * normalDir[0] + epa.normal.y * normalDir[1] + epa.normal.z * normalDir[2];
 		t.check(dot, dotExp, EPS, 'contact normal points the right way');
 	}
-
-	// ---- boxes: box1(2,1,2) vs box2(0,0.5,0.5) in four configs ----
 
 	test('collision/gjk-epa-configs', 'boxes: flat stack', function (t) {
 		collide(t, new AP.BoxShape(2, 1, 2), [0, 0, 0], null, new AP.BoxShape(0, 0.5, 0.5), [0, 1.49, 0], null,
@@ -51,8 +44,6 @@
 		collide(t, new AP.BoxShape(2, 1, 2), [2, -1, 0], null, new AP.BoxShape(0, 0.5, 0.5), [2, 0.7, 0], [0.415, 0, 0, 1],
 			0.017, [0, -1, 0], 1);
 	});
-
-	// ---- spheres: two unit spheres in four configs ----
 
 	test('collision/gjk-epa-configs', 'spheres: near-touching, normal points down', function (t) {
 		collide(t, new AP.SphereShape(1), [0, 0.9999, 0], null, new AP.SphereShape(1), [0, -1, 0], null,

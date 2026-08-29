@@ -1,16 +1,3 @@
-// Dedicated box-box regression suite. Every scene here is pure box-on-box (no other shape types),
-// chosen to stress the parts of BoxBox.js (src/phases/BoxBox.js) that are easy to get subtly wrong:
-// reference/incident face selection, the face-vs-edge SAT tie-break, and the still-separated
-// (speculative) contact path. These are NOT softballs - each one pins a bug that was actually found
-// and fixed while building box-box, so a regression here means one of those bugs came back.
-//
-// EVERY t.expect below is a FINAL-GATE predicate: it returns { ok: false } until tick >= the run's
-// total tick count, and only then reports against a WORST-observed-value tracked via onTick across
-// the entire run. A predicate that reads current/live state directly is a bug in this file - t.expect
-// LATCHES the first tick it reads true (see runner.js's evalTick) and never re-checks, so a naive
-// "position - expected < threshold" check reads true at tick 1 (before the box has even started
-// falling) and stays "passed" even if the scene explodes on tick 200. Every scene here was caught
-// doing exactly that once - see the git history/session notes - before being rewritten this way.
 (function (Runner) {
 	Runner.suite('box-box');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;
@@ -23,12 +10,6 @@
 	function speed(b) { var v = b.linear_velocity; return Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z); }
 	function spin(b) { var a = b.angular_velocity; return Math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z); }
 
-	// How far the body's local Y axis has tipped off world-up, decomposed into a lean toward +X/-X
-	// and toward +Z/-Z, IN DEGREES - not just one scalar total-rotation number. totalRotationDegrees
-	// alone can hide a real problem: a box that leans 5 degrees toward +X and 5 degrees toward -Z has
-	// a smaller total-rotation angle than a box that leans 6 degrees toward +X alone, even though the
-	// first box is arguably MORE off-kilter - checking each axis separately is what "look at it in
-	// 3D, not just one softened number" means here.
 	function leanDegrees(body) {
 		var up = { x: 0, y: 1, z: 0 };
 		body.rotation.transformVectorInPlace(up);
@@ -38,23 +19,16 @@
 		};
 	}
 
-	// Every finite-number invariant this suite cares about, in one place: no NaN/Infinity anywhere
-	// (a silent numerical blowup), and the body has not been launched or swallowed by the floor.
 	function isSane(body, floorY) {
 		var p = body.position, v = body.linear_velocity, w = body.angular_velocity;
 		if (!isFinite(p.x) || !isFinite(p.y) || !isFinite(p.z)) return false;
 		if (!isFinite(v.x) || !isFinite(v.y) || !isFinite(v.z)) return false;
 		if (!isFinite(w.x) || !isFinite(w.y) || !isFinite(w.z)) return false;
-		if (p.y < floorY - 5) return false;  // fell through the world
-		if (p.y > floorY + 100) return false; // launched
+		if (p.y < floorY - 5) return false;
+		if (p.y > floorY + 100) return false;
 		return true;
 	}
 
-	// Shared tracker: watches a list of {body, x0, y0, z0} records every tick via onTick, keeping the
-	// WORST (max) value seen so far for each metric, plus a snapshot at the run's halfway point so a
-	// slow leak (still-growing error) can be told apart from a one-time settle transient (error that
-	// stopped growing once contact was made). Every t.expect in this file reads from `worst`/`atHalf`
-	// here, gated on the run having actually finished - never live body state.
 	function makeTracker(t, boxes, totalTicks, floorY) {
 		var worst = { x: 0, z: 0, y: 0, lx: 0, lz: 0, rot: 0, v: 0, w: 0 };
 		var atHalf = null;
@@ -84,12 +58,8 @@
 		};
 	}
 
-	// ---- flat single box: the baseline every other scene here builds on ----
-
 	Runner.test('box-box/single', 'a single box on a much bigger box settles dead still (no residual torque)', function (t) {
-		// A box on a MUCH bigger box (asymmetric size, like a real ground) is the everyday case, and
-		// per-tick face clipping must not leak any lateral force/torque from a perfectly symmetric,
-		// perfectly flat drop - any nonzero steady-state spin here is a geometry bug, not noise.
+
 		var TICKS = 240;
 		var w = t.makeWorld({ gravity: -9.8 });
 		t.box(w, 20, 0.5, 20, 0, { pos: [0, -0.5, 0], restitution: 0, color: '#243B2A' });
@@ -124,12 +94,8 @@
 		t.simulate(w, TICKS);
 	}, { visual: true, steps: 240, page: 'box-box-single' });
 
-	// ---- two boxes exactly touching at spawn: the "already resting" case ----
-
 	Runner.test('box-box/stack2', 'two boxes spawned already stacked, exactly touching, hold both positions', function (t) {
-		// No fall, no impact - this isolates the manifold's OWN steady-state behavior (4-point face
-		// contact, warm-started lambda) from any settle transient. Either box drifting at all here
-		// means the resting manifold itself is injecting force/torque, not that a landing was rough.
+
 		var TICKS = 180;
 		var w = t.makeWorld({ gravity: -9.8 });
 		t.box(w, 20, 0.5, 20, 0, { pos: [0, -0.5, 0], restitution: 0, color: '#243B2A' });
@@ -165,15 +131,8 @@
 		t.simulate(w, TICKS);
 	}, { visual: true, steps: 180, page: 'box-box-stack2' });
 
-	// ---- box bridging two separate, non-overlapping supports ----
-
 	Runner.test('box-box/bridge', 'a box bridging two separate supports stays flat, does not tip', function (t) {
-		// Two supports spaced so their footprints do NOT overlap (each spans 1 unit either side of
-		// its center, gap of 0.6 between them) - the bridging box's contact area on each support is a
-		// genuine PARTIAL face overlap (not a full 4-corner match), which is exactly the case that
-		// broke: a razor-thin, numerically-near-duplicate edge axis (from even a fraction of a degree
-		// of accumulated tilt on a support) won a face-vs-edge SAT tie-break it should never have won,
-		// collapsing what should be a 4-point manifold into 1 stray point and torquing the bridge over.
+
 		var TICKS = 400;
 		var w = t.makeWorld({ gravity: -9.8 });
 		t.box(w, 20, 0.5, 20, 0, { pos: [0, -0.5, 0], restitution: 0, color: '#243B2A' });
@@ -202,11 +161,7 @@
 			var worst = tracker.worst();
 			return { ok: worst.x < 0.1, detail: 'worst x drift=' + worst.x.toFixed(4) };
 		});
-		// NOT a speed check: a resting contact can report a small non-decaying "derived velocity"
-		// (v = dx/h reads back a tiny steady-state residual even once position has genuinely stopped
-		// moving - a known, pre-existing solver characteristic, not something box-box owns) without
-		// actually being unstable. What box-box itself must guarantee is that POSITION holds - so this
-		// checks the position over the run's second half is not still drifting.
+
 		t.expect('position genuinely stopped moving (second half added < 0.01 to y and x drift)', function () {
 			if (tick0 < TICKS) return false;
 			var half = tracker.atHalf(), worst = tracker.worst();
@@ -217,15 +172,8 @@
 		t.simulate(w, TICKS);
 	}, { visual: true, steps: 400, page: 'box-box-bridge' });
 
-	// ---- offset stacking: each box partially overlaps the one below, on BOTH horizontal axes ----
-
 	Runner.test('box-box/offset-stack', 'a 4-box offset stack (each box inset from the one below, on BOTH axes) holds its shape', function (t) {
-		// Reproduces the pyramid scene's own support geometry at a much smaller, fully-inspectable
-		// scale: each box is inset so it overlaps its supporting neighbour by an UNEQUAL amount per
-		// side - not a symmetric bridge, and not a full flush stack. Inset on BOTH x AND z (unevenly)
-		// so a leak specific to one horizontal axis, or to the diagonal combination, cannot hide
-		// behind a test that only ever moves along x - a real 3D asymmetric-support scene, not a 2D
-		// slice of one.
+
 		var TICKS = 500;
 		var w = t.makeWorld({ gravity: -9.8 });
 		t.box(w, 20, 0.5, 20, 0, { pos: [0, -0.5, 0], restitution: 0, color: '#243B2A' });
@@ -287,23 +235,13 @@
 		t.simulate(w, TICKS);
 	}, { visual: true, steps: 500, page: 'box-box-offset-stack' });
 
-	// ---- edge-edge contact: a box balanced corner-down on another box's edge/corner ----
-
 	Runner.test('box-box/corner-drop', 'a box dropped corner-first onto flat ground tips onto a face and settles', function (t) {
-		// The corner-first drop transiently exercises the edge-edge branch (two near-touching edges
-		// before the box has rocked onto a full face) before settling into a normal face contact -
-		// this is BoxBox.js's edge-edge code path's only real exercise in this suite.
-		//
-		// A cube balanced EXACTLY corner-down (or edge-down) is a genuine symmetric equilibrium with
-		// no perturbation to break it in a deterministic sim with no injected noise - it can sit there
-		// forever without that being a bug. So this composes THREE axis rotations (not a single clean
-		// 45 degrees about one axis) to land corner-first while breaking that symmetry, the same way a
-		// real corner-first drop never lands perfectly plumb.
+
 		var TICKS = 400;
 		var qx = t.quat(Math.sin(Math.PI / 8), 0, 0, Math.cos(Math.PI / 8));
 		var halfZ = Math.atan(1 / Math.sqrt(2)) / 2;
 		var qz = t.quat(0, 0, Math.sin(halfZ), Math.cos(halfZ));
-		var qx2 = t.quat(Math.sin(0.05), 0, 0, Math.cos(0.05)); // small symmetry-breaking nudge
+		var qx2 = t.quat(Math.sin(0.05), 0, 0, Math.cos(0.05));
 		var rot = AP.Quaternion.multiply(qx2, AP.Quaternion.multiply(qz, qx)).normalize();
 
 		var w = t.makeWorld({ gravity: -9.8 });
@@ -324,7 +262,7 @@
 			for (var i = 0; i < 3; i++) {
 				var axis = localAxes[i];
 				box.rotation.transformVectorInPlace(axis);
-				var d = Math.max(-1, Math.min(1, Math.abs(axis.y))); // either end of that axis can be "up"
+				var d = Math.max(-1, Math.min(1, Math.abs(axis.y)));
 				var deg = Math.acos(d) * 180 / Math.PI;
 				if (deg < best) best = deg;
 			}
@@ -341,13 +279,8 @@
 		t.simulate(w, TICKS);
 	}, { visual: true, steps: 400, page: 'box-box-corner-drop' });
 
-	// ---- speculative approach: a box falling fast toward flush contact must not pick one corner ----
-
 	Runner.test('box-box/fast-approach', 'a box falling fast onto flat ground lands flush, no single-corner torque kick', function (t) {
-		// This is the exact shape of the bug fixed in BoxBox's separated-contact path: a fast-falling,
-		// perfectly flat, perfectly symmetric box must never pick up SIDEWAYS velocity or spin purely
-		// from landing - any of either is the signature of a single off-center speculative contact
-		// point standing in for what should be all 4 corners together.
+
 		var TICKS = 200;
 		var w = t.makeWorld({ gravity: -9.8 });
 		t.box(w, 20, 0.5, 20, 0, { pos: [0, -0.5, 0], restitution: 0, color: '#243B2A' });
@@ -383,17 +316,8 @@
 		t.simulate(w, TICKS);
 	}, { visual: true, steps: 200, page: 'box-box-fast-approach' });
 
-	// ---- long-horizon drift/tilt accumulation (the pyramid's own failure mode, isolated) ----
-
 	Runner.test('box-box/long-rest', 'a 3-box offset stack (inset on BOTH axes) shows no slow drift or tilt accumulation over 1000 ticks', function (t) {
-		// Same offset-stack shape as box-box/offset-stack (inset on x AND z, unevenly, so a leak
-		// specific to one horizontal axis can't hide), but run far longer and specifically tracking
-		// whether error GROWS over time rather than just checking the end state - the pyramid's own
-		// remaining failure mode is a slow leak (tiny torque every tick, invisible for a few hundred
-		// ticks, but a box has fully toppled by tick ~900). Comparing second-half growth to first-half
-		// catches that leak long before a tip-over would, and does it per-axis (x drift, z drift,
-		// X-lean, Z-lean, total rotation) rather than one blended scalar that a leak on an unchecked
-		// axis could hide behind entirely.
+
 		var TICKS = 1000;
 		var w = t.makeWorld({ gravity: -9.8 });
 		t.box(w, 20, 0.5, 20, 0, { pos: [0, -0.5, 0], restitution: 0, color: '#243B2A' });

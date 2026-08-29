@@ -18,7 +18,7 @@
 			ticks = tick;
 			if (!isFinite(base.position.x) || !isFinite(base.position.y) || !isFinite(top.position.x) || !isFinite(top.position.y)) { everNonFinite = true; return; }
 			var dx = top.position.x - base.position.x, dy = top.position.y - base.position.y, dz = top.position.z - base.position.z;
-			var gap = Math.abs(Math.hypot(dx, dy, dz) - 2); // 2 = the boxes' original center-to-center distance
+			var gap = Math.abs(Math.hypot(dx, dy, dz) - 2);
 			if (gap > worstGapDeviation) worstGapDeviation = gap;
 		});
 		t.expect('the welded pair stays finite and the weld never separates, for the WHOLE run (checked every tick)', function () {

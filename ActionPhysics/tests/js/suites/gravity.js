@@ -1,4 +1,3 @@
-// g=-10 rather than -9.81: two seconds of fall must land exactly on vy=-20 at integer ticks.
 (function (Runner) {
 	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;

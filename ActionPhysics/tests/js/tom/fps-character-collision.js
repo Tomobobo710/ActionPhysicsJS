@@ -1,18 +1,6 @@
-/**
- * Tom's Suite — CHARACTER-vs-CHARACTER collision tests (CC1-CC3).
- *
- * Two independent FPSCharacterControllers in one world. A player is a WALL to another player: full
- * body-block via the other player's ghost (findBlock forces keep=0 for a body tagged isCharacterGhost),
- * never a soft mass-yield push like an ordinary object. These tests drive TWO controllers per tick —
- * _util_fps.js's PBF.drive() only brackets one, so this file rolls its own two-controller bracket
- * (same beginStep -> world.step -> endStep ordering PBF.drive uses internally).
- */
 (function (Runner, PBF, ActionPhysics) {
 	Runner.suite('tom');
 
-	// Drive TWO controllers per tick with the same bracket ordering PBF.drive() uses for one:
-	// onTick fires beginStep for both (before world.step, which the runner owns), and endStep for
-	// both is patched into evalTick so it runs immediately after world.step, before any expectation reads state.
 	function driveTwo(t, a, b, cmdForA, cmdForB) {
 		var lastEndTick = 0;
 		function ensureEnded(tick) {
@@ -31,23 +19,12 @@
 		};
 	}
 
-	// "Never violates" / final-measurement gate. t.expect flips a criterion PASS the FIRST tick its
-	// predicate returns true, and never re-checks it after - correct for a predicate that starts
-	// false and should eventually become and STAY true (settling), wrong for a predicate like
-	// "hasn't passed through yet" that is trivially true before the real test action even starts
-	// (tick 1, nobody has moved) and would latch a pass immediately regardless of what happens on
-	// every later tick. This was a REAL, confirmed-live bug in this exact file: A sprinting straight
-	// through B for 600 ticks (B never moves, A ends up 100+ units past B) was reported as a pass,
-	// because "A never passes B" read true at tick 1 and t.expect never looked again. Gate every
-	// state-must-hold-the-whole-run assertion in this file on the run's LAST tick instead, matching
-	// fps-knockback.js's own finalGate (same bug class, already fixed there).
 	function finalGate(t, total) {
 		var tick0 = 0;
 		t.onTick(function (world, tick) { tick0 = tick; });
 		return function () { return tick0 >= total; };
 	}
 
-	// ---- CC1: sprinting into a stationary player is a hard body-block (no pass-through) ----
 	PBF.scaleTest('fps/character-collision', 'CC1', 'sprint into player hard-blocks (no pass-through)', function (t, S) {
 		var w = S.flat();
 		var a = S.feetSpawn(w, 0, -2, {});
@@ -77,7 +54,6 @@
 		t.simulate(w, 600);
 	}, { page: 'fps/character-collision', steps: 600, description: 'Sprint into a stationary player for 9+ seconds; must stay blocked the whole time — no eventual slip-through, no displacement of the other player.' });
 
-	// ---- CC2: a light bump (short tap) also fails to displace or pass through ----
 	PBF.scaleTest('fps/character-collision', 'CC2', 'short bump does not pass through or move player', function (t, S) {
 		var w = S.flat();
 		var a = S.feetSpawn(w, 0, -2, {});
@@ -107,7 +83,6 @@
 		t.simulate(w, 90);
 	}, { page: 'fps/character-collision', steps: 90, description: 'A short tap into another player must not move them or let you pass through — unlike a pushable object.' });
 
-	// ---- CC3: both players sprinting at each other both hard-stop, neither passes the midpoint into the other's start side ----
 	PBF.scaleTest('fps/character-collision', 'CC3', 'head-on sprint both block, no swap-through', function (t, S) {
 		var w = S.flat();
 		var a = S.feetSpawn(w, 0, -3, {});
@@ -120,7 +95,7 @@
 			function (tick) { return tick > 30 ? { forward: -1, sprint: true } : {}; }
 		);
 		t.onTick(function () {
-			// If they ever fully swap sides, that's a walk-through in either direction.
+
 			if (a.body.position.z > 3 || b.body.position.z < -3) swapped = true;
 		});
 
@@ -133,7 +108,6 @@
 		});
 		t.simulate(w, 300);
 	}, { page: 'fps/character-collision', steps: 300, description: 'Two players sprint head-on into each other; both must hard-stop at contact with neither passing the other.' });
-
 })(
 	typeof module !== 'undefined' && module.exports ? require('../runner.js') : window.APRunner,
 	typeof module !== 'undefined' && module.exports ? require('./_util_fps.js') : window.PBF,

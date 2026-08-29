@@ -74,8 +74,6 @@
 		vecIs(t, ab, -ba.x, -ba.y, -ba.z, 'a x b === -(b x a)');
 	});
 
-	// The solver reuses scratch vectors constantly. An implementation that reads a component after
-	// overwriting it is correct in every isolated call and wrong only when the output aliases an input.
 	test('math/vector3', 'crossInto is correct when out aliases an input', function (t) {
 		var a = new V(1, 2, 3), b = new V(4, 5, 6);
 		var expected = V.crossInto(new V(), a, b);
@@ -107,8 +105,6 @@
 		vecIs(t, V.normalizeInto(new V(), new V(3, 4, 0)), 0.6, 0.8, 0, 'normalizeInto');
 	});
 
-	// Reachable from real state: a contact normal between coincident points, a velocity at rest.
-	// NaN here would poison every downstream computation.
 	test('math/vector3', 'normalizing a zero vector yields zero, not NaN', function (t) {
 		var v = new V(0, 0, 0).normalizeInPlace();
 		t.checkTrue(v.isFinite(), 'stays finite');
@@ -134,8 +130,6 @@
 		}
 	});
 
-	// The shared API's methods return a new vector; matching that exactly is what lets its class body be
-	// pasted over ours.
 	test('math/vector3', 'shared methods allocate, leaving the receiver untouched', function (t) {
 		var v = new V(1, 2, 3), o = new V(1, 1, 1);
 		t.checkTrue(v.add(o) !== v, 'add returns new');
@@ -146,8 +140,6 @@
 		vecIs(t, v, 1, 2, 3, 'receiver untouched');
 	});
 
-	// These are the forms the solver uses; one that quietly allocates puts GC pressure in the hottest
-	// loop in the engine.
 	test('math/vector3', 'additions never allocate', function (t) {
 		var v = new V(1, 2, 3), o = new V(1, 1, 1), out = new V();
 		t.checkEqual(v.addInPlace(o), v, 'addInPlace');
@@ -161,11 +153,9 @@
 		t.checkEqual(V.normalizeInto(out, o), out, 'normalizeInto');
 	});
 
-	// The interop contract: a foreign vector passes straight in, nothing uses instanceof.
 	test('math/vector3', 'accepts any object with x/y/z', function (t) {
 		var plain = { x: 4, y: 5, z: 6 };
 		vecIs(t, new V(1, 2, 3).addInPlace(plain), 5, 7, 9, 'addInPlace plain');
 		t.checkEqual(new V(1, 2, 3).dot(plain), 32, 'dot plain');
 	});
-
 })(typeof module !== 'undefined' && module.exports ? require('../runner.js') : window.APRunner);

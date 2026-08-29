@@ -1,5 +1,3 @@
-// Expected values are derived from the engine's own per-substep integration formulas - different
-// substep counts and integration order produce different discrete results for the same physics.
 (function (Runner) {
 	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;

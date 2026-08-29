@@ -1,15 +1,8 @@
-/**
- * Tom's Suite — FPSCharacterController LADDER tests (L1-L6).
- *
- * One controller per test, all 3 scales, ladder sized off a square pillar (1.2x6x1.2 pre-scale,
- * climbable on every face) via S.pillarLadder.
- */
 (function (Runner, PBF, ActionPhysics) {
 	Runner.suite('tom');
 
 	var G = 'fps/ladder', P = 'fps/ladder';
 
-	// ---- L1: walk up to the ladder, climb it fully, reach the top, dismount, fall, land ----
 	PBF.scaleTest(G, 'L1', 'walk up, climb to the top, dismount, and land', function (t, S) {
 		var w = S.flat();
 		S.pillarLadder(w);
@@ -36,7 +29,6 @@
 		t.simulate(w, 400);
 	}, { page: P, steps: 400, description: 'Walking up to the pillar ladder from a distance mounts it, climbs it fully, dismounts at the top, and lands back on the floor.' });
 
-	// ---- L2: same as L1, but sprinting the whole time ----
 	PBF.scaleTest(G, 'L2', 'sprint up, climb to the top, dismount, and land', function (t, S) {
 		var w = S.flat();
 		S.pillarLadder(w);
@@ -63,12 +55,10 @@
 		t.simulate(w, 400);
 	}, { page: P, steps: 400, description: 'Sprinting up to the pillar ladder mounts, climbs, dismounts at the top, and lands, same as a walk approach.' });
 
-	// ---- L3: strafing into the ladder (pure sideways input, no forward/back) mounts and climbs it ----
 	PBF.scaleTest(G, 'L3', 'strafing into the ladder mounts and climbs it', function (t, S) {
 		var w = S.flat();
 		S.pillarLadder(w);
-		// Face ALONG the ladder's wall so "right" strafes straight into its face — a pure sideways
-		// approach, never any forward/back input.
+
 		var yaw = Math.PI / 2;
 		var p = S.spawn(w, { x: 0, y: 0.9 * S.SC + 0.001, z: S.sc(-6) }, { yaw: yaw });
 		PBF.renderables(t, p);
@@ -94,11 +84,10 @@
 		t.simulate(w, 400);
 	}, { page: P, steps: 400, description: 'Strafing sideways into the ladder face (no forward/back input) from a distance mounts, climbs fully, dismounts at the top, and lands, same journey as L1/L2.' });
 
-	// ---- L4: look direction determines climb direction ----
 	PBF.scaleTest(G, 'L4', 'look direction determines climb direction', function (t, S) {
 		var w = S.flat();
 		S.pillarLadder(w);
-		// Face the ladder (yaw=PI, forward=-z toward the face at z=0).
+
 		var yaw = Math.PI;
 		var p = S.spawn(w, { x: 0, y: 3 * S.SC, z: S.sc(0.6) }, { yaw: yaw });
 		PBF.renderables(t, p);
@@ -127,12 +116,11 @@
 		t.simulate(w, 150);
 	}, { page: P, steps: 150, description: 'While mounted, look pitch determines climb direction — level or up climbs up, down reverses to climb down.' });
 
-	// ---- L5: no jitter/flicker at the top of the ladder ----
 	PBF.scaleTest(G, 'L5', 'no jitter at the top of the ladder', function (t, S) {
 		var w = S.flat();
 		S.pillarLadder(w);
 		var yaw = Math.PI;
-		var p = S.spawn(w, { x: 0, y: 5 * S.SC, z: S.sc(0.6) }, { yaw: yaw }); // spawn near the top already
+		var p = S.spawn(w, { x: 0, y: 5 * S.SC, z: S.sc(0.6) }, { yaw: yaw });
 		PBF.renderables(t, p);
 		var transitions = 0, lastOnLadder = null;
 		PBF.drive(t, p, function () {
@@ -148,7 +136,6 @@
 		t.simulate(w, 120);
 	}, { page: P, steps: 120, description: 'Regression: dismounting at the top of the ladder must not flicker between mounted and dismounted several times before settling.' });
 
-	// ---- L6: jump-off dismount feel ----
 	PBF.scaleTest(G, 'L6', 'jump-off dismount feel', function (t, S) {
 		var w = S.flat();
 		S.pillarLadder(w);
@@ -186,12 +173,10 @@
 		t.simulate(w, 90);
 	}, { page: P, steps: 90, description: 'Pressing jump while on a ladder dismounts with a horizontal-only shove and no phantom jump on landing.' });
 
-	// ---- L7: sliding into a ladder stops the slide ----
 	PBF.scaleTest(G, 'L7', 'sliding into a ladder stops the slide', function (t, S) {
 		var w = S.flat();
 		S.pillarLadder(w);
-		// Further back than L1/L2's approach spawn, so there's room to sprint up to slide speed
-		// before crouching, then still cover ground into the ladder while sliding.
+
 		var p = S.spawn(w, { x: 0, y: 0.9 * S.SC + 0.001, z: S.sc(-14) }, {});
 		PBF.renderables(t, p);
 		var enteredSlide = false, mountedAt = -1, slidingAtMount = null, slidingAfterMount = false;

@@ -1,6 +1,3 @@
-/**
- * Tom's Suite — FPSCharacterController PUSH tests (P1-P6).
- */
 (function (Runner, PBF, ActionPhysics) {
 	Runner.suite('tom');
 
@@ -8,7 +5,6 @@
 		return PBF.object(w, side, mass, pos, color || '#f00', mat);
 	}
 
-	// ---- P1: a pushable object MOVES AT ALL when you walk into it ----
 	PBF.scaleTest('fps/push', 'P1', 'push moves an object at all', function (t, S) {
 		var w = S.flat();
 		var pr = S.scaledObject(w, 1, 0.5, 0.3 + 0.5 + 0.02);
@@ -30,7 +26,6 @@
 		t.simulate(w, 92);
 	}, { page: 'fps/push', steps: 92, description: 'A single short forward tap into a light box; the box should visibly roll forward.' });
 
-	// ---- P2: push is MASS-MONOTONIC — heavier object never gets a higher launch velocity ----
 	PBF.scaleTest('fps/push', 'P2', 'push mass-monotonic (heavy never easier)', function (t, S) {
 		var side = S.sc(1), boxZ = S.sc(0.3 + 0.5 + 0.02);
 		var masses = [0.5, 1, 2, 5, 10, 20, 50];
@@ -68,7 +63,6 @@
 		t.simulate(w, masses.length * BLOCK);
 	}, { page: 'fps/push', steps: 1960, description: 'Seven objects of rising mass, tapped ONE AT A TIME in sequence (lightest first). Watch each launch, then the next heavier one launch NO faster — strictly monotonic across every mass, no exemption for the light end.' });
 
-	// ---- P3: a very heavy object resists a sustained sprint-push ----
 	PBF.scaleTest('fps/push', 'P3', 'very heavy object resists', function (t, S) {
 		var w = S.flat();
 		var pr = S.scaledObject(w, 1, 500, 3);
@@ -98,7 +92,6 @@
 		t.simulate(w, 120);
 	}, { page: 'fps/push', steps: 120, description: 'Sprint into a mass-500 box; it should hardly budge AND stop the character. Fails if the char climbs/steps over the box.' });
 
-	// ---- P5: lean-to-shove sustains — the box keeps moving in the second half ----
 	PBF.scaleTest('fps/push', 'P5', 'lean-to-shove sustains', function (t, S) {
 		var w = S.flat();
 		var pr = S.scaledObject(w, 1, 3, 3);
@@ -119,7 +112,6 @@
 		t.simulate(w, 80);
 	}, { page: 'fps/push', steps: 80, description: 'Lean-shove a box by walking into it; the push sustains — the box keeps moving through the second half.' });
 
-	// ---- P6: back off, the ghost heels — no runaway ----
 	PBF.scaleTest('fps/push', 'P6', 'back off, ghost heels no runaway', function (t, S) {
 		var w = S.flat();
 		var pr = S.scaledObject(w, 1, 3, 3);
@@ -155,7 +147,6 @@
 		});
 		t.simulate(w, 100);
 	}, { page: 'fps/push', steps: 100, description: 'After a shove, releasing input: the ghost snaps back to the player and speed settles to zero — and the char must have shoved the box, not climbed over it.' });
-
 })(
 	typeof module !== 'undefined' && module.exports ? require('../runner.js') : window.APRunner,
 	typeof module !== 'undefined' && module.exports ? require('./_util_fps.js') : window.PBF,

@@ -1,17 +1,8 @@
-/**
- * Tom's Suite — FPSCharacterController MOVEMENT tests (M1-M12).
- *
- * Each logical test is registered ONCE via PBF.scaleTest and auto-expands to 3 watchable rows
- * (@0.5 / @1.0 / @2.0). The world is NOT scaled (walls/ceilings/boxes stay put); only the
- * CHARACTER scales (S.SC), and the test's instruments (S.scaledObject proportional objects) and
- * world-unit thresholds (S.sc) scale with it.
- */
 (function (Runner, PBF, ActionPhysics) {
 	Runner.suite('tom');
 
 	var G = 'fps/movement', P = 'fps/movement';
 
-	// ---- M1: idle, no jitter ----
 	PBF.scaleTest(G, 'M1', 'idle no-jitter', function (t, S) {
 		var w = S.flat();
 		var p = S.feetSpawn(w, 0, 0, {});
@@ -32,7 +23,6 @@
 		t.simulate(w, 120);
 	}, { page: P, steps: 120, description: 'Stand idle on flat ground; the collider should not drift or jitter (max speed < 0.01).' });
 
-	// ---- M2: sprint holds sc(11.5) ----
 	PBF.scaleTest(G, 'M2', 'sprint holds 11.5', function (t, S) {
 		var w = S.flat();
 		var p = S.feetSpawn(w, 0, 0, {});
@@ -49,7 +39,6 @@
 		t.simulate(w, 40);
 	}, { page: P, steps: 40, description: 'Sprint forward; steady horizontal speed should hold at 11.5*scale u/s.' });
 
-	// ---- M3: jump showcase — regression-locks the known-good jump behavior ----
 	PBF.scaleTest(G, 'M3', 'jump showcase (golden baseline)', function (t, S) {
 		var w = S.flat();
 		var p = S.feetSpawn(w, 0, 0, {});
@@ -99,7 +88,6 @@
 		t.simulate(w, 100);
 	}, { page: P, steps: 100, description: 'Sprint then jump: rise, apex timing, air time, and horizontal speed held through the whole flight, then a clean landing. Golden regression baseline.' });
 
-	// ---- M4: ground slide ----
 	PBF.scaleTest(G, 'M4', 'ground slide', function (t, S) {
 		var w = S.flat();
 		var p = S.feetSpawn(w, 0, 0, {});
@@ -117,7 +105,6 @@
 		t.simulate(w, 50);
 	}, { page: P, steps: 50, description: 'Sprint then crouch on flat ground to trigger a slide.' });
 
-	// ---- M5: jump-into-slide ----
 	PBF.scaleTest(G, 'M5', 'jump-into-slide', function (t, S) {
 		var w = S.flat();
 		var p = S.feetSpawn(w, 0, 0, {});
@@ -133,13 +120,10 @@
 		t.expect('lands into slide with speed > ' + S.sc(9).toFixed(2), function () {
 			return { ok: slid && sp > S.sc(9), detail: 'slid=' + slid + ' sp=' + sp.toFixed(2) + ' expect>' + S.sc(9).toFixed(2) };
 		});
-		// Airborne crouch pulls the collider's feet up (top-anchored rebuild — see _setCrouch),
-		// adding real height/hang-time to the jump arc. 100 ticks was tuned for the arc before that
-		// change; the taller arc needs more room to fall back down and land.
+
 		t.simulate(w, 300);
 	}, { page: P, steps: 300, description: 'Sprint, jump, then crouch mid-air to land into a slide carrying speed (>9*scale u/s). Airborne crouch adds real jump height, so this needs a longer window than a plain jump would.' });
 
-	// ---- M6: strafe-turn no jitter ----
 	PBF.scaleTest(G, 'M6', 'strafe-turn no jitter', function (t, S) {
 		var w = S.flat();
 		var p = S.feetSpawn(w, 0, 0, {});
@@ -159,18 +143,15 @@
 		t.simulate(w, 120);
 	}, { page: P, steps: 120, description: 'Sprint while turning continuously; horizontal speed stays smooth (per-tick delta < 1.0).' });
 
-	// ---- M7: wall-slide preserves tangential (wall is fixed world geometry, NOT scaled) ----
 	PBF.scaleTest(G, 'M7', 'wall-slide preserves tangential', function (t, S) {
 		var w = S.flat();
-		// Wall on the -x side, because {forward:1, right:1, yaw:0} drives the character toward -x/+z (right at yaw 0
-		// is -x) — it presses into the wall while sliding along +z. We require it to actually REACH the wall and
-		// keep tangential (z) speed (>sc(3)).
+
 		w.addRigidBody(PBF.staticBox(0.5, 2, 20, { x: -3, y: 2, z: 0 }));
 		var p = S.feetSpawn(w, 0, 0, {});
 		PBF.renderables(t, p);
 		var reached = false, tangOnWall = 0;
 		PBF.drive(t, p, function () {
-			var frontX = p.body.position.x - p.width / 2;          // -x front edge (wall face is x=-2.5)
+			var frontX = p.body.position.x - p.width / 2;
 			if (frontX < -2.5 + S.sc(0.15) && Math.abs(p.body.position.z) < 19) {
 				reached = true;
 				tangOnWall = Math.abs(p.body.linear_velocity.z);
@@ -188,11 +169,10 @@
 		t.simulate(w, 60);
 	}, { page: P, steps: 60, description: 'Sprint diagonally into a wall; slide along the face keeping tangential speed (>3).' });
 
-	// ---- M8a: STEP UP onto a step BELOW stepHeight — the char must climb onto it and stand on top ----
 	PBF.scaleTest(G, 'M8a', 'step up onto a step below stepHeight', function (t, S) {
 		var w = S.flat();
 		var p = S.feetSpawn(w, 0, 0, {});
-		var boxH = 0.6 * p.stepHeight;                 // below stepHeight -> should be climbable
+		var boxH = 0.6 * p.stepHeight;
 		w.addRigidBody(PBF.staticBox(4, boxH / 2, 10, { x: 0, y: boxH / 2, z: 13 }));
 		var tick0 = 0;
 		PBF.renderables(t, p);
@@ -201,8 +181,8 @@
 			tick0 = tick;
 			var feet = p.body.position.y - p.height / 2;
 			if (p.grounded) { peakFeetGrounded = Math.max(peakFeetGrounded, feet); if (feet > 0.6 * boxH) onTop = true; }
-			var cf = p.body.position.z + p.depth / 2;   // front edge
-			return cf < 3.5 ? { forward: 1, sprint: true } : { forward: 0 };   // walk to the face, then stand
+			var cf = p.body.position.z + p.depth / 2;
+			return cf < 3.5 ? { forward: 1, sprint: true } : { forward: 0 };
 		});
 		t.log('Sprint at a step 0.6× stepHeight tall (below it) then stop: the char should STEP UP and stand on top (feet reach the step top, grounded).');
 		t.expect('reached the step top at some point', function () {
@@ -220,11 +200,10 @@
 		t.simulate(w, 180);
 	}, { page: P, steps: 180, description: 'Sprint at a step 0.6× the character\'s scaled stepHeight (below it), then stop; the char steps up and stands on top.' });
 
-	// ---- M8b: correctly STOP at a step ABOVE stepHeight (but close to it) — must be blocked, not mounted ----
 	PBF.scaleTest(G, 'M8b', 'stop at a step just above stepHeight', function (t, S) {
 		var w = S.flat();
 		var p = S.feetSpawn(w, 0, 0, {});
-		var boxH = 1.4 * p.stepHeight;                 // above stepHeight -> must be blocked
+		var boxH = 1.4 * p.stepHeight;
 		var faceZ = 3;
 		w.addRigidBody(PBF.staticBox(4, boxH / 2, 10, { x: 0, y: boxH / 2, z: 13 }));
 		var tick0 = 0;
@@ -236,7 +215,7 @@
 			maxFeet = Math.max(maxFeet, feet);
 			maxFront = Math.max(maxFront, p.body.position.z + p.depth / 2);
 			if (p.grounded && feet > 0.6 * boxH && p.body.position.z > faceZ) tookAndHeldTop++;
-			return { forward: 1, sprint: true };        // keep pushing into it — it must NOT let the char up
+			return { forward: 1, sprint: true };
 		});
 		t.log('Sprint into a step 1.4× stepHeight tall (just above it): the char must be BLOCKED — it never ends up standing on the step, and never gets past the face.');
 		t.expect('never mounts the step (no sustained stand on top)', function () {
@@ -252,9 +231,8 @@
 		t.simulate(w, 150);
 	}, { page: P, steps: 150, description: 'Sprint into a step 1.4× the character\'s scaled stepHeight (just above it); the char is blocked and never mounts the step.' });
 
-	// ---- M9: head-bonk no stick (ceiling is fixed world geometry) ----
 	PBF.scaleTest(G, 'M9', 'head-bonk no stick', function (t, S) {
-		// free-jump apex probe: feet-planted spawn, wait to be grounded, jump, measure peak head. Throwaway world.
+
 		function freeJump() {
 			var pw = S.flat();
 			var pp = S.feetSpawn(pw, 0, 0, {});
@@ -269,7 +247,7 @@
 			return { h0: h0, apex: peak, rise: peak - h0 };
 		}
 		var fj = freeJump();
-		var clr = 0.5 * fj.rise;   // ceiling underside this far above the standing head — well inside the jump arc
+		var clr = 0.5 * fj.rise;
 
 		var w = S.flat();
 		var p = S.feetSpawn(w, 0, 0, {});
@@ -278,7 +256,7 @@
 		var jumped = false, peakHead = -9, stuck = false, tick0 = 0;
 		PBF.drive(t, p, function (tick) {
 			tick0 = tick;
-			if (tick <= 20) return {};   // settle grounded
+			if (tick <= 20) return {};
 			if (headTop === null) {
 				headTop = p.body.position.y + p.height / 2;
 				ceilBottom = headTop + clr;
@@ -288,7 +266,7 @@
 			}
 			var head = p.body.position.y + p.height / 2;
 			peakHead = Math.max(peakHead, head);
-			// stuck = hanging motionless up near the ceiling after the jump (the failure mode)
+
 			if (jumped && head > headTop + clr * 0.5 && Math.abs(p.body.linear_velocity.y) < 0.01) stuck = true;
 			var cmd = {};
 			if (!jumped && p.grounded) { cmd.jumpPressed = true; jumped = true; }
@@ -317,7 +295,6 @@
 		t.simulate(w, 120);
 	}, { page: P, steps: 120, description: 'Feet-planted, jump into a ceiling placed within the jump\'s real reach (self-calibrated from a free-jump probe); the char must actually bonk it and fall back, not stick.' });
 
-	// ---- M10: tall STATIC ledge blocks (no climb) ----
 	PBF.scaleTest(G, 'M10', 'tall static ledge blocks (no climb)', function (t, S) {
 		var w = S.flat();
 		var lw = S.sc(4), lh = S.sc(2), ld = S.sc(4);
@@ -340,7 +317,6 @@
 		t.simulate(w, 140);
 	}, { page: P, steps: 140, description: 'Sprint into a tall static ledge; it should block the character, not be climbable.' });
 
-	// ---- M11: tall DYNAMIC object not climbable (scale-proportional object) ----
 	PBF.scaleTest(G, 'M11', 'tall dynamic object not climbable', function (t, S) {
 		var w = S.flat();
 		S.scaledObject(w, 1.2, 8, 3, '#cc4444');
@@ -361,7 +337,6 @@
 		t.simulate(w, 140);
 	}, { page: P, steps: 140, description: 'Sprint into a tall dynamic object; shove it forward rather than climbing on top.' });
 
-	// ---- M12: jump onto low box lands and stays ----
 	PBF.scaleTest(G, 'M12', 'jump onto low box lands and stays', function (t, S) {
 		var w = S.flat();
 		var bs = S.sc(0.8);
@@ -370,36 +345,22 @@
 		var p = S.feetSpawn(w, 0, 0, {});
 		PBF.renderables(t, p);
 		var boxFront = boxZ - bs / 2;
-		// jumpGap tuned by direct sweep (0.01-unit steps) against the fixed jump-suppression behavior
-		// (see FPSCharacterController's _jumpRising) — the ORIGINAL 0.9 value silently landed via a
-		// sideways step-up grab, not a real ballistic fall (the test was green for the wrong reason).
-		// Re-tuned after Queries._advance's exact-touch fix (an overlapping sweep now gets EPA's real
-		// surface normal instead of the reversed-travel-direction fallback): the OLD single-constant
-		// S.sc(1.0) value turned out to depend on that same fallback misclassifying a corner-graze near
-		// the box's front-top edge as a flat vertical wall, clipping enough forward speed to accidentally
-		// land the jump — the test was green for the wrong reason a second time, at scale 0.5 only. Under
-		// the corrected physics NO single S.sc(x) multiplier lands cleanly at all three scales at once —
-		// swept at 0.01 resolution, scale 0.5's landing window (gap in [0.30,0.86]*SC) and scale 2's
-		// ([0.87,2.3]*SC) do not overlap at all (0.5's window closes at 0.86, 2's opens at 0.87 - the true
-		// physical windows, not a measurement-resolution artifact). This is a genuine finding, not
-		// something to force through a shared constant: the jump arc's clearance over a box that scales
-		// with the character is not perfectly scale-invariant. Per-scale gap, each mid-window with margin
-		// on both sides (0.5: window 0.30-0.86; 1: window 0.60-1.5+; 2: window 0.87-2.3).
+
 		var jumpGap = S.sc(S.SC <= 0.5 ? 0.6 : (S.SC >= 2 ? 1.0 : 0.8));
 		var jumped = false, jumpTick = -1, boxStart = null, boxLateSpeed = 0, tick0 = 0;
 		PBF.drive(t, p, function (tick) {
 			tick0 = tick;
-			if (tick <= 25) return {};                                   // settle
+			if (tick <= 25) return {};
 			var cf = p.body.position.z + p.depth / 2;
 			if (!jumped) {
 				if (boxFront - cf <= jumpGap) { jumped = true; jumpTick = tick; return { forward: 1, jumpPressed: true }; }
-				return { forward: 1 };                                    // approach until in range
+				return { forward: 1 };
 			}
 			var since = tick - jumpTick;
-			if (since < 3) return { forward: 1 };                        // brief forward carry into the jump
+			if (since < 3) return { forward: 1 };
 			if (boxStart === null) boxStart = { x: box.position.x, z: box.position.z };
 			if (since > 40) boxLateSpeed = Math.max(boxLateSpeed, box.linear_velocity.length());
-			return {};                                                   // then stand still and let it settle
+			return {};
 		});
 		t.log('Sprint at a low box, jump onto it (jump timed by distance so the arc clears the box), then stand: feet rest on the box top and the box stays put.');
 		t.expect('feet rest at the box top height', function () {
@@ -429,7 +390,6 @@
 		t.simulate(w, 150);
 	}, { page: P, steps: 150, description: 'Sprint at a low box and jump onto it; land and rest on top while the box stays put.' });
 
-	// ---- M13: flat-ground slide reversal is straight, not a U-turn (and no longer exits) ----
 	PBF.scaleTest(G, 'M13', 'flat-ground slide reversal is straight, not a U-turn', function (t, S) {
 		var w = S.flat();
 		var p = S.feetSpawn(w, 0, 0, {});
@@ -438,8 +398,7 @@
 		PBF.drive(t, p, function (tick) {
 			if (tick <= 15) return { forward: 1, sprint: true, yaw: 0 };
 			if (tick <= 25) return { forward: 1, sprint: true, crouch: true, yaw: 0 };
-			// From tick 26: hold straight backward (same yaw) through the whole reversal. Started
-			// moving toward +Z; reversal means net -Z, with X (lateral) staying tight throughout.
+
 			if (p.sliding) { enteredSlide = true; }
 			if (enteredSlide) {
 				if (!p.sliding) { everLeftSlideDuringHold = true; }
@@ -465,11 +424,8 @@
 		t.simulate(w, 120);
 	}, { page: P, steps: 120, description: 'Sprint into a flat-ground slide, then hold straight backward through the reversal — must brake-and-reverse in a straight line (tight lateral drift), staying in the slide the whole time, not U-turn or exit early.' });
 
-	// ---- M14: airborne slide continuation — sliding off an edge stays sliding through the fall ----
 	PBF.scaleTest(G, 'M14', 'airborne slide continuation off a ledge', function (t, S) {
-		// A bare world (NOT S.flat(), which comes with its own y=0 floor spanning +-60 that would
-		// silently occlude the drop below) — the platform IS the only floor near spawn, so the edge
-		// is a genuine fall, not a step-down the ground clamp absorbs.
+
 		var w = PBF.makeWorld();
 		var edgeZ = S.sc(10), dropH = S.sc(3), platformTop = 0, platformHalfH = S.sc(0.5);
 		var platform = PBF.staticBox(S.sc(20), platformHalfH, edgeZ / 2 + S.sc(0.01), { x: 0, y: platformTop - platformHalfH, z: edgeZ / 2 }, '#665544');
@@ -514,7 +470,6 @@
 		t.simulate(w, 220);
 	}, { page: P, steps: 220, description: 'Sprint into a slide, off a ledge, and confirm the slide persists through the airborne phase and continues immediately on landing (fast enough on flat ground below).' });
 
-	// ---- M15: slideBoost actually boosts speed once, on the slide-entry edge ----
 	PBF.scaleTest(G, 'M15', 'slideBoost launches speed at slide entry', function (t, S) {
 		var boost = 1.3;
 		var w = S.flat();
@@ -542,14 +497,6 @@
 		t.simulate(w, 40);
 	}, { page: P, steps: 40, description: 'Sprint then crouch into a slide with slideBoost configured; the entry tick\'s speed should be boosted roughly by that multiplier over the pre-entry speed, applied once.' });
 
-	// ---- M16/M17: airborne crouch-jump clearance (top-anchored crouch) ----
-	// Ledge height (1.6×SC) matches the 4th stair step in the fps game's buildArena() (stepRise=0.4,
-	// 4th step = 0.4*4 = 1.6) — a real in-game height chosen specifically because it's tall enough
-	// that neither step-up (stepHeight 0.4×SC) nor a standing-tap mantle (chest-height gate
-	// ~1.386×SC) clears it for free; a genuine jump (or crouch-jump) is required. See _setCrouch's
-	// airborne branch: crouching mid-air keeps the collider's TOP fixed and pulls the FEET up,
-	// giving real extra clearance over a plain jump — this pair proves that difference behaviorally,
-	// not just via internal state: same jump, same approach, only the crouch differs.
 	function ledgeClearanceScene(w, S) {
 		var topY = S.sc(1.6), hy = topY / 2, hx = S.sc(2), hz = S.sc(2);
 		var ledge = PBF.staticBox(hx, hy, hz, { x: 0, y: hy, z: hz }, '#7a6a52');
@@ -592,7 +539,7 @@
 			var onLedgeFootprint = Math.abs(p.body.position.x) < scene.hx &&
 				p.body.position.z > 0 && p.body.position.z < 2 * scene.hz;
 			if (p.grounded && onLedgeFootprint && p.body.position.y > scene.topY) { landedOnTop = true; }
-			return { forward: tick < 40 ? 1 : 0, jumpPressed: tick === 8 }; // same jump, no crouch
+			return { forward: tick < 40 ? 1 : 0, jumpPressed: tick === 8 };
 		});
 		t.log('Control for M16: identical jump and approach at the SAME ledge, but no crouch — should bounce off the face and land back on the floor, not on top.');
 		t.expect('did NOT land on top (control case)', function () {

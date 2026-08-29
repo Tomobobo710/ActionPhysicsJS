@@ -13,8 +13,7 @@
 
 		var constraint = new AP.HingeConstraint(plank, new V(0, 0, 1), new V(-4, 0, 0));
 		constraint.limit.set(-Math.PI / 8, 0);
-		// Motor maxTorque is an XPBD position-correction scale here, not a velocity impulse as in a
-		// PGS-style motor - 0.25 is tuned to hold flat under gravity while yielding to impact.
+
 		constraint.motor.set(40, 0.25);
 		world.addConstraint(constraint);
 

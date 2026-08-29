@@ -1,22 +1,12 @@
-// Tom's Suite — COMPOUND CHILDREN SCENE (visual, always passes; for watching, not asserting).
-// The exact scenario tests/bench/compound-children-perf.js measures, built as a watchable test: a
-// static CompoundShape ground made of many small MeshShape tiles (not one giant mesh — this is the
-// real target scene's shape: world geometry split into ~3000 small pieces combined into one
-// CompoundShape for broadphase's sake), with a batch of dynamic "physics prop" bodies dropped onto it.
-// Narrates falling -> first-contact -> settled, logging real per-step timing (and the solver's own
-// sub-stage split, since solveConstraints/prepare/resolve/apply are the actual cost breakdown this
-// scene cares about) so the steady-state cost is visible directly, not just described. No pass/fail
-// claim beyond "the scene ran" — this is for seeing it, not testing it.
 (function (Runner, U) {
 	Runner.suite('tom');
 
 	var NUM_CHILDREN = 3000;
 	var NUM_PROPS = 500;
-	var MAP_SIZE = 200;       // meters, matches the real target scene
-	var TOTAL_TICKS = 260;    // ~4.3s: long enough to fall, land, and settle
-	var LOG_EVERY = 20;       // ticks between timing log lines
+	var MAP_SIZE = 200;
+	var TOTAL_TICKS = 260;
+	var LOG_EVERY = 20;
 
-	// Deterministic PRNG so the drop pattern is identical every run (headless == browser).
 	function mulberry32(seed) {
 		return function () {
 			seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
@@ -26,9 +16,6 @@
 		};
 	}
 
-	// Tiles the map footprint into NUM_CHILDREN roughly-square patches; each patch is one small
-	// MeshShape child (a few triangles, gently undulating) added to one CompoundShape, matching "world
-	// geometry split into many small mesh pieces" rather than one huge mesh.
 	function buildCompoundGround(t, w, rand) {
 		var perSide = Math.max(1, Math.round(Math.sqrt(NUM_CHILDREN)));
 		var half = MAP_SIZE / 2;
@@ -56,7 +43,6 @@
 			}
 		}
 
-		// Mass 0 = static, this engine's own convention (not Infinity).
 		var groundBody = new AP.RigidBody(compound, 0);
 		groundBody._color = '#3a4a3a';
 		w.addRigidBody(groundBody);
@@ -98,10 +84,6 @@
 		var phase = 'falling';
 		var settleDeclaredAt = null;
 
-		// Time each step. Unlike a PGS solver's separate prepare/resolve/solve/apply stages, this
-		// engine's XPBD solver has one public entry point (Solver.step) that owns its own internal
-		// substep loop - there is no meaningful sub-stage breakdown to instrument separately, so this
-		// times the whole step only.
 		var lastStepMs = 0;
 		var now = function () { return (typeof performance !== 'undefined' ? performance.now() : Date.now()); };
 		var origStep = w.step.bind(w);
@@ -117,9 +99,6 @@
 			lastTick = tick;
 			if (tick === 1) { t.log('Tick 1: bodies released.'); }
 
-			// SAPBroadphase.computePairs() is called fresh each World.step and keeps no retained pair
-			// count of its own - manifolds (real detected contact) are what this test actually cares
-			// about anyway: "first contact with the ground" reads more truthfully as "first real touch."
 			var manifoldCount = world.narrowphase.manifolds.size;
 			if (phase === 'falling' && manifoldCount > 0) {
 				phase = 'landing';
@@ -144,7 +123,7 @@
 		});
 
 		t.expect('scene ran to completion (this test is for watching, not asserting)', function (world) {
-			if (lastTick < TOTAL_TICKS) return false; // keep pending until the run actually ends
+			if (lastTick < TOTAL_TICKS) return false;
 			return { ok: true, detail: 'phase=' + phase + (settleDeclaredAt ? (' settledAtTick=' + settleDeclaredAt) : ' (never had every body under threshold at once — see step-time plateau in the log instead)') + '  final step=' + lastStepMs.toFixed(2) + 'ms' };
 		});
 
@@ -153,6 +132,5 @@
 		visual: true, steps: TOTAL_TICKS, page: 'perf',
 		description: 'The real perf-benchmark scene, built as something to watch: a ' + MAP_SIZE + 'm x ' + MAP_SIZE + 'm CompoundShape ground made of ~' + NUM_CHILDREN.toLocaleString() + ' small MeshShape tiles, with ' + NUM_PROPS + ' mixed props (boxes/cylinders/cones) dropped onto it. Narrates the fall -> first-contact -> settled transition live via the log, with per-tick step time and manifold count. No hard pass/fail — it always passes; the point is to see the scene and its cost pattern directly.'
 	});
-
 })(typeof module !== 'undefined' && module.exports ? require('../runner.js') : window.APRunner,
    typeof module !== 'undefined' && module.exports ? require('./_util.js') : window.TomUtil);

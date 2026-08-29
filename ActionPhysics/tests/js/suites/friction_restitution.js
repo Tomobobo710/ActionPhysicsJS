@@ -1,8 +1,3 @@
-// Friction, restitution, and the sphere-vs-large-box GJK/EPA robustness regressions.
-//
-// Restitution is asserted as exit speed = e * approach speed AT THE CONTACT, captured from the live
-// solver - not via rebound height, whose tick-crossing slop is wide enough to average a real
-// energy-conservation bug into a pass.
 (function (Runner) {
 	Runner.suite('friction_restitution');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;
@@ -17,8 +12,6 @@
 		Runner.test(group, name, fn, { page: 'friction_restitution', description: DESC });
 	}
 
-	// ---- friction: slide vs stop ----
-
 	visualTest('friction', 'a shoved box decelerates and stops under friction', function (t) {
 		var world = t.makeWorld();
 		t.box(world, 40, 0.5, 40, 0, { pos: [0, -0.5, 0], friction: 0.5, color: '#556' });
@@ -32,10 +25,6 @@
 		});
 		t.simulate(world, 300);
 	}, 300);
-
-	// ---- friction: static stick vs slide on an inclined plane, at the Coulomb boundary ----
-	// tan(15deg)=0.27 and tan(20deg)=0.36, both below mu=0.5 -> must stick (only a tiny settle creep).
-	// tan(35deg)=0.70 and tan(45deg)=1.0, both above mu=0.5 -> must slide.
 
 	function slopeTest(deg, mu, expectStick) {
 		visualTest('friction', 'a box on a ' + deg + 'deg slope (mu=' + mu + ', tan=' + Math.tan(deg * Math.PI / 180).toFixed(2) + ') ' + (expectStick ? 'holds still' : 'slides'), function (t) {
@@ -52,11 +41,11 @@
 				if (tick === settleTick) { x0 = box.position.x; y0 = box.position.y; }
 				if (tick > settleTick) {
 					var dist = Math.hypot(box.position.x - x0, box.position.y - y0);
-					slideRate = dist / ((tick - settleTick) / 60); // m/s over the window since settling
+					slideRate = dist / ((tick - settleTick) / 60);
 				}
 			});
 			t.expect(expectStick ? 'sticks (slide rate stays low)' : 'slides (slide rate stays high)', function () {
-				if (x0 == null) return false; // hasn't reached the settle tick yet
+				if (x0 == null) return false;
 				var ok = expectStick ? slideRate < 0.1 : slideRate > 0.3;
 				return { ok: ok, detail: 'slide rate=' + slideRate.toFixed(4) + ' m/s' };
 			});
@@ -68,28 +57,19 @@
 	slopeTest(35, 0.5, false);
 	slopeTest(45, 0.5, false);
 
-	// ---- restitution: the exact physical invariant, not a rebound-height proxy ----
-	//
-	// Rebound height depends on which tick the ball crosses the sensor line, so its tolerance slop
-	// can average a real energy-conservation bug into a pass. Exit speed = e * approach speed at the
-	// CONTACT is asserted directly against the live solver instead.
 	function restitutionTest(e, label) {
 		visualTest('restitution', 'restitution e=' + e + ': ' + label, function (t) {
 			var world = t.makeWorld();
 			t.box(world, 20, 0.5, 20, 0, { pos: [0, -0.5, 0], restitution: e, color: '#556' });
 			var ball = t.sphere(world, 0.5, 1, { pos: [0, 3, 0], restitution: e, color: '#f84' });
 
-			// Wraps the world's REAL solver instance (not a copy) to capture the exact approach/exit
-			// speeds of the FIRST bounce.
 			var solver = world.solver;
 			var origSolveContactVelocity = solver._solveContactVelocity.bind(solver);
 			var approachSpeed = null, exitSpeed = null;
 			solver._solveContactVelocity = function (point, bodyA, bodyB, gravity, h) {
 				var preLambda = point.normalLambda;
 				origSolveContactVelocity(point, bodyA, bodyB, gravity, h);
-				// Only the substep where restitution ITSELF fires (e>0 and approach speed above the
-				// rest-jitter threshold) is the true bounce event; with e=0 the ball can satisfy
-				// preLambda<0 on several substeps while settling, and the first is not the bounce.
+
 				var g = bodyA.gravity || bodyB.gravity || gravity;
 				var gravityMag = Math.sqrt(g.x * g.x + g.y * g.y + g.z * g.z);
 				var restitutionThreshold = gravityMag * h * AP.Solver.RESTITUTION_SLOP_FACTOR;
@@ -104,7 +84,6 @@
 				? 'the exact contact-relative exit speed equals e * approach speed, to 1e-6 (not a rebound-height proxy)'
 				: 'no restitution event ever fires at e=0 (the ball simply stops, nothing to bounce)', function () {
 				if (e === 0) {
-					// Solver gates restitution on e>0, so nothing should ever fire here.
 					return { ok: approachSpeed === null, detail: approachSpeed === null ? 'no restitution event fired, correct' : 'restitution unexpectedly fired at e=0' };
 				}
 				if (approachSpeed === null) return false;
@@ -124,17 +103,9 @@
 	restitutionTest(0.8, 'exit speed is exactly 80% of the approach speed');
 	restitutionTest(1.0, 'exit speed exactly EQUALS approach speed - full energy back, not more, not less');
 
-	// ---- four restitution sub-tests sharing ONE world (gravity off), laid out along x:
-	// dynamic-vs-static wall, soft bounce, and two dynamic-vs-dynamic transfers ----
-
 	visualTest('restitution', 'four restitution sub-tests (shared world)', function (t) {
 		var world = t.makeWorld({ gravity: 0 });
-		// linear_damping 0 on every body here: these four sub-tests assert EXACT velocity invariants
-		// to a 0.0001 tolerance (full elastic rebound vy->+3, perfect momentum transfer sep->2), which
-		// only hold when nothing bleeds velocity between impact and measurement. RigidBody's default
-		// linear_damping (0.1) applies every substep and decays the post-bounce speed below tolerance
-		// over the 150-tick window (an elastic vy that should read +3.0000 measured ~2.34). Damping is
-		// a real, wanted default for ordinary bodies - it just has no place in a conservation test.
+
 		var t1_stat = t.sphere(world, 1, 0, { pos: [0, 0, 0], restitution: 1, linear_damping: 0, color: '#888' });
 		var t1_dyn = t.sphere(world, 1, 1, { pos: [0, 5, 0], vel: [0, -3, 0], restitution: 1, linear_damping: 0, color: '#F4D35E' });
 		var t2_stat = t.sphere(world, 1, 0, { pos: [3, 0, 0], restitution: 0.2, linear_damping: 0, color: '#888' });
@@ -154,8 +125,6 @@
 
 		t.simulate(world, 150);
 	}, 150);
-
-	// ---- sphere-on-large-box GJK/EPA robustness (the bug friction/restitution surfaced) ----
 
 	visualTest('sphere', 'a sphere dropped on a large ground box settles at rest height without launching', function (t) {
 		var world = t.makeWorld();
@@ -181,8 +150,8 @@
 	}, 400);
 
 	staticTest('sphere', 'GJK reports a shallow sphere-in-large-box penetration as overlapping with correct depth, in both operand orders', function (t) {
-		// Both operand orders must agree; box-first was the order that used to mis-classify.
-		var y = 0.45; // pen = 0.05
+
+		var y = 0.45;
 		var sph = t.loneBody(new AP.SphereShape(0.5), { pos: [0, y, 0], color: '#4af' });
 		var box = t.loneBody(new AP.BoxShape(20, 0.5, 20), { pos: [0, -0.5, 0], color: '#556' });
 

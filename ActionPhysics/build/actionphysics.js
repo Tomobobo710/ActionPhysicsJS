@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-26T21:38:54.703Z
+// ActionPhysics 0.1.0 — built 2026-08-27T02:33:54.486Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine.
@@ -7440,7 +7440,10 @@ class SliderConstraint extends Constraint {
         }
         if (wSum < 1e-12) return;
 
-        const deltaLambda = -C / wSum;
+        // Soft correction: only resolve a fraction per iteration to prevent overshooting
+        // Multiple solver iterations per substep will gradually converge
+        const correctionFraction = 0.1;
+        const deltaLambda = -C * correctionFraction / wSum;
         const px = dx * deltaLambda, py = dy * deltaLambda, pz = dz * deltaLambda;
 
         if (bodyA._massInverted > 0) {
@@ -9073,10 +9076,15 @@ proto._buildBody = function(position) {
     this.body = new RigidBody(shape, this.mass);
     FPSCharacterController._applyMaterial(this.body, {});
     this.body.position.copy(position);
-    this.body.updateDerived();
-    // `object` is the lightweight cosmetic handle a consumer (renderer) can use to decide whether/how
-    // to draw the collider. This controller never renders anything itself.
-    this.object = { body: this.body, isVisible: this._visible };
+    this.body.updateDerived();	// `object` is the lightweight cosmetic handle a consumer (renderer) can use to decide whether/how
+	// to draw the collider. This controller never renders anything itself.
+	this.object = { body: this.body, isVisible: this._visible };
+	// Stamp the controller's color (red by default) on the body. The bench's renderer turns any body
+	// with NO `_color` into blue, so an un-tinted body (a freshly rebuilt crouch box, or a run that
+	// steps without the harness's per-tick tint) reads as blue instead of the character red. The
+	// harness tint may override this to green/orange while sliding/slipping, so we only guarantee the
+	// base here.
+	this.body._color = this._color;
 
     // Never tip; resting/slopes/walls handled by the solver (gravity + friction).
     this.body.angular_factor.set(0, 0, 0);

@@ -1,20 +1,12 @@
-// Tom's Suite — PERF SETTLE SCENE (visual, always passes; for watching, not asserting).
-// The exact scenario the perf benchmark (tests/bench/scene-perf.js) measures, built as a watchable
-// test: a 200m x 200m static map mesh with 1,000,000 triangles, and 500 mixed convex props (boxes,
-// cylinders, cones) dropped onto it. Narrates the two phases live — falling (cheap, no contacts yet)
-// and settled (expensive, every resting body re-walks the BVH and re-runs GJK every frame even though
-// nothing is moving) — and logs real per-step timing at intervals so the cost is visible directly,
-// not just described. No pass/fail claim beyond "the scene ran" — this is for seeing it, not testing it.
 (function (Runner, U) {
 	Runner.suite('tom');
 
-	var MAP_SIZE = 200;       // meters, matches the real target scene
+	var MAP_SIZE = 200;
 	var TARGET_TRIS = 1000000;
 	var NUM_BODIES = 500;
-	var TOTAL_TICKS = 260;    // ~4.3s: long enough to fall, land, and settle
-	var LOG_EVERY = 20;       // ticks between timing log lines
+	var TOTAL_TICKS = 260;
+	var LOG_EVERY = 20;
 
-	// Deterministic PRNG so the drop pattern is identical every run (headless == browser).
 	function mulberry32(seed) {
 		return function () {
 			seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
@@ -24,8 +16,6 @@
 		};
 	}
 
-	// Builds the same map-mesh generator the perf benchmark uses: a rolling heightfield sized to
-	// MAP_SIZE with enough subdivisions to hit ~targetTris triangles, plus scattered raised bumps.
 	function buildMapMesh(targetTris, mapSize, rand) {
 		var quads = Math.max(1, Math.round(targetTris / 2));
 		var res = Math.max(2, Math.round(Math.sqrt(quads)));
@@ -88,10 +78,6 @@
 		var phase = 'falling';
 		var settleDeclaredAt = null;
 
-		// t.simulate's loop calls onTick(world, tick) THEN world.step for that same tick, so this
-		// hook can't time "this" tick's step — instead wrap world.step once to record each step's own
-		// duration, and the hook (running just before the NEXT step) reports the PRIOR tick's time.
-		// That's a one-tick lag on the logged number, immaterial at a 20-tick log interval.
 		var lastStepMs = 0;
 		var now = function () { return (typeof performance !== 'undefined' ? performance.now() : Date.now()); };
 		var origStep = w.step.bind(w);
@@ -107,10 +93,6 @@
 			lastTick = tick;
 			if (tick === 1) { t.log('Tick 1: bodies released.'); }
 
-			// SAPBroadphase.computePairs() is called fresh each World.step and keeps no retained pair
-			// count of its own (see SAPBroadphase.js) - manifolds (real detected contact, not just
-			// broadphase candidates) are what this test actually cares about anyway: "first contact with
-			// the map" reads more truthfully as "first real touch," not "first pair that might touch."
 			var manifoldCount = world.narrowphase.manifolds.size;
 			if (phase === 'falling' && manifoldCount > 0) {
 				phase = 'landing';
@@ -135,7 +117,7 @@
 		});
 
 		t.expect('scene ran to completion (this test is for watching, not asserting)', function (world) {
-			if (lastTick < TOTAL_TICKS) return false; // keep pending until the run actually ends
+			if (lastTick < TOTAL_TICKS) return false;
 			return { ok: true, detail: 'phase=' + phase + (settleDeclaredAt ? (' settledAtTick=' + settleDeclaredAt) : ' (never had every body under threshold at once — see step-time plateau in the log instead)') + '  final step=' + lastStepMs.toFixed(1) + 'ms' };
 		});
 
@@ -144,6 +126,5 @@
 		visual: true, steps: TOTAL_TICKS, page: 'perf',
 		description: 'The real perf-benchmark scene, built as something to watch: a 200m x 200m map with 1,000,000 static triangles, and 500 mixed props (boxes/cylinders/cones) dropped onto it. Narrates the fall -> first-contact -> settled transition live via the log. No hard pass/fail — it always passes; the point is to see the scene and its cost pattern directly, matching tests/bench/scene-perf.js and tests/bench/narrowphase-breakdown.js.'
 	});
-
 })(typeof module !== 'undefined' && module.exports ? require('../runner.js') : window.APRunner,
    typeof module !== 'undefined' && module.exports ? require('./_util.js') : window.TomUtil);

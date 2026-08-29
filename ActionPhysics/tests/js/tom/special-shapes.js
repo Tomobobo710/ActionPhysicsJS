@@ -1,27 +1,8 @@
-// Tom's Suite — SPECIAL SHAPES (built triangle-mesh bodies).
-// These are irregular meshes authored as several overlapping boxes plus flat/double-sided sheets merged
-// into one vertex buffer (a trophy: stacked base + tiers + star; a rocket: octagonal body + nose + fins),
-// authored in meters, with the parts built UP from the floor so the center of mass sits well above the
-// local origin.
-//
-// Fed straight into MeshShape, a dynamic body like this EXPLODES. Two reasons, both physics:
-//   • The MeshShape inertia integral assumes one closed, consistently-wound solid; on this overlapping
-//     "vertex soup" it returns a NEGATIVE moment of inertia. Negative inertia is unphysical — contact
-//     torque then drives spin the wrong way and the solver pumps energy every contact, so the body
-//     launches without bound.
-//   • The body pivots about the local origin, not the offset center of mass, adding a persistent torque.
-// U.meshBody() fixes both (recenter to the COM + point-cloud inertia; see its comment) while keeping the
-// full concave mesh for collision — making the body actually simulable. These tests build such a body and
-// assert the thing that matters: it SETTLES on the floor instead of launching.
-//
-// A small self-contained mesh builder is inlined below (reference-point winding, quad = 2 triangles,
-// double-sided sheets) so the trophy/rocket vertices + faces — and the rendered geometry — are exact.
 (function (Runner, U) {
 	Runner.suite('tom');
 
 	var TOTAL = 300;
 
-	// ---- Faithful GeometryBuilder port (winding by reference-point dot, quad = 2 tris, doubleSided) ----
 	function Builder() { this.ref = { x: 0, y: 0, z: 0 }; }
 	Builder.prototype.setReferencePoint = function (p) { this.ref = { x: p.x, y: p.y, z: p.z }; };
 	Builder.prototype.createTriangle = function (idx, pos, a, b, c, forceFlip, doubleSided) {
@@ -45,14 +26,12 @@
 		this.createTriangle(idx, pos, a, c, d, forceFlip, doubleSided);
 	};
 
-	// Convert the builder's flat vertex array + index list into t.mesh() inputs.
 	function finish(v, idx) {
 		var verts = [];
 		for (var i = 0; i < v.length; i += 3) verts.push([v[i], v[i + 1], v[i + 2]]);
 		return { verts: verts, faces: idx };
 	}
 
-	// ---- TROPHY: stacked base + tiers + a double-sided star, authored in meters ----
 	function trophy() {
 		var b = new Builder(); var v = [], idx = [];
 		var push = function (px, py, pz) { v.push(px, py, pz); return v.length / 3 - 1; };
@@ -65,9 +44,9 @@
 			b.createQuad(idx, v, a, d, h, e); b.createQuad(idx, v, bb, f, g, cc);
 			b.createQuad(idx, v, d, cc, g, h); b.createQuad(idx, v, a, e, f, bb);
 		};
-		box(0, 0.1, 0, 0.6, 0.2, 0.6);   // wide base
-		box(0, 0.3, 0, 0.4, 0.2, 0.4);   // mid tier
-		box(0, 0.6, 0, 0.14, 0.4, 0.14); // narrow stem — pushes COM up, offset from origin
+		box(0, 0.1, 0, 0.6, 0.2, 0.6);
+		box(0, 0.3, 0, 0.4, 0.2, 0.4);
+		box(0, 0.6, 0, 0.14, 0.4, 0.14);
 		var starY = 1.1, Ro = 0.4, Ri = 0.16, pts = [];
 		for (var i = 0; i < 10; i++) { var a = (i / 10) * Math.PI * 2 + Math.PI / 2, rr = i % 2 === 0 ? Ro : Ri; pts.push(push(Math.cos(a) * rr, starY + Math.sin(a) * rr, 0)); }
 		var ctr = push(0, starY, 0);
@@ -75,7 +54,6 @@
 		return finish(v, idx);
 	}
 
-	// ---- ROCKET: octagonal body + nose cone + 4 double-sided fins, authored in meters ----
 	function rocket() {
 		var b = new Builder(); var v = [], idx = [];
 		var SIDES = 8, R = 0.34, BODY_H = 1.6, NOSE_H = 0.9;
@@ -84,8 +62,7 @@
 		b.setReferencePoint({ x: 0, y: BODY_H / 2, z: 0 });
 		var bot = ring(0, R), top = ring(BODY_H, R);
 		for (var i = 0; i < SIDES; i++) { var j = (i + 1) % SIDES; b.createQuad(idx, v, bot[i], bot[j], top[j], top[i]); }
-		// Bottom cap: a triangle fan from a center point to the bottom ring, so the body isn't open-ended.
-		// The reference point at the body center keeps the fan winding outward (downward).
+
 		var botCtr = push(0, 0, 0);
 		for (var c = 0; c < SIDES; c++) { var cj = (c + 1) % SIDES; b.createTriangle(idx, v, botCtr, bot[c], bot[cj]); }
 		b.setReferencePoint({ x: 0, y: BODY_H + NOSE_H / 2, z: 0 });
@@ -106,13 +83,9 @@
 			var w = t.makeWorld({ gravity: -9.8 });
 			U.ground(t, w);
 			var m = buildMesh();
-			// Recenter-to-COM + point-cloud inertia (see U.meshBody) — the construction that makes an
-			// overlapping-soup mesh simulable instead of letting a negative inertia integral launch it.
+
 			var body = U.meshBody(t, w, m.verts, m.faces, 2, { pos: [0, dropY, 0], color: color });
 
-			// The one assertion that earns its keep: run the physics forward and require the body to SETTLE
-			// on the floor rather than launch. If the construction were wrong, the negative-inertia blowup
-			// would fire and this goes red (maxY latches a tunnel/explode guard just above the drop height).
 			t.expect('settles on the floor without exploding', U.settles(body, { maxY: dropY + 3 }));
 
 			t.simulate(w, TOTAL);
@@ -128,7 +101,6 @@
 		"A rocket mesh — octagonal body, nose cone, four double-sided fins — a thin, tall, offset-COM body, the " +
 		"exact marginal case that drives MeshShape's inertia negative and makes it explode. Built " +
 		"simulable (recentered to COM + point-cloud inertia), PASS: inertia stays positive and it settles.");
-
 })(
 	typeof module !== 'undefined' && module.exports ? require('../runner.js') : window.APRunner,
 	typeof module !== 'undefined' && module.exports ? require('./_util.js') : window.TomUtil

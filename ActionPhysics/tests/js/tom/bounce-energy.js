@@ -1,19 +1,8 @@
-// Tom's Suite — BOUNCE ENERGY.
-// A physical settle only LOSES energy, so each bounce apex must be no higher than the previous one.
-// We drop several bodies and track every apex (the height at which upward velocity crosses back through
-// zero). If any apex comes out higher than its predecessor, energy was injected — a resting-velocity
-// clamp or bad restitution snapping mid-settle. The check flips red the instant a growing apex appears.
-//
-// Apex tracking is stateful, held in the predicate's closure and advanced every tick — same headless
-// and in-browser.
 (function (Runner, U) {
 	Runner.suite('tom');
 
 	var TOTAL = 300;
 
-	// Returns a predicate that PASSES if the body's bounce apexes never grow through the whole run.
-	// It only resolves (green) at the end of the settle window; until then it reports live state and,
-	// if it ever sees a growing apex, it latches to a failing state that can never go green.
 	function noEnergyGain(b) {
 		var rising = false, peak = b.position.y, lastApex = null, worstGrowth = 0, grew = false, ticks = 0;
 		return function () {
@@ -26,7 +15,7 @@
 				lastApex = peak; peak = y;
 			}
 			if (grew) return { ok: false, detail: 'APEX GREW by ' + worstGrowth.toFixed(4) + ' (energy injected)' };
-			// pass only once the run is essentially over and no growth was ever seen
+
 			var settled = U.speed(b) < 0.05 && ticks > TOTAL - 40;
 			return { ok: settled && !grew, detail: 'apexN=' + (lastApex == null ? 0 : 1) + ' worstGrowth=' + worstGrowth.toFixed(4) + (settled ? ' settled' : '') };
 		};
@@ -64,7 +53,6 @@
 	bounce('cone (base-down)', 'cone',
 		function (t, w) { return t.cone(w, 0.4, 0.5, 1, { pos: [0, 1.2, 0], friction: 3, restitution: 0, color: '#a3d900' }); },
 		"A cone dropped base-down (stable pose). PASS: apexes only decay as it settles on its base.");
-
 })(
 	typeof module !== 'undefined' && module.exports ? require('../runner.js') : window.APRunner,
 	typeof module !== 'undefined' && module.exports ? require('./_util.js') : window.TomUtil

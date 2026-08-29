@@ -1,6 +1,3 @@
-// Joint constraints as XPBD position constraints: a joint computes its own position error and
-// applies a correction via the same generalized-inverse-mass machinery the contact solver uses.
-// Tight tolerances, live per-tick predicates, dynamic-vs-dynamic scenarios, physically-named claims.
 (function (Runner) {
 	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;
@@ -17,7 +14,6 @@
 		return new AP.World(new AP.SAPBroadphase(), new AP.NarrowPhase(), new AP.Solver());
 	}
 
-	// Live world-space position of a body's local anchor.
 	function anchorWorld(body, localAnchor, out) {
 		out.copy(localAnchor);
 		body.rotation.transformVectorInPlace(out);
@@ -25,18 +21,15 @@
 		return out;
 	}
 
-	// Live world-space direction of a body's local axis (rotation only, no translation).
 	function axisWorld(body, localAxis, out) {
 		out.copy(localAxis);
 		body.rotation.transformVectorInPlace(out);
 		return out;
 	}
 
-	// ---- a pendulum: the anchor never leaves the pin, to a tight tolerance, for the WHOLE swing ----
-
 	test('constraints/point', 'a pendulum pinned to a fixed world point never lets its anchor drift from the pin', function (t) {
 		var world = mkWorld();
-		var box = t.box(world, 0.2, 0.2, 0.2, 1, { pos: [0, 1, 0], vel: [2, 0, 0], color: '#4af' }); // anchor starts exactly at the pin - no initial violation to explode
+		var box = t.box(world, 0.2, 0.2, 0.2, 1, { pos: [0, 1, 0], vel: [2, 0, 0], color: '#4af' });
 		var localAnchor = new V(0, 1, 0), pinPoint = new V(0, 2, 0);
 		var pin = new AP.PointConstraint(box, null, localAnchor, pinPoint);
 		world.addConstraint(pin);
@@ -59,14 +52,12 @@
 		t.simulate(world, 300);
 	}, 300);
 
-	// ---- two DYNAMIC bodies pinned together, starting APART - gravity cannot fake holding them ----
-
 	test('constraints/point', 'two dynamic bodies pinned together stay pinned even when they start flying apart', function (t) {
 		var world = mkWorld();
-		world.gravity.set(0, 0, 0); // isolate the joint - no gravity to coincidentally hold them together
+		world.gravity.set(0, 0, 0);
 		var a = t.box(world, 0.2, 0.2, 0.2, 1, { pos: [-0.5, 0, 0], vel: [-3, 0, 0], color: '#4af' });
-		var b = t.box(world, 0.2, 0.2, 0.2, 1, { pos: [0.5, 0, 0], vel: [3, 0, 0], color: '#f84' }); // moving AWAY from a
-		var localA = new V(0.5, 0, 0), localB = new V(-0.5, 0, 0); // anchors coincide at world origin at t=0
+		var b = t.box(world, 0.2, 0.2, 0.2, 1, { pos: [0.5, 0, 0], vel: [3, 0, 0], color: '#f84' });
+		var localA = new V(0.5, 0, 0), localB = new V(-0.5, 0, 0);
 		var joint = new AP.PointConstraint(a, b, localA, localB);
 		world.addConstraint(joint);
 
@@ -81,20 +72,18 @@
 			return { ok: maxAnchorGap < 1e-5, detail: 'max anchor gap=' + maxAnchorGap.toExponential(3) };
 		});
 		t.expect('equal mass: the pair settles on a shared point roughly midway between their starts', function () {
-			// Not an exact number - the joint conserves momentum, not position; just no runaway.
+
 			var dist = Math.hypot(a.position.x - b.position.x, a.position.y - b.position.y, a.position.z - b.position.z);
 			return { ok: dist < 1.5, detail: 'body separation=' + dist.toFixed(3) };
 		});
 		t.simulate(world, 120);
 	}, 120);
 
-	// ---- a static (zero-mass) body anchored to a dynamic one behaves like a fixed-world pin ----
-
 	test('constraints/point', 'a dynamic body pinned to a STATIC body cannot drag the static one', function (t) {
 		var world = mkWorld();
-		var anchor = t.box(world, 0.3, 0.3, 0.3, 0, { pos: [0, 3, 0], color: '#888' }); // static (mass 0)
+		var anchor = t.box(world, 0.3, 0.3, 0.3, 0, { pos: [0, 3, 0], color: '#888' });
 		var box = t.box(world, 0.2, 0.2, 0.2, 1, { pos: [0, 2, 0], vel: [2, 0, 0], color: '#4af' });
-		var joint = new AP.PointConstraint(box, anchor, new V(0, 1, 0), new V(0, 0, 0)); // box's anchor (local +Y) meets the static body's center
+		var joint = new AP.PointConstraint(box, anchor, new V(0, 1, 0), new V(0, 0, 0));
 
 		world.addConstraint(joint);
 		var anchorPos0 = { x: anchor.position.x, y: anchor.position.y, z: anchor.position.z };
@@ -111,8 +100,6 @@
 		});
 		t.simulate(world, 200);
 	}, 200);
-
-	// ---- Hinge: a door bolted to the world, hinge to WORLD +Y axis ----
 
 	test('constraints/hinge', 'a door hinged to a fixed world axis swings without its pivot or axis drifting', function (t) {
 		var world = mkWorld();
@@ -146,14 +133,12 @@
 		t.simulate(world, 400);
 	}, 400);
 
-	// ---- Hinge: two DYNAMIC bodies hinged together (a two-link chain segment) ----
-
 	test('constraints/hinge', 'two dynamic bodies hinged together keep a shared pivot and co-axial hinge axes', function (t) {
 		var world = mkWorld();
 		world.gravity.set(0, -9.81, 0);
 		var linkA = t.box(world, 0.5, 0.15, 0.15, 1, { pos: [-0.5, 3, 0], color: '#4af' });
 		var linkB = t.box(world, 0.5, 0.15, 0.15, 1, { pos: [0.5, 3, 0], color: '#f84' });
-		// Both links share a hinge axis along world Z, pivoting where they meet (x=0).
+
 		var axis = new V(0, 0, 1);
 		var pivotOnA = new V(0.5, 0, 0), pivotOnB = new V(-0.5, 0, 0);
 		var hinge = new AP.HingeConstraint(linkA, axis, pivotOnA, linkB, pivotOnB);
@@ -175,8 +160,6 @@
 		});
 		t.simulate(world, 300);
 	}, 300);
-
-	// ---- Weld: full 6-DOF rigid fuse to a fixed world point/orientation ----
 
 	test('constraints/weld', 'a welded body cannot move OR rotate, even when shoved and spun simultaneously', function (t) {
 		var world = mkWorld();
@@ -206,7 +189,7 @@
 	test('constraints/weld', 'two dynamic bodies welded together rotate as ONE rigid unit despite opposite initial spins', function (t) {
 		var world = mkWorld();
 		var a = t.box(world, 0.3, 0.3, 0.3, 1, { pos: [-0.3, 3, 0], avel: [0, 0, 3], color: '#4af' });
-		var b = t.box(world, 0.3, 0.3, 0.3, 1, { pos: [0.3, 3, 0], avel: [0, 0, -3], color: '#f84' }); // opposite spin
+		var b = t.box(world, 0.3, 0.3, 0.3, 1, { pos: [0.3, 3, 0], avel: [0, 0, -3], color: '#f84' });
 		var weld = new AP.WeldConstraint(a, b, new V(0.3, 0, 0), new V(-0.3, 0, 0));
 		world.addConstraint(weld);
 
@@ -228,11 +211,9 @@
 		t.simulate(world, 200);
 	}, 200);
 
-	// ---- Slider: a piston that slides freely along one axis but is locked on the other 5 DOF ----
-
 	test('constraints/slider', 'a piston slides freely along its axis but stays locked on every other DOF', function (t) {
 		var world = mkWorld();
-		var box = t.box(world, 0.3, 0.3, 0.3, 1, { pos: [0, 2, 0], vel: [3, 1, 1], avel: [0, 0, 4], color: '#4af' }); // pushed off-axis AND spun - all of it must be rejected except the X slide
+		var box = t.box(world, 0.3, 0.3, 0.3, 1, { pos: [0, 2, 0], vel: [3, 1, 1], avel: [0, 0, 4], color: '#4af' });
 		var slider = new AP.SliderConstraint(box, new V(1, 0, 0), new V(0, 0, 0), null, new V(0, 2, 0));
 		world.addConstraint(slider);
 

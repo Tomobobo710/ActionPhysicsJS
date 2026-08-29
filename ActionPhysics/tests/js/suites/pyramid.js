@@ -1,25 +1,15 @@
-// The 385-box pyramid - the real stability stress target.
-//
-// This is a HARD scene and legitimately FAILS several assertions as of the last full run (drift,
-// spin, no settling by tick 1200). Real signal, not a test bug - do not soften this file or raise
-// solver settings to pass it; fix the engine, or record why it doesn't yet.
 (function (Runner) {
 	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;
 
 	var SIZE = 10;
 	var TICKS = 1200;
-	var BOX_H = 2.0;      // full height of a box (half-extent 1)
-	var LAYER_GAP = 2.2;  // vertical spacing between layers at spawn
+	var BOX_H = 2.0;
+	var LAYER_GAP = 2.2;
 
-	// Columns sit 2.6 apart and each layer is inset 1.2, so a box spans [x-1, x+1] and overlaps the
-	// two boxes below it by 0.80 on one side and 0.60 on the other, per axis. Every box is therefore
-	// supported at spawn - nothing bridges a gap. Drifting 0.60 toward the weaker side removes that
-	// support entirely, so 0.60 is the point where the stack stops being held up by what it started on.
 	var SUPPORT_LOSS = 0.6;
 	var MAX_ROTATION = 8;
 
-	// Local-space corners, so checks measure each box's real world extent, not just its center.
 	var CORNERS = (function () {
 		var c = [];
 		for (var x = -1; x <= 1; x += 2)
@@ -30,7 +20,7 @@
 
 	Runner.test('collision/pyramid', 'a 385-box pyramid on a ground plane stays a pyramid (1200 ticks, engine defaults)', function (t) {
 		var w = t.makeWorld({ gravity: -9.8 });
-		// Wide thin static box as ground - the pile never travels far enough to need an infinite plane.
+
 		t.box(w, 20, 0.5, 20, 0, { pos: [0, -0.5, 0], color: '#243B2A' });
 
 		var boxes = [];
@@ -40,7 +30,7 @@
 					var x = 2 * j * 1.3 - SIZE + i * 1.2,
 						y = i * LAYER_GAP + 1,
 						z = 2 * k * 1.3 - SIZE + i * 1.2;
-					// Engine-default materials throughout - a bare does-it-hold scene, not a sweep.
+
 					var b = t.box(w, 1, 1, 1, 1, { pos: [x, y, z], color: '#B08968' });
 					boxes.push({ body: b, layer: i, x0: x, y0: y, z0: z });
 				}

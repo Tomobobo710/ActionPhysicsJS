@@ -17,8 +17,6 @@
 		cc.body._color = '#e0b040';
 		t.bodies.push(cc.body);
 
-		// Drives update() -> world.step() each tick, same lifecycle the live loop uses (ctx.stepWorld
-		// keeps headless and on-screen ticking identically, per its own doc comment above).
 		t.stepWorld = function (w) {
 			cc.update(t.DT);
 			w.step(t.DT);

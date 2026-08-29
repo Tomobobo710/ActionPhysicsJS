@@ -1,5 +1,5 @@
 (function (Runner) {
-	Runner.suite('shapes'); // bodies sit alongside shapes until the collision suite exists
+	Runner.suite('shapes');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;
 	var V = AP.Vector3;
 	var DESC = "RigidBody: shape + world transform + mass/motion/material state. updateDerived() " +
@@ -29,7 +29,7 @@
 
 	test('shapes/rigidbody', 'inertia tensor scales from the shape density-1 result by mass/volume', function (t) {
 		var b = t.loneBody(new AP.SphereShape(1), { mass: 2, color: '#4af' });
-		var expected = 0.4 * 2 * 1 * 1; // 2/5 m r^2, m=2, r=1
+		var expected = 0.4 * 2 * 1 * 1;
 		t.check(b.inertiaTensor.e00, expected, 1e-9, 'Ixx scaled to the requested mass');
 		t.check(b.inertiaTensor.e11, expected, 1e-9, 'Iyy scaled to the requested mass');
 		t.checkTrue(b.inverseInertiaTensor.isFinite(), 'inverse inertia is finite');
@@ -47,10 +47,10 @@
 
 	test('shapes/rigidbody', 'updateDerived AABB accounts for rotation, not just position', function (t) {
 		var b = t.loneBody(new AP.BoxShape(1, 1, 1), { mass: 1, color: '#4af' });
-		b.rotation.setAxisAngle(new V(0, 0, 1), Math.PI / 4); // 45 degrees about Z
+		b.rotation.setAxisAngle(new V(0, 0, 1), Math.PI / 4);
 		b.updateDerived();
 		var box = b.getAABB();
-		var expectedHalfExtent = Math.sqrt(2); // a unit half-box's corner distance
+		var expectedHalfExtent = Math.sqrt(2);
 		t.check(box.max.x, expectedHalfExtent, 1e-9, 'rotated box AABB widens past the unrotated half-extent');
 	}, { visual: true });
 
@@ -61,8 +61,6 @@
 		t.checkTrue(b.gravity !== null, 'set to an explicit vector');
 		t.check(b.gravity.y, 0, 0, 'zero-g override');
 	}, { visual: true });
-
-	// ---- pure field logic: nothing to draw ----
 
 	test('shapes/rigidbody', 'addListener/emit delivers the payload', function (t) {
 		var b = new AP.RigidBody(new AP.SphereShape(1), 1);

@@ -1,16 +1,8 @@
-/**
- * Tom's Suite — FPSCharacterController KNOCKBACK tests (K1-K13).
- */
 (function (Runner, PBF, ActionPhysics) {
 	Runner.suite('tom');
 
 	var RigidBody = ActionPhysics.RigidBody, BoxShape = ActionPhysics.BoxShape, SphereShape = ActionPhysics.SphereShape;
 
-	// "never violates" / final-measurement gate. t.expect flips green the FIRST tick the predicate is
-	// true and simulate() early-outs when nothing is scripted — so a running-worst predicate that starts
-	// true (worst=0) would pass instantly. Register a no-op tick hook (defeats early-out so the full
-	// budget runs) and only let the predicate report ok on the LAST tick, matching a single end-of-run
-	// assert instead.
 	function finalGate(t, total) {
 		var tick0 = 0;
 		t.onTick(function (w, tick) { tick0 = tick; });
@@ -28,7 +20,6 @@
 		return b;
 	}
 
-	// K1: frontal knockback — scaled crate flies into the front; hit must knock (peak hsp > sc(0.5)).
 	PBF.scaleTest('fps/knockback', 'K1', 'frontal knockback', function (t, S) {
 		var w = S.flat();
 		var p = S.feetSpawn(w, 0, 0, {});
@@ -51,7 +42,6 @@
 		t.simulate(w, 90);
 	}, { page: 'fps/knockback', steps: 90, description: 'A scaled crate hits the front of a standing player; watch the knock.' });
 
-	// K2: hit-from-behind boosts forward.
 	PBF.scaleTest('fps/knockback', 'K2', 'hit-from-behind boosts forward', function (t, S) {
 		var w = S.flat();
 		var p = S.feetSpawn(w, 0, 0, {});
@@ -75,7 +65,6 @@
 		t.simulate(w, 90);
 	}, { page: 'fps/knockback', steps: 90, description: 'Direction-independent knockback: a crate from behind boosts the player forward.' });
 
-	// K3a: dropped object settles.
 	PBF.scaleTest('fps/knockback', 'K3a', 'dropped object settles', function (t, S) {
 		var w = S.flat();
 		var p = S.feetSpawn(w, 0, 0, {});
@@ -95,7 +84,6 @@
 		t.simulate(w, 150);
 	}, { page: 'fps/knockback', steps: 150, description: 'A dropped box lands on the head and comes to rest.' });
 
-	// K3b: straight drop does not fling player — UNSCALED.
 	PBF.scaleTest('fps/knockback', 'K3b', 'straight drop does not fling player', function (t, S) {
 		var w = S.flat();
 		var p = S.feetSpawn(w, 0, 0, {});
@@ -119,7 +107,6 @@
 		t.simulate(w, 150);
 	}, { page: 'fps/knockback', steps: 150, description: 'A box dropped straight down onto the head must not fling the player.' });
 
-	// K4: no feedback runaway idle — UNSCALED.
 	PBF.scaleTest('fps/knockback', 'K4', 'no feedback runaway idle', function (t, S) {
 		var w = S.flat();
 		var p = S.feetSpawn(w, 0, 0, {});
@@ -134,7 +121,6 @@
 		t.simulate(w, 300);
 	}, { page: 'fps/knockback', steps: 300, description: 'A stationary player must not drift from feedback runaway.' });
 
-	// K5: knockback CAP holds.
 	PBF.scaleTest('fps/knockback', 'K5', 'knockback cap holds', function (t, S) {
 		var CAP = 16;
 		var w = S.flat();
@@ -165,7 +151,6 @@
 		t.simulate(w, 80);
 	}, { page: 'fps/knockback', steps: 80, description: 'A heavy crate hits hard at head level; peak knockback must reach the receiveMaxSpeed cap and not exceed it.' });
 
-	// K6: object rests on head (no sink).
 	PBF.scaleTest('fps/knockback', 'K6', 'object rests on head (no sink)', function (t, S) {
 		var w = S.flat();
 		var p = S.feetSpawn(w, 0, 0, {});
@@ -188,7 +173,6 @@
 		t.simulate(w, 140);
 	}, { page: 'fps/knockback', steps: 140, description: 'A box resting on the head stays on top rather than clipping into it.' });
 
-	// K7: light ball does not knock — UNSCALED-ish, uses a sphere.
 	PBF.scaleTest('fps/knockback', 'K7', 'light ball does not knock', function (t, S) {
 		var w = S.flat();
 		var p = S.feetSpawn(w, 0, 0, {});
@@ -216,7 +200,6 @@
 		t.simulate(w, 90);
 	}, { page: 'fps/knockback', steps: 90, description: 'A small light ball must not knock a stationary player.' });
 
-	// K8: pushing stationary object no self-knock.
 	PBF.scaleTest('fps/knockback', 'K8', 'pushing stationary object no self-knock', function (t, S) {
 		var w = S.flat();
 		S.scaledObject(w, 1, 5, 3, '#0f0');
@@ -236,7 +219,6 @@
 		t.simulate(w, 60);
 	}, { page: 'fps/knockback', steps: 60, description: 'Pushing a stationary object must not knock the player backward.' });
 
-	// K9: dropped box settles (no spin/slide).
 	PBF.scaleTest('fps/knockback', 'K9', 'dropped box settles (no spin/slide)', function (t, S) {
 		var w = S.flat();
 		var p = S.feetSpawn(w, 0, 0, {});
@@ -258,7 +240,6 @@
 		t.simulate(w, 220);
 	}, { page: 'fps/knockback', steps: 220, description: 'A dropped box settles on the head without spinning or sliding.' });
 
-	// K10 (resting): resting object settles (no oscillation).
 	PBF.scaleTest('fps/knockback', 'K10', 'resting object settles (no oscillation)', function (t, S) {
 		var w = S.flat();
 		var p = S.feetSpawn(w, 0, 0, {});
@@ -280,7 +261,6 @@
 		t.simulate(w, 200);
 	}, { page: 'fps/knockback', steps: 200, description: 'A light object resting against the player settles without oscillating.' });
 
-	// K10 (sustained): sustained push no oscillation.
 	PBF.scaleTest('fps/knockback', 'K10', 'sustained push no oscillation', function (t, S) {
 		var w = S.flat();
 		S.scaledObject(w, 1, 3, 2);
@@ -303,7 +283,6 @@
 		t.simulate(w, 140);
 	}, { page: 'fps/knockback', steps: 140, description: 'A sustained push of a moving box stays flat (no push/knockback limit cycle).' });
 
-	// K11: head object not launched by moving.
 	PBF.scaleTest('fps/knockback', 'K11', 'head object not launched by moving', function (t, S) {
 		var w = S.flat();
 		var p = S.feetSpawn(w, 0, 0, {});
@@ -331,7 +310,6 @@
 		t.simulate(w, 180);
 	}, { page: 'fps/knockback', steps: 180, description: 'A object resting on the head must not be flung up when the player starts sprinting.' });
 
-	// K13: walking out from under head object drops it to the floor.
 	PBF.scaleTest('fps/knockback', 'K13', 'walking out drops head object to floor', function (t, S) {
 		var w = S.flat();
 		var p = S.feetSpawn(w, 0, 0, {});
@@ -360,7 +338,6 @@
 		});
 		t.simulate(w, 250);
 	}, { page: 'fps/knockback', steps: 250, description: 'Walking out from under a head object drops it straight to the floor, not hovering along.' });
-
 })(
 	typeof module !== 'undefined' && module.exports ? require('../runner.js') : window.APRunner,
 	typeof module !== 'undefined' && module.exports ? require('./_util_fps.js') : window.PBF,

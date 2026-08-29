@@ -8,12 +8,10 @@
 		"The leaf-walk result is cached per other-body-id, including empty results.";
 	function test(group, name, fn, opts) {
 		opts = opts || {};
-		// Every test here builds real bodies via mkBody (below), which draws them - visual defaults
-		// to true unless a test explicitly opts out.
+
 		Runner.test(group, name, fn, { page: 'midphase', description: DESC, visual: opts.visual !== false, steps: 0 });
 	}
 
-	// Builds a real body AND draws it (via t.loneBody).
 	function mkBody(t, shape, mass, pos, color) {
 		return t.loneBody(shape, { mass: mass, pos: pos, color: color });
 	}
@@ -33,7 +31,7 @@
 		comp.addChild(new AP.SphereShape(0.5), new V(-3, 0, 0), new Q());
 		comp.addChild(new AP.SphereShape(0.5), new V(3, 0, 0), new Q());
 		var cbody = mkBody(t, comp, 1, [0, 0, 0]);
-		var near = mkBody(t, new AP.SphereShape(0.5), 1, [3.2, 0, 0]); // overlaps the +X child only
+		var near = mkBody(t, new AP.SphereShape(0.5), 1, [3.2, 0, 0]);
 		var pairs = mid.expandPair(cbody, near);
 		t.checkEqual(pairs.length, 1, 'only the overlapping child is offered as a candidate');
 		t.check(pairs[0].a.position.x, 3, 1e-9, 'candidate carries the WORLD position of the child (body pos + local offset)');
@@ -45,17 +43,17 @@
 		comp.addChild(new AP.SphereShape(0.5), new V(-3, 0, 0), new Q());
 		comp.addChild(new AP.SphereShape(0.5), new V(3, 0, 0), new Q());
 		var cbody = mkBody(t, comp, 1, [0, 0, 0]);
-		var wide = mkBody(t, new AP.BoxShape(10, 10, 10), 1, [0, 0, 0]); // covers both children
+		var wide = mkBody(t, new AP.BoxShape(10, 10, 10), 1, [0, 0, 0]);
 		t.checkEqual(mid.expandPair(cbody, wide).length, 2, 'both children overlap a wide enough box');
 	});
 
 	test('collision/midphase', 'compound children carry the composed world rotation', function (t) {
 		var mid = new AP.Midphase();
 		var comp = new AP.CompoundShape();
-		// Child rotated 90 degrees about Z relative to the compound.
+
 		var childRot = new Q().setAxisAngle(new V(0, 0, 1), Math.PI / 2);
 		comp.addChild(new AP.BoxShape(1, 1, 1), new V(0, 0, 0), childRot);
-		// Body itself unrotated.
+
 		var cbody = mkBody(t, comp, 1, [0, 0, 0]);
 		var other = mkBody(t, new AP.SphereShape(0.5), 1, [0, 0, 0]);
 		var pairs = mid.expandPair(cbody, other);
@@ -68,7 +66,7 @@
 		var verts = [new V(-10, 0, -10), new V(10, 0, -10), new V(10, 0, 10), new V(-10, 0, 10)];
 		var mesh = new AP.MeshShape(verts, [0, 1, 2, 0, 2, 3]);
 		var ground = mkBody(t, mesh, 0, [0, 0, 0]);
-		var ball = mkBody(t, new AP.SphereShape(0.5), 1, [8, 0.3, -8]); // near the far corner, in triangle 0's area
+		var ball = mkBody(t, new AP.SphereShape(0.5), 1, [8, 0.3, -8]);
 		var pairs = mid.expandPair(ground, ball);
 		t.checkTrue(pairs.length >= 1, 'at least one triangle overlaps near the corner');
 		t.checkTrue(pairs.length <= 2, 'not every triangle in the mesh is offered, only the nearby one(s)');
@@ -88,7 +86,7 @@
 		var mid = new AP.Midphase();
 		var verts = [new V(-1, 0, -1), new V(1, 0, -1), new V(1, 0, 1), new V(-1, 0, 1)];
 		var mesh = new AP.MeshShape(verts, [0, 1, 2]);
-		var ground = mkBody(t, mesh, 0, [5, 0, 0]); // body offset by +5 on X
+		var ground = mkBody(t, mesh, 0, [5, 0, 0]);
 		var ball = mkBody(t, new AP.SphereShape(0.5), 1, [5.5, 0.3, -0.5]);
 		var pairs = mid.expandPair(ground, ball);
 		t.checkTrue(pairs.length >= 1, 'candidate produced');
@@ -103,7 +101,7 @@
 		var cbody = mkBody(t, comp, 1, [0, 0, 0]);
 		var other = mkBody(t, new AP.SphereShape(0.5), 1, [0.5, 0, 0]);
 		var first = mid.expandPair(cbody, other);
-		// Same bodies, same positions - second call must hit the cache and agree exactly.
+
 		var second = mid.expandPair(cbody, other);
 		t.checkEqual(first.length, second.length, 'identical query returns the same candidate count');
 	});
@@ -126,8 +124,7 @@
 		var other = mkBody(t, new AP.SphereShape(0.5), 1, [0.5, 0, 0]);
 		mid.expandPair(cbody, other);
 		mid.invalidate();
-		// Not asserting internal state directly - just that a fresh query after invalidate still
-		// produces the correct (non-stale) answer.
+
 		t.checkEqual(mid.expandPair(cbody, other).length, 1, 'query after invalidate still finds the overlap');
 	});
 
@@ -136,15 +133,13 @@
 		var comp = new AP.CompoundShape();
 		comp.addChild(new AP.SphereShape(0.5), new V(1, 0, 0), new Q());
 		var bodyOne = mkBody(t, comp, 1, [0, 0, 0]);
-		var bodyTwo = mkBody(t, comp, 1, [10, 0, 0]); // SAME shape instance, different body
+		var bodyTwo = mkBody(t, comp, 1, [10, 0, 0]);
 		var other = mkBody(t, new AP.SphereShape(0.5), 1, [1.2, 0, 0]);
 		mid.expandPair(bodyOne, other);
 		var bvhAfterFirst = comp._midphaseBVH;
 		mid.expandPair(bodyTwo, mkBody(t, new AP.SphereShape(0.5), 1, [11.2, 0, 0]));
 		t.checkTrue(comp._midphaseBVH === bvhAfterFirst, 'the same BVH instance is reused for a second body sharing the shape');
 	});
-
-	// ---- visual ----
 
 	test('collision/midphase', 'compound candidate expansion against a nearby probe', function (t) {
 		var mid = new AP.Midphase();

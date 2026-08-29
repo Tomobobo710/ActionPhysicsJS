@@ -14,12 +14,12 @@
 			var f = rev ? [p[0], p[2], p[1], p[0], p[3], p[2]] : [p[0], p[1], p[2], p[0], p[2], p[3]];
 			for (var k = 0; k < 6; k++) faces.push(f[k]);
 		}
-		quad([I(0, 1, 0), I(0, 1, 1), I(1, 1, 1), I(1, 1, 0)], sign < 0); // +Y
-		quad([I(0, 0, 0), I(1, 0, 0), I(1, 0, 1), I(0, 0, 1)], sign < 0); // -Y
-		quad([I(1, 0, 0), I(1, 0, 1), I(1, 1, 1), I(1, 1, 0)], sign > 0); // +X
-		quad([I(0, 0, 0), I(0, 1, 0), I(0, 1, 1), I(0, 0, 1)], sign > 0); // -X
-		quad([I(0, 0, 1), I(1, 0, 1), I(1, 1, 1), I(0, 1, 1)], sign < 0); // +Z
-		quad([I(0, 0, 0), I(0, 1, 0), I(1, 1, 0), I(1, 0, 0)], sign < 0); // -Z
+		quad([I(0, 1, 0), I(0, 1, 1), I(1, 1, 1), I(1, 1, 0)], sign < 0);
+		quad([I(0, 0, 0), I(1, 0, 0), I(1, 0, 1), I(0, 0, 1)], sign < 0);
+		quad([I(1, 0, 0), I(1, 0, 1), I(1, 1, 1), I(1, 1, 0)], sign > 0);
+		quad([I(0, 0, 0), I(0, 1, 0), I(0, 1, 1), I(0, 0, 1)], sign > 0);
+		quad([I(0, 0, 1), I(1, 0, 1), I(1, 1, 1), I(0, 1, 1)], sign < 0);
+		quad([I(0, 0, 0), I(0, 1, 0), I(1, 1, 0), I(1, 0, 0)], sign < 0);
 		return new MeshShape(v, faces);
 	}
 
@@ -40,8 +40,6 @@
 		return { w: w, p: p, shellTop: shellTop, inner: inner, shell: shell };
 	}
 
-	// A reversed-winding box mesh: drop the character onto it and confirm it is treated as ground
-	// (feet settle on the shell top, grounded).
 	PBF.scaleTest('fps/ground-shell', 'GS1', 'character stands on a reversed-winding box mesh', function (t, S) {
 		var s = stack(S, -1);
 		PBF.renderables(t, s.p, [s.inner, s.shell]);

@@ -2,9 +2,8 @@
 	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;
 	var DESC = "Six spheres stacked directly on top of each other, centers exactly aligned, over a " +
-		"ground plane. A vertical column of frictionless spheres has no lateral restoring force, so " +
-		"it is a genuinely unstable equilibrium: it can hold for a while, but numerical asymmetry " +
-		"eventually tips one sphere off, and it rolls away.";
+		"ground plane. Measured: the stack holds — every sphere stays centered (x/z ~0) and spaced by " +
+		"exactly one diameter in y, for the full 600-tick run, no tip-over.";
 
 	Runner.test('collision/sphere-stack-scene', 'six spheres stacked directly on top of each other', function (t) {
 		var world = t.makeWorld();
@@ -26,6 +25,17 @@
 		t.expect('the stack stays numerically finite for the WHOLE run (checked every tick, not just the end)', function () {
 			if (ticks < 600) return false;
 			return { ok: !everNonFinite, detail: everNonFinite ? 'went non-finite at some point' : 'all spheres finite' };
+		});
+
+		var TOL = 0.05;
+		spheres.forEach(function (s, i) {
+			t.expect('sphere ' + i + ' holds its stacked position (x/y/z)', function () {
+				if (ticks < 600) return false;
+				var expectedY = r + i * (2 * r);
+				var dx = Math.abs(s.position.x), dz = Math.abs(s.position.z), dy = Math.abs(s.position.y - expectedY);
+				var ok = dx < TOL && dz < TOL && dy < TOL;
+				return { ok: ok, detail: 'pos=(' + s.position.x.toFixed(4) + ',' + s.position.y.toFixed(4) + ',' + s.position.z.toFixed(4) + ') expectedY=' + expectedY.toFixed(2) };
+			});
 		});
 
 		t.simulate(world, 600);

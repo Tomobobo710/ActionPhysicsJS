@@ -1,10 +1,6 @@
-/**
- * Tom's Suite — FPSCharacterController STATE-CHANGE tests (S1-S3).
- */
 (function (Runner, PBF, ActionPhysics) {
 	Runner.suite('tom');
 
-	// rampWorld(deg): 20x2x30 slab at y=10, rotated -deg about X. NOT scaled.
 	function rampWorld(deg) {
 		var w = PBF.makeWorld();
 		var rot = PBF.axisAngleQuat(1, 0, 0, deg * Math.PI / 180);
@@ -12,7 +8,6 @@
 		return w;
 	}
 
-	// ---- S1: crouch-while-sprint continuity ----
 	PBF.scaleTest('fps/state', 'S1', 'crouch-while-sprint continuity', function (t, S) {
 		var w = S.flat();
 		var p = S.feetSpawn(w, 0, 0, {});
@@ -34,7 +29,6 @@
 		t.simulate(w, 26);
 	}, { page: 'fps/state', steps: 26, description: 'Sprint on flat ground, then crouch while still sprinting. Watch the collider keep moving (>80% of its pre-crouch speed) rather than stalling.' });
 
-	// ---- S2: scale mid-motion continuity ----
 	PBF.scaleTest('fps/state', 'S2', 'scale mid-motion continuity', function (t, S) {
 		var w = S.flat();
 		var p = S.feetSpawn(w, 0, 0, {});
@@ -55,7 +49,6 @@
 		t.simulate(w, 26);
 	}, { page: 'fps/state', steps: 26, description: 'Sprint on flat ground, then scale the controller to 1.5x mid-motion. Watch that speed is preserved (>80%) across the scale change.' });
 
-	// ---- S3: crouch on ramp no drift ----
 	PBF.scaleTest('fps/state', 'S3', 'crouch on ramp no drift', function (t, S) {
 		var w = rampWorld(30);
 		var p = S.spawn(w, { x: 0, y: 16, z: 0 }, {});
@@ -75,7 +68,6 @@
 		});
 		t.simulate(w, 241);
 	}, { page: 'fps/state', steps: 241, description: 'Park on a 30° ramp, let it settle, then crouch and hold. Watch that the collider stays put (< 0.2u drift) instead of sliding down.' });
-
 })(
 	typeof module !== 'undefined' && module.exports ? require('../runner.js') : window.APRunner,
 	typeof module !== 'undefined' && module.exports ? require('./_util_fps.js') : window.PBF,

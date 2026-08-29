@@ -11,13 +11,12 @@
 			case 'cylinder': return new AP.CylinderShape(3, 2.5);
 			case 'cone':     return new AP.ConeShape(3, 2.5);
 			case 'plane_x':  return new AP.PlaneShape('x', 5, 10);
-			// PlaneShape's halfW/halfL axis convention is cyclic per orientation (see PlaneShape.js);
-			// (10, 5) here gives extent 5 on X, 10 on Z.
+
 			case 'plane_y':  return new AP.PlaneShape('y', 10, 5);
 			case 'plane_z':  return new AP.PlaneShape('z', 5, 10);
 		}
 	}
-	// [group, name, shapeKey, dir[3], expected[3], pos[3]|null, rot[4]|null]
+
 	var ROWS = [
 		['Sphere','Base Sphere 1','sphere',[1,0,0],[2,0,0],null,null],
 		['Sphere','Base Sphere 2','sphere',[1,1,0],[S2,S2,0],null,null],

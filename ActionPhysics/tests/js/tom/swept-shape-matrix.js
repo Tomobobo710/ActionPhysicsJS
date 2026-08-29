@@ -1,18 +1,6 @@
-// Tom's Suite — SWEPT SHAPE MATRIX.
-// World.shapeIntersect sweeps a base shape along a segment and returns what it hits. Two things have to
-// hold for every combination and were each broken at some point:
-//   • Every convex BASE shape (box, sphere, capsule, cone, cylinder, convex) must produce a usable swept
-//     probe. CapsuleShape.findSupportPoint had two bugs that crashed GJK/EPA: a two-way y-sign that made
-//     equatorial supports coplanar (flat simplex), and a 0/0 on a zero-length direction (NaN simplex).
-//   • Every TARGET type must be detected: primitive (getContact returns a contact directly), MeshShape and
-//     CompoundShape (contacts route through the addContact callback; shapeIntersect used to miss them).
-// This sweeps each base straight through each target and asserts at least one hit against that target.
-//
-// Pure query (no simulation); deterministic, headless == browser.
 (function (Runner, U) {
 	Runner.suite('tom');
 
-	// A unit-cube triangle mesh (8 verts, 12 tris) centered at the origin.
 	function cubeMesh(t, w, H) {
 		var v = [
 			[-H,-H,-H],[ H,-H,-H],[ H, H,-H],[-H, H,-H],
@@ -22,7 +10,6 @@
 		return t.mesh(w, v, f, 0, U.withMat({ pos: [0,0,0], color: '#889' }));
 	}
 
-	// A two-box compound (crossed bars), added like runner's add() but for a CompoundShape.
 	function crossCompound(t, w) {
 		var G = t.AP, z = new G.Vector3(0,0,0), q = new G.Quaternion(0,0,0,1);
 		var shape = new G.CompoundShape();
@@ -33,7 +20,6 @@
 		return b;
 	}
 
-	// Base-shape factories — one per convex shape that can be a swept probe.
 	var BASES = {
 		box:      function (G) { return new G.BoxShape(0.3, 0.3, 0.3); },
 		sphere:   function (G) { return new G.SphereShape(0.3); },
@@ -45,7 +31,6 @@
 			new G.Vector3(0,-0.3,0), new G.Vector3(0,0,0.3), new G.Vector3(0,0,-0.3) ]); }
 	};
 
-	// Target-shape factories — one per collision path (primitive / mesh / compound).
 	var TARGETS = {
 		primitive: function (t, w) { return t.box(w, 1, 1, 1, 0, U.withMat({ pos: [0,0,0], color: '#556' })); },
 		mesh:      function (t, w) { return cubeMesh(t, w, 1); },
@@ -63,8 +48,7 @@
 				var base = BASES[baseName](t.AP);
 				var start = t.vec(-3, 0, 0), end = t.vec(3, 0, 0);
 				t.expect(baseName + ' swept through the ' + targetName + ' returns a hit', function () {
-					// World.shapeIntersect reports the single nearest hit (or null), not an array — the
-					// only body in this scene is `target`, so a single-hit query is sufficient here.
+
 					var hit = w.shapeIntersect(base, start, end);
 					var mine = (hit && hit.body === target) ? hit : null;
 					var ok = false, detail = baseName + ' hits=' + (mine ? 1 : 0);
@@ -88,7 +72,6 @@
 				"routed through the addContact callback that shapeIntersect used to drop)."
 		});
 	});
-
 })(
 	typeof module !== 'undefined' && module.exports ? require('../runner.js') : window.APRunner,
 	typeof module !== 'undefined' && module.exports ? require('./_util.js') : window.TomUtil

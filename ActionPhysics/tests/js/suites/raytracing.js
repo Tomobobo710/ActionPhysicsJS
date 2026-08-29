@@ -2,11 +2,7 @@
 	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;
 	var V = AP.Vector3, Q = AP.Quaternion;
-	// 0.02, not 0.01: the "Translated Sphere 2" row is an EXACT geometric tangent (ray's
-	// perpendicular distance to the sphere center equals the radius exactly) - convergence there is
-	// necessarily slow (traced directly: still making steady, real progress at iteration 63 of the
-	// conservative-advancement loop), so its residual sits just outside a tighter epsilon while every
-	// other row here converges to <1e-6.
+
 	var EPS = 0.02, S2 = Math.sqrt(2), S45 = Math.sqrt(4.5);
 	var PYR = [[-1,-1,-1],[1,-1,-1],[1,-1,1],[-1,-1,1],[0,2,0]];
 
@@ -24,12 +20,11 @@
 				return cs;
 		}
 	}
-	// [group, name, key, start[3], stop[3], expected[3], pos[3]|null, rot[4]|null]
+
 	var R = [
 		['Sphere','Base Sphere 1','sphere',[-4,0,0],[4,0,0],[-2,0,0],null,null],
 		['Sphere','Base Sphere 2','sphere',[0,2,2],[0,-2,-2],[0,S2,S2],null,null],
-		// A ray starting inside reports its entry point at fraction 0 (the start itself),
-		// consistently with how starting-inside overlap is reported everywhere else.
+
 		['Sphere','Base Sphere 3 (starts inside - reports entry at fraction 0)','sphere',[0,0,0],[2,0,-2],[0,0,0],null,null],
 		['Sphere','Translated Sphere 1 (starts inside - reports entry at fraction 0)','sphere',[2,3,0],[2,1,0],[2,3,0],[2,3,0],null],
 		['Sphere','Translated Sphere 2','sphere',[0,5,0],[4,5,0],[2,5,0],[2,3,0],null],

@@ -1,24 +1,12 @@
-// Tom's Suite — COMPOUND-MESH LEAF CACHE.
-// A 4-legged compound "table" dropped onto a finely-subdivided mesh floor, where each leg lands on a
-// DIFFERENT patch of triangles. This targets the per-child mesh-leaf cache directly (see
-// NarrowPhase.resolveCache / meshConvex): each compound child gets its own cache entry keyed off its
-// own stable CompoundShapeChild object, not the shared body id every child aliases — if that keying
-// were wrong, one leg's cached triangles could leak into another's, and the table would sink, tilt, or
-// jitter instead of resting flat and still.
-//
-// Runs long enough to fully settle (exercising the cache-hit path for most of the tail), then applies a
-// horizontal shove (exercising cache invalidation + rebuild) and checks it re-settles cleanly too.
 (function (Runner, U) {
 	Runner.suite('tom');
 
-	var LEG_HALF = 0.15;   // each leg: a small cube
-	var LEG_SPAN = 1.2;    // legs sit at (+-LEG_SPAN, +-LEG_SPAN) in local X/Z
+	var LEG_HALF = 0.15;
+	var LEG_SPAN = 1.2;
 	var DROP_Y = 2.5;
 	var SHOVE_AT = 150;
 	var TOTAL = 320;
 
-	// Finely-subdivided flat mesh floor, top face at y=0 — enough triangles that legs 0.3 apart land on
-	// genuinely different ones. res x res grid over [-half, half].
 	function fineMeshFloor(t, w, half, res) {
 		var v = [], f = [];
 		var step = (half * 2) / res;
@@ -31,14 +19,12 @@
 		for (z = 0; z < res; z++) {
 			for (x = 0; x < res; x++) {
 				var a = idx(x, z), b = idx(x + 1, z), c = idx(x + 1, z + 1), d = idx(x, z + 1);
-				f.push(a, c, b, a, d, c); // upward-facing winding
+				f.push(a, c, b, a, d, c);
 			}
 		}
 		return U.meshBody(t, w, v, f, 0, { pos: [0, 0, 0], color: '#556' });
 	}
 
-	// A 4-legged table: one compound body, one BoxShape child per leg, offset so each leg's footprint
-	// lands on different mesh triangles once resting.
 	function tableCompound(t, w, mass, opts) {
 		var G = t.AP;
 		var shape = new G.CompoundShape();
@@ -79,10 +65,8 @@
 			}
 		});
 
-		// Settles once (cache built + cache-hit tail), gets shoved (cache invalidated by motion,
-		// rebuilt), and must settle again — flat, not tilted, not sunk into the floor.
 		t.expect('table settles resting flat on the mesh, twice (before and after the shove)', function (world) {
-			if (lastTick < SHOVE_AT + 10) return false; // let the shove actually register as motion
+			if (lastTick < SHOVE_AT + 10) return false;
 			var y = table.position.y, sv = U.speed(table), sw = U.spin(table);
 			var flat = Math.abs(table.rotation.x) < 0.05 && Math.abs(table.rotation.z) < 0.05;
 			var atRest = sv < 0.05 && sw < 0.05;
@@ -105,7 +89,6 @@
 			"surface — a wrong cache key would show up as sinking, tilting, or one leg's contacts leaking " +
 			"into another's."
 	});
-
 })(
 	typeof module !== 'undefined' && module.exports ? require('../runner.js') : window.APRunner,
 	typeof module !== 'undefined' && module.exports ? require('./_util.js') : window.TomUtil

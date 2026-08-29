@@ -1,7 +1,3 @@
-// Shapes: support functions, local AABBs, and mass properties (volume, inertia, center of mass).
-// Support-function correctness matters more here than anywhere else downstream - it is GJK's only
-// required primitive, so every shape gets support checked along its cardinal axes plus at least one
-// off-axis direction.
 (function (Runner) {
 	Runner.suite('shapes');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;
@@ -21,8 +17,6 @@
 		t.check(v.z, z, eps, label + '.z');
 	}
 
-	// Support tests are static geometry: draw a bare {shape, position, rotation}, plus ctx.support
-	// so the bench shows the query direction (arrow) and the resulting point (red dot).
 	function drawSupport(t, shape, direction) {
 		var out = new V();
 		shape.supportInto(out, direction);
@@ -30,8 +24,6 @@
 		t.support = { dir: [direction.x, direction.y, direction.z], point: [out.x, out.y, out.z] };
 		return out;
 	}
-
-	// ---- AABB ----
 
 	test('shapes/aabb', 'combine grows to contain both boxes', function (t) {
 		var a = new AP.AABB().setFromMinMax(-1, -1, -1, 1, 1, 1);
@@ -76,8 +68,6 @@
 		vecIs(t, a.max, 5, 6, 7, 'max');
 	});
 
-	// ---- Box ----
-
 	test('shapes/box', 'support point is the correct corner on each cardinal axis', function (t) {
 		var s = new AP.BoxShape(1, 2, 3);
 		var out = new V();
@@ -101,18 +91,16 @@
 	});
 
 	test('shapes/box', 'volume and inertia match the closed-form solid-cuboid result', function (t) {
-		var s = new AP.BoxShape(1, 2, 3); // 2x4x6
+		var s = new AP.BoxShape(1, 2, 3);
 		t.check(s.volume(), 48, 1e-9, 'volume = w*h*d');
 		var data = s.computeMassData();
 		t.check(data.mass, 48, 1e-9, 'mass at density 1');
-		// I_xx = m(h^2+d^2)/12 with h=4, d=6
+
 		t.check(data.inertia.e00, 48 * (16 + 36) / 12, 1e-6, 'Ixx');
 		t.check(data.inertia.e11, 48 * (4 + 36) / 12, 1e-6, 'Iyy');
 		t.check(data.inertia.e22, 48 * (4 + 16) / 12, 1e-6, 'Izz');
 		t.check(data.inertia.e01, 0, 1e-9, 'off-diagonal is zero for a centered box');
 	});
-
-	// ---- Sphere ----
 
 	test('shapes/sphere', 'support point lies on the surface along the direction', function (t) {
 		var s = new AP.SphereShape(2);
@@ -139,13 +127,11 @@
 		var expectedVolume = (4 / 3) * Math.PI * 8;
 		t.check(s.volume(), expectedVolume, 1e-6, 'volume = 4/3 pi r^3');
 		var data = s.computeMassData();
-		var expectedI = 0.4 * expectedVolume * 4; // 2/5 m r^2
+		var expectedI = 0.4 * expectedVolume * 4;
 		t.check(data.inertia.e00, expectedI, 1e-6, 'Ixx = 2/5 m r^2');
 		t.check(data.inertia.e11, expectedI, 1e-6, 'Iyy = 2/5 m r^2');
 		t.check(data.inertia.e22, expectedI, 1e-6, 'Izz = 2/5 m r^2');
 	});
-
-	// ---- Cylinder ----
 
 	test('shapes/cylinder', 'support point on the rim at mid-height, cap at the poles', function (t) {
 		var s = new AP.CylinderShape(2, 3);
@@ -162,7 +148,7 @@
 	}, { visual: true });
 
 	test('shapes/cylinder', 'volume and axis/side inertia match the closed-form result', function (t) {
-		var s = new AP.CylinderShape(2, 3); // r=2, h=6
+		var s = new AP.CylinderShape(2, 3);
 		var expectedVolume = Math.PI * 4 * 6;
 		t.check(s.volume(), expectedVolume, 1e-6, 'volume = pi r^2 h');
 		var data = s.computeMassData();
@@ -170,8 +156,6 @@
 		t.check(data.inertia.e11, 0.5 * m * 4, 1e-6, 'Iyy (axis) = 1/2 m r^2');
 		t.check(data.inertia.e00, m * (3 * 4 + 36) / 12, 1e-6, 'Ixx (side) = m(3r^2+h^2)/12');
 	});
-
-	// ---- Cone ----
 
 	test('shapes/cone', 'support point is the apex when the direction points along +Y', function (t) {
 		var s = new AP.ConeShape(2, 3);
@@ -188,20 +172,18 @@
 	}, { visual: true });
 
 	test('shapes/cone', 'volume matches the closed-form result', function (t) {
-		var s = new AP.ConeShape(2, 3); // r=2, h=6
+		var s = new AP.ConeShape(2, 3);
 		t.check(s.volume(), Math.PI * 4 * 6 / 3, 1e-6, 'volume = pi r^2 h / 3');
 	});
 
 	test('shapes/cone', 'center of mass sits 1/4 height above the base, below the local origin', function (t) {
 		var s = new AP.ConeShape(2, 3);
 		var data = s.computeMassData();
-		// base at y=-3, apex at y=3, h=6 -> centroid at -3 + 6/4 = -1.5
+
 		t.check(data.centerOfMass.y, -1.5, 1e-9, 'centroid y');
 		t.checkTrue(data.mass > 0, 'positive mass');
 		t.checkTrue(data.inertia.e00 > 0 && data.inertia.e11 > 0, 'positive inertia');
 	});
-
-	// ---- Capsule ----
 
 	test('shapes/capsule', 'rejects a total height shorter than the diameter', function (t) {
 		var threw = false;
@@ -210,7 +192,7 @@
 	});
 
 	test('shapes/capsule', 'support point on the axis picks the correct pole', function (t) {
-		var s = new AP.CapsuleShape(1, 6); // segmentHalfLength = 3 - 1 = 2
+		var s = new AP.CapsuleShape(1, 6);
 		var out = new V();
 		vecIs(t, s.supportInto(out, new V(0, 1, 0)), 0, 3, 0, '+Y pole is segmentHalfLength + radius');
 		vecIs(t, s.supportInto(out, new V(0, -1, 0)), 0, -3, 0, '-Y pole');
@@ -220,17 +202,13 @@
 		var s = new AP.CapsuleShape(1, 6);
 		var got = drawSupport(t, s, new V(1, 0, 0));
 		t.check(got.x, 1, 1e-9, 'radius reached at the equator');
-		// A purely horizontal direction is genuinely ambiguous between the two cap centers (both dot
-		// to the same value along it), and the true farthest point is the barrel equator itself -
-		// picking a cap center anyway (the naive >= 0 branch) puts every horizontal support on one
-		// ring instead of the equator, degenerate for a GJK/EPA simplex sampling several such
-		// directions. See CapsuleShape.supportInto's own comment.
+
 		t.check(got.y, 0, 1e-9, 'zero y-component sits at the true equator, not either cap');
 	}, { visual: true });
 
 	test('shapes/capsule', 'volume is cylinder core plus two hemisphere caps (one full sphere)', function (t) {
-		var s = new AP.CapsuleShape(1, 6); // segmentHalfLength = 2
-		var expected = Math.PI * 1 * 1 * 4 + (4 / 3) * Math.PI; // cylinder(r=1,h=4) + sphere(r=1)
+		var s = new AP.CapsuleShape(1, 6);
+		var expected = Math.PI * 1 * 1 * 4 + (4 / 3) * Math.PI;
 		t.check(s.volume(), expected, 1e-6, 'total volume');
 	});
 
@@ -241,8 +219,6 @@
 		t.check(data.inertia.e00, data.inertia.e22, 1e-9, 'Ixx === Izz (axisymmetric about Y)');
 		t.checkTrue(data.inertia.e11 < data.inertia.e00, 'axis inertia is less than a side inertia for a slender capsule');
 	});
-
-	// ---- Convex ----
 
 	test('shapes/convex', 'support scans the point cloud for the true maximum along a direction', function (t) {
 		var pts = [new V(1, 0, 0), new V(-1, 0, 0), new V(0, 1, 0), new V(0, -1, 0), new V(0, 0, 1), new V(0, 0, -1)];
@@ -261,8 +237,6 @@
 		vecIs(t, out.min, -3, -1, -5, 'min');
 		vecIs(t, out.max, 2, 4, 1, 'max');
 	});
-
-	// ---- Plane / Triangle (degenerate shapes) ----
 
 	test('shapes/plane', 'support point always lies exactly on the plane', function (t) {
 		var s = new AP.PlaneShape('y', 5, 10);
@@ -285,8 +259,6 @@
 		vecIs(t, s.supportInto(out, new V(-1, -1, 0)), 0, 0, 0, 'picks a');
 	}, { visual: true });
 
-	// ---- Compound ----
-
 	test('shapes/compound', 'combines child volumes and mass', function (t) {
 		var c = new AP.CompoundShape();
 		c.addChild(new AP.SphereShape(1), new V(2, 0, 0), new AP.Quaternion());
@@ -305,12 +277,10 @@
 		c.addChild(new AP.SphereShape(1), new V(-5, 0, 0), new AP.Quaternion());
 		var data = c.computeMassData();
 		var singleSphereI = new AP.SphereShape(1).computeMassData().inertia.e00;
-		// About the compound's Y/Z axes, the offset along X adds m*d^2 per sphere (d=5).
+
 		t.checkTrue(data.inertia.e11 > 2 * singleSphereI, 'Iyy grows past the sum of local inertias');
 		t.checkTrue(data.inertia.e22 > 2 * singleSphereI, 'Izz grows past the sum of local inertias');
 	});
-
-	// ---- LineSwept ----
 
 	test('shapes/lineswept', 'support extends the base shape support by the segment endpoint', function (t) {
 		var s = new AP.LineSweptShape(new AP.SphereShape(1), new V(0, -5, 0), new V(0, 5, 0));
@@ -321,8 +291,6 @@
 		s.supportInto(out, new V(1, 0, 0));
 		t.check(out.x, 1, 1e-9, 'perpendicular direction unaffected by the sweep length');
 	}, { visual: true });
-
-	// ---- Mesh ----
 
 	test('shapes/mesh', 'triangleAt reads the correct vertices for an indexed triangle', function (t) {
 		var verts = [new V(0, 0, 0), new V(1, 0, 0), new V(0, 1, 0), new V(0, 0, 1)];

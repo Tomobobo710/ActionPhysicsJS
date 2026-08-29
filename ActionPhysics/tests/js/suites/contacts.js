@@ -36,8 +36,6 @@
 		return cd;
 	}
 
-	// ---- ContactDetails: sign convention ----
-
 	test('collision/contacts', 'a separated pair produces a negative signed distance', function (t) {
 		var a = mkBody(t, new AP.SphereShape(1), 1, [0, 0, 0]);
 		var b = mkBody(t, new AP.SphereShape(1), 1, [5, 0, 0]);
@@ -59,17 +57,15 @@
 		t.check(cd.point.x, (cd.pointOnA.x + cd.pointOnB.x) / 2, 1e-9, 'point.x is the midpoint');
 	});
 
-	// ---- ContactManifold: warm-start persistence ----
-
 	test('collision/contacts', 'a re-confirmed contact keeps its manifold point and preserves accumulated lambda', function (t) {
 		var a = mkBody(t, new AP.BoxShape(1, 1, 1), 1, [0, 0, 0]);
 		var b = mkBody(t, new AP.BoxShape(1, 1, 1), 1, [1.5, 0, 0]);
 		var manifold = new AP.ContactManifold(a, b);
 		manifold.update([contactFor(a, b)]);
 		t.checkEqual(manifold.pointCount, 1, 'one point after the first tick');
-		manifold.points[0].normalLambda = 7.5; // simulate the solver having accumulated something
+		manifold.points[0].normalLambda = 7.5;
 
-		manifold.update([contactFor(a, b)]); // same bodies, same positions: same contact next tick
+		manifold.update([contactFor(a, b)]);
 		t.checkEqual(manifold.pointCount, 1, 'still one point, not a fresh one');
 		t.check(manifold.points[0].normalLambda, 7.5, 1e-9, 'accumulated lambda survived the refresh - the warm start');
 	});
@@ -77,13 +73,11 @@
 	test('collision/contacts', 'a genuinely new point starts with zero lambda, not inherited from an old point', function (t) {
 		var a = mkBody(t, new AP.BoxShape(1, 1, 1), 1, [0, 0, 0]);
 		var manifold = new AP.ContactManifold(a, mkBody(t, new AP.BoxShape(1, 1, 1), 1, [1.5, 0, 0]));
-		var far = mkFlatContact(100, 100, 100, 0.1); // far outside MATCH_DISTANCE of anything existing
+		var far = mkFlatContact(100, 100, 100, 0.1);
 		manifold.update([far]);
 		t.checkEqual(manifold.pointCount, 1, 'the far point was added');
 		t.checkEqual(manifold.points[0].normalLambda, 0, 'a brand new point has no warm-start history');
 	});
-
-	// ---- ContactManifold: removal only on update(), only for un-reconfirmed points ----
 
 	test('collision/contacts', 'a contact that stops being detected is removed on the next update()', function (t) {
 		var a = mkBody(t, new AP.BoxShape(1, 1, 1), 1, [0, 0, 0]);
@@ -91,14 +85,12 @@
 		var manifold = new AP.ContactManifold(a, b);
 		manifold.update([contactFor(a, b)]);
 		t.checkEqual(manifold.pointCount, 1, 'contact present');
-		manifold.update([]); // nothing detected this tick (bodies separated, narrowphase reports no candidates)
+		manifold.update([]);
 		t.checkEqual(manifold.pointCount, 0, 'the un-reconfirmed point is pruned');
 	});
 
 	test('collision/contacts', 'calling update() with the SAME contacts repeatedly never drops points mid-sequence', function (t) {
-		// update() is tick-only by contract. Repeated refreshes of an unchanged valid contact must
-		// be idempotent - the solver never calls this per-substep, but the data structure must not
-		// compound the mistake if it were.
+
 		var a = mkBody(t, new AP.BoxShape(1, 1, 1), 1, [0, 0, 0]);
 		var b = mkBody(t, new AP.BoxShape(1, 1, 1), 1, [1.5, 0, 0]);
 		var manifold = new AP.ContactManifold(a, b);
@@ -108,18 +100,16 @@
 		}
 	});
 
-	// ---- ContactManifold: 4-point cap and reduction ----
-
 	test('collision/contacts', 'a 5th point triggers reduction back to 4, always keeping the deepest', function (t) {
 		var a = mkBody(t, new AP.BoxShape(5, 5, 5), 1, [0, 0, 0]);
 		var b = mkBody(t, new AP.BoxShape(5, 5, 5), 1, [9, 0, 0]);
 		var manifold = new AP.ContactManifold(a, b);
 		var contacts = [
-			mkFlatContact(4.9, 4.9, 4.9, 0.5), // deepest
+			mkFlatContact(4.9, 4.9, 4.9, 0.5),
 			mkFlatContact(4.9, 4.9, -4.9, 0.1),
 			mkFlatContact(4.9, -4.9, 4.9, 0.1),
 			mkFlatContact(4.9, -4.9, -4.9, 0.1),
-			mkFlatContact(4.85, 4.85, 4.85, 0.05) // near-duplicate of the deepest corner
+			mkFlatContact(4.85, 4.85, 4.85, 0.05)
 		];
 		contacts.forEach(function (c) { manifold._addPoint(c); });
 		t.checkEqual(manifold.pointCount, 4, 'capped at MAX_POINTS');
@@ -136,7 +126,7 @@
 			mkFlatContact(4.9, 4.9, -4.9, 0.1),
 			mkFlatContact(4.9, -4.9, 4.9, 0.1),
 			mkFlatContact(4.9, -4.9, -4.9, 0.1),
-			mkFlatContact(4.85, 4.85, 4.85, 0.05) // near-duplicate of the FIRST corner, not deepest
+			mkFlatContact(4.85, 4.85, 4.85, 0.05)
 		];
 		contacts.forEach(function (c) { manifold._addPoint(c); });
 		var nearDup = manifold.points.some(function (p) { return Math.abs(p.point.x - 4.85) < 1e-6; });
@@ -153,14 +143,12 @@
 		t.checkTrue(manifold.pointCount <= AP.ContactManifold.MAX_POINTS, 'stayed at or under the cap after 12 adds');
 	});
 
-	// ---- ContactManifoldList ----
-
 	test('collision/contacts', 'getOrCreate uses a canonical body order regardless of call order', function (t) {
 		var a = mkBody(t, new AP.SphereShape(1), 1, [0, 0, 0]);
 		var b = mkBody(t, new AP.SphereShape(1), 1, [1, 0, 0]);
 		var list = new AP.ContactManifoldList();
 		var m1 = list.getOrCreate(a, b);
-		var m2 = list.getOrCreate(b, a); // reversed argument order
+		var m2 = list.getOrCreate(b, a);
 		t.checkTrue(m1 === m2, 'the same manifold is returned regardless of argument order');
 	});
 
@@ -174,11 +162,9 @@
 		list.refresh(byPair);
 		t.checkEqual(list.size, 1, 'manifold survives while contacts are present');
 
-		list.refresh(new Map()); // nothing detected this tick for any pair
+		list.refresh(new Map());
 		t.checkEqual(list.size, 0, 'the empty manifold is pruned');
 	});
-
-	// ---- contact point + normal overlay ----
 
 	test('collision/contacts', 'contact point and normal for two overlapping boxes', function (t) {
 		var a = mkBody(t, new AP.BoxShape(1, 1, 1), 1, [-0.75, 0, 0]);

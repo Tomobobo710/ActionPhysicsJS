@@ -9,12 +9,10 @@
 		"midphase at all.";
 	function test(group, name, fn, opts) {
 		opts = opts || {};
-		// Every test here builds real bodies via mkBody (below), which draws them - visual defaults
-		// to true unless a test explicitly opts out.
+
 		Runner.test(group, name, fn, { page: 'broadphase', description: DESC, visual: opts.visual !== false, steps: 0 });
 	}
 
-	// Builds a real body AND draws it (via t.loneBody).
 	function mkBody(t, shape, mass, pos, color) {
 		return t.loneBody(shape, { mass: mass, pos: pos, color: color });
 	}
@@ -26,7 +24,7 @@
 	test('collision/broadphase', 'two overlapping spheres produce one candidate pair', function (t) {
 		var bp = new AP.SAPBroadphase();
 		var a = mkBody(t, new AP.SphereShape(1), 1, [0, 0, 0]);
-		var b = mkBody(t, new AP.SphereShape(1), 1, [1.5, 0, 0]); // distance 1.5 < radius sum 2
+		var b = mkBody(t, new AP.SphereShape(1), 1, [1.5, 0, 0]);
 		bp.add(a); bp.add(b);
 		var pairs = bp.computePairs();
 		t.checkEqual(pairs.length, 1, 'exactly one candidate pair');
@@ -42,7 +40,7 @@
 	});
 
 	test('collision/broadphase', 'AABBs overlapping only off the sweep axis are still caught', function (t) {
-		// Wide spread on X forces X as the sweep axis; these two only overlap on Y/Z, at the same X.
+
 		var bp = new AP.SAPBroadphase();
 		var wide1 = mkBody(t, new AP.SphereShape(0.1), 1, [-50, 0, 0]);
 		var wide2 = mkBody(t, new AP.SphereShape(0.1), 1, [50, 0, 0]);
@@ -55,8 +53,8 @@
 
 	test('collision/broadphase', 'two static bodies never pair with each other', function (t) {
 		var bp = new AP.SAPBroadphase();
-		var a = mkBody(t, new AP.SphereShape(1), 0, [0, 0, 0]);   // static
-		var b = mkBody(t, new AP.SphereShape(1), 0, [0.5, 0, 0]); // static, overlapping AABB
+		var a = mkBody(t, new AP.SphereShape(1), 0, [0, 0, 0]);
+		var b = mkBody(t, new AP.SphereShape(1), 0, [0.5, 0, 0]);
 		bp.add(a); bp.add(b);
 		t.checkEqual(bp.computePairs().length, 0, 'static-static pairs are filtered - nothing can move them together');
 	});
@@ -82,7 +80,7 @@
 		var c = mkBody(t, new AP.SphereShape(1), 1, [0, 0, 0]);
 		var d = mkBody(t, new AP.SphereShape(1), 1, [0.5, 0, 0]);
 		c.collision_groups = 0x1; c.collision_mask = 0x1;
-		d.collision_groups = 0x2; d.collision_mask = 0x2; // no overlap with c's mask
+		d.collision_groups = 0x2; d.collision_mask = 0x2;
 		bp2.add(c); bp2.add(d);
 		t.checkEqual(bp2.computePairs().length, 0, 'incompatible mask/group is filtered out');
 	});
@@ -96,8 +94,6 @@
 		bp.remove(a);
 		t.checkEqual(bp.computePairs().length, 0, 'no pairs once one body is removed');
 	});
-
-	// ---- visual: a small cluster, some overlapping, some not ----
 
 	test('collision/broadphase', 'candidate pairs among a small cluster of bodies', function (t) {
 		var a = mkBody(t, new AP.SphereShape(1), 1, [0, 0, 0], '#4af');

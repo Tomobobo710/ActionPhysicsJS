@@ -41,10 +41,10 @@
 
 	test('collision/bvh', 'query returns exactly the leaves whose box overlaps, no false negatives', function (t) {
 		var boxes = [
-			[0, 0, 0, 1, 1, 1],     // 0
-			[2, 0, 0, 3, 1, 1],     // 1 - separate
-			[0.5, 0.5, 0.5, 1.5, 1.5, 1.5], // 2 - overlaps 0
-			[10, 10, 10, 11, 11, 11] // 3 - far away
+			[0, 0, 0, 1, 1, 1],
+			[2, 0, 0, 3, 1, 1],
+			[0.5, 0.5, 0.5, 1.5, 1.5, 1.5],
+			[10, 10, 10, 11, 11, 11]
 		];
 		var bvh = buildFromBoxes(boxes);
 		var hits = queryHits(bvh, [0, 0, 0, 1, 1, 1]);
@@ -76,7 +76,7 @@
 			boxes.push([x, y, z, x + 1, y + 1, z + 1]);
 		}
 		var bvh = buildFromBoxes(boxes);
-		// Brute-force reference for one query box.
+
 		var q = [10, 10, 10, 15, 15, 15];
 		var expected = [];
 		for (var j = 0; j < boxes.length; j++) {
@@ -86,8 +86,6 @@
 		var hits = queryHits(bvh, q);
 		t.checkEqual(hits.length, expected.length, 'BVH query count matches brute-force over 200 leaves');
 	});
-
-	// ---- visual: draw the leaf boxes and the query box as bodies (boxes drawn via BoxShape) ----
 
 	test('collision/bvh', 'query result over a small scattered set of leaf boxes', function (t) {
 		var boxes = [[0, 0, 0, 1, 1, 1], [3, 0, 0, 4, 1, 1], [0.5, 2, 0, 1.5, 3, 1], [-3, -3, -3, -2, -2, -2]];

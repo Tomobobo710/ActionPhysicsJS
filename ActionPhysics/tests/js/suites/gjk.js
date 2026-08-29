@@ -1,9 +1,3 @@
-// GJK: distance/overlap test between two placed convex shapes via their Minkowski difference.
-// Two outcomes: OVERLAPPING (hands its simplex to EPA) or SEPARATED (exact distance, witness
-// points, normal). The hard case pinned down here is EXACT TOUCHING - zero gap, zero penetration -
-// which must report SEPARATED at distance 0, never NaN and never a false OVERLAP, while genuine
-// overlaps still report OVERLAPPING. See GJK.js's class header for why this is hard (multiple
-// diverse-direction seed tetrahedra).
 (function (Runner) {
 	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;
@@ -26,8 +20,6 @@
 		return new AP.GJK().run(new AP.MinkowskiSupport(a, b));
 	}
 
-	// ---- separated: basic distance/normal correctness ----
-
 	test('collision/gjk', 'two far-apart spheres report the exact gap and correct normal', function (t) {
 		var r = run(placed(new AP.SphereShape(1), new V(0, 0, 0)), placed(new AP.SphereShape(1), new V(5, 0, 0)));
 		t.checkTrue(!r.overlapping, 'separated');
@@ -46,8 +38,6 @@
 		t.checkTrue(!r.overlapping, 'separated');
 		t.check(r.distance, Math.sqrt(27), 1e-6, 'corner (1,1,1) to corner (4,4,4)');
 	});
-
-	// ---- exact touching: the flush-contact fix ----
 
 	test('collision/gjk', 'boxes flush on X report separated at distance 0, never NaN', function (t) {
 		var r = run(placed(new AP.BoxShape(1, 1, 1), new V(0, 0, 0)), placed(new AP.BoxShape(1, 1, 1), new V(2, 0, 0)));
@@ -80,8 +70,6 @@
 		t.check(r.distance, 0, 1e-9, 'capsules touching side-by-side at exactly the radius sum');
 	});
 
-	// ---- genuine overlap: must not be masked by the touching-boundary handling ----
-
 	test('collision/gjk', 'penetrating boxes report overlapping, not a false touch', function (t) {
 		var r = run(placed(new AP.BoxShape(1, 1, 1), new V(0, 0, 0)), placed(new AP.BoxShape(1, 1, 1), new V(1.5, 0, 0)));
 		t.checkTrue(r.overlapping, '0.5 units of real penetration must report overlapping');
@@ -108,8 +96,6 @@
 		var r = run(placed(new AP.BoxShape(1, 1, 1), new V(0, 0, 0)), placed(new AP.BoxShape(1, 1, 1), new V(0.5, 0, 0)));
 		t.checkTrue(r.overlapping, '1.5 units of penetration out of a 2-unit half-extent sum');
 	});
-
-	// ---- random cross-checks against an independent ground truth (brute-force / closed-form) ----
 
 	test('collision/gjk', 'sphere-sphere matches the closed-form overlap test across many random pairs', function (t) {
 		var s = 999; function rand() { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff; }
@@ -146,15 +132,11 @@
 		t.checkEqual(mismatches, 0, trials + ' random box pairs (15% forced to exact touch), checked against AABB overlap');
 	});
 
-	// ---- witness points ----
-
 	test('collision/gjk', 'witness points sit on each shape\'s own surface for a separated pair', function (t) {
 		var r = run(placed(new AP.SphereShape(1), new V(0, 0, 0)), placed(new AP.SphereShape(1), new V(5, 0, 0)));
 		t.check(r.pointA.x, 1, 1e-9, 'witness on A is its surface point facing B');
 		t.check(r.pointB.x, 4, 1e-9, 'witness on B is its surface point facing A');
 	});
-
-	// ---- visual ----
 
 	test('collision/gjk', 'closest points and separating normal between two spheres', function (t) {
 		var a = placed(new AP.SphereShape(1), new V(-2, 0, 0));

@@ -1,18 +1,12 @@
-/**
- * Tom's Suite — FPSCharacterController WALL tests (W1-W5).
- */
 (function (Runner, PBF, ActionPhysics) {
 	Runner.suite('tom');
 
-	// Wall = thin static slab at z=3 (front face z=2.7); NOT scaled with the character.
-	// half-extents 10x2x0.3.
 	function wallWorld() {
 		var w = PBF.flatWorld();
 		w.addRigidBody(PBF.staticBox(10, 2, 0.3, { x: 0, y: 2, z: 3 }));
 		return w;
 	}
 
-	// ---- W1: sprint head-on into a wall and STOP — never end up inside it ----
 	PBF.scaleTest('fps/walls', 'W1', 'head-on wall stop (no penetrate)', function (t, S) {
 		var w = wallWorld();
 		var p = S.feetSpawn(w, 0, 0, {});
@@ -30,7 +24,6 @@
 		t.simulate(w, 120);
 	}, { page: 'fps/walls', steps: 120, description: 'Sprint head-on into a thin wall. The collider should stop flush at the face and never penetrate.' });
 
-	// ---- W2: THE JITTER TEST — once at the wall, position must be STABLE tick-to-tick ----
 	PBF.scaleTest('fps/walls', 'W2', 'wall contact no jitter', function (t, S) {
 		var w = wallWorld();
 		var p = S.feetSpawn(w, 0, 0, {});
@@ -54,7 +47,6 @@
 		t.simulate(w, 120);
 	}, { page: 'fps/walls', steps: 120, description: 'Press into the wall and hold. The collider must sit dead still — no per-tick in/out jitter.' });
 
-	// ---- W3: sprinting into a THICK wall never enters it ----
 	PBF.scaleTest('fps/walls', 'W3', 'sprint into thick wall no enter', function (t, S) {
 		var w = S.flat();
 		w.addRigidBody(PBF.staticBox(10, 2, 2, { x: 0, y: 2, z: 5 }));
@@ -73,13 +65,12 @@
 		t.simulate(w, 200);
 	}, { page: 'fps/walls', steps: 200, description: 'Sprint into a thick wall. Swept sub-stepping should catch the face so the collider never tunnels in.' });
 
-	// ---- W4: RECOVERY — spawned BURIED inside a thick wall, walking parallel gets pushed out ----
 	PBF.scaleTest('fps/walls', 'W4', 'buried recovery walks out', function (t, S) {
 		var w = S.flat();
 		w.addRigidBody(PBF.staticBox(10, 2, 2, { x: 0, y: 2, z: 5 }));
-		var buryZ = 3 + 0.6 * S.SC; // one own-depth behind the z=3.0 face, scale-relative
+		var buryZ = 3 + 0.6 * S.SC;
 		var p = S.spawn(w, { x: 0, y: 1, z: buryZ }, {});
-		p.yaw = Math.PI / 2; // face +x so forward strafes parallel to the wall face
+		p.yaw = Math.PI / 2;
 		PBF.renderables(t, p);
 		PBF.drive(t, p, function () {
 			return { forward: 1 };
@@ -93,7 +84,6 @@
 		t.simulate(w, 160);
 	}, { page: 'fps/walls', steps: 160, description: 'Spawn the character buried inside a thick wall and walk parallel to the face. The recovery nudge should walk it back out.' });
 
-	// ---- W5: hitting a wall at 45deg kills into-wall (z) but tangential (x) survives — slide ALONG ----
 	PBF.scaleTest('fps/walls', 'W5', 'wall stop preserves tangential', function (t, S) {
 		var w = wallWorld();
 		var p = S.feetSpawn(w, 0, 0, {});
@@ -130,7 +120,6 @@
 		});
 		t.simulate(w, 90);
 	}, { page: 'fps/walls', steps: 90, description: 'Hit the wall at 45deg. Must actually reach the wall, then slide along its face keeping tangential speed while the into-wall component stops flush.' });
-
 })(
 	typeof module !== 'undefined' && module.exports ? require('../runner.js') : window.APRunner,
 	typeof module !== 'undefined' && module.exports ? require('./_util_fps.js') : window.PBF,

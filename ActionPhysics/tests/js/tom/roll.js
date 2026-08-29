@@ -1,9 +1,3 @@
-// Tom's Suite — ROLL TO REST.
-// Round shapes are dropped, settled, then given an angular shove (rolled along the floor). A healthy
-// engine's rolling resistance brings them back to REST within a reasonable time — |w| decays to ~0 and
-// the shape stops creeping across the floor. This is the rolling-resistance regression guard.
-//
-// The shove is scripted from a tick hook (deterministic, headless == browser).
 (function (Runner, U) {
 	Runner.suite('tom');
 
@@ -35,9 +29,6 @@
 		"A resting sphere is shoved into a roll (spun about a horizontal axis). PASS: rolling resistance " +
 		"brings |w| back to ~0 and it stops creeping. A sphere that rolls forever is the regression.");
 
-	// Cylinder/capsule laid on their side: 90° about Z maps the shape's local long (Y) axis onto world X,
-	// so the round barrel runs along X. Spinning about X is therefore rolling ON the barrel (toward Z) —
-	// the roll-without-slip case. Spinning about Z instead would tumble it end-over-end, not roll it.
 	rollTest('cylinder on side — shoved, rolls to rest', 'cylinder',
 		function (t, w) { return t.cylinder(w, 0.4, 1, 1, { pos: [0, 0.4, 0], rot: U.axisAngle(t, 0, 0, 1, Math.PI / 2), friction: U.MAT.friction, angular_friction: U.MAT.angular_friction, restitution: U.MAT.restitution, linear_damping: U.MAT.linear_damping, angular_damping: U.MAT.angular_damping, color: '#FFAA00' }); },
 		[1, 0, 0],
@@ -49,7 +40,6 @@
 		[1, 0, 0],
 		"A capsule lying on its side is shoved into a roll along its barrel. PASS: it rolls, then comes to " +
 		"rest rather than rolling or wobbling indefinitely.");
-
 })(
 	typeof module !== 'undefined' && module.exports ? require('../runner.js') : window.APRunner,
 	typeof module !== 'undefined' && module.exports ? require('./_util.js') : window.TomUtil

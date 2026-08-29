@@ -1,23 +1,12 @@
-/**
- * Tom's Suite — FPSCharacterController NETCODE-SHAPE tests (N1-N6).
- *
- * These test the controller's beginResim/endResim/getState/setState entity interface in-process —
- * there is no actual network dependency anywhere in this file: every "netcode" test just calls
- * those four methods directly, so it behaves like any other headless/live scene in this suite.
- */
 (function (Runner, PBF, ActionPhysics) {
 	Runner.suite('tom');
 
-	// step(p,cmd): begin/step/end at the fixed dt.
 	function step(p, world, cmd) {
 		p.beginStep(cmd || {}, PBF.DT);
 		world.step(PBF.DT);
 		p.endStep(PBF.DT);
 	}
 
-	// ---------------------------------------------------------------------------------------------
-	// N1: movement is deterministic — same commands, same result, run to run in the same process.
-	// ---------------------------------------------------------------------------------------------
 	PBF.scaleTest('fps/netcode', 'N1', 'movement deterministic', function (t, S) {
 		var run = function () {
 			var w = S.flat(); var p = S.feetSpawn(w, 0, 0, {});
@@ -41,9 +30,6 @@
 		t.simulate(w, 100);
 	}, { page: 'fps/netcode', steps: 100, description: 'Determinism guard: the same command stream replayed twice in the same run yields identical player state.' });
 
-	// ---------------------------------------------------------------------------------------------
-	// N2: a distant object (far away) does not alter the player's path.
-	// ---------------------------------------------------------------------------------------------
 	PBF.scaleTest('fps/netcode', 'N2', 'distant object doesnt alter player path', function (t, S) {
 		var runP = function (withObject) {
 			var w = S.flat();
@@ -70,9 +56,6 @@
 		t.simulate(w, 60);
 	}, { page: 'fps/netcode', steps: 60, description: 'An object far from the player must not perturb the player path (no phantom coupling).' });
 
-	// ---------------------------------------------------------------------------------------------
-	// N3: resim is deterministic WITH the ghost present (ghost injects no variance).
-	// ---------------------------------------------------------------------------------------------
 	PBF.scaleTest('fps/netcode', 'N3', 'resim deterministic with ghost', function (t, S) {
 		var resimRun = function () {
 			var w = S.flat(); PBF.object(w, 5, 5, { x: 0, y: 0.5, z: 3 });
@@ -102,9 +85,6 @@
 		p.endResim();
 	}, { page: 'fps/netcode', steps: 80, description: 'Rollback determinism: replaying commands inside a resim gives an identical player path, ghost present.' });
 
-	// ---------------------------------------------------------------------------------------------
-	// N4: the ghost IS driven during resim (it's what pushes objects on reconcile).
-	// ---------------------------------------------------------------------------------------------
 	PBF.scaleTest('fps/netcode', 'N4', 'ghost driven during resim (pushes objects)', function (t, S) {
 		var w = S.flat(); S.scaledObject(w, 1, 3, 1.3);
 		var p = S.feetSpawn(w, 0, 0, {});
@@ -129,9 +109,6 @@
 		p.endResim();
 	}, { page: 'fps/netcode', steps: 50, description: 'The ghost (the object-pushing body) is driven during rollback, so pushes reproduce on reconcile.' });
 
-	// ---------------------------------------------------------------------------------------------
-	// N5: a pushed object reconciles to the SAME place live vs inside a resim (no rubber-band).
-	// ---------------------------------------------------------------------------------------------
 	PBF.scaleTest('fps/netcode', 'N5', 'pushed object reconciles (no rubber-band)', function (t, S) {
 		var cmds = []; for (var i = 0; i < 30; i++) cmds.push({ forward: 1 });
 		var z0 = S.sc(1.3);
@@ -167,9 +144,6 @@
 		t.simulate(w, 50);
 	}, { page: 'fps/netcode', steps: 50, description: 'Object-prediction regression guard: a pushed object reconciles to the same place live and in resim.' });
 
-	// ---------------------------------------------------------------------------------------------
-	// N6: pushed object does not oscillate under a live per-tick reconcile loop (server + client model).
-	// ---------------------------------------------------------------------------------------------
 	PBF.scaleTest('fps/netcode', 'N6', 'pushed object does not oscillate under live reconcile', function (t, S) {
 		var RUNAHEAD = 5, SETTLE = 80, TICKS = 140, cmd = { forward: 1 };
 		var z0 = S.sc(1.3);
@@ -232,7 +206,6 @@
 		});
 		t.simulate(w, TICKS);
 	}, { page: 'fps/netcode', steps: 140, description: 'Push-oscillation guard: a client reconciles every tick against clean authority while pushing an object; the object must not shudder.' });
-
 })(
 	typeof module !== 'undefined' && module.exports ? require('../runner.js') : window.APRunner,
 	typeof module !== 'undefined' && module.exports ? require('./_util_fps.js') : window.PBF,

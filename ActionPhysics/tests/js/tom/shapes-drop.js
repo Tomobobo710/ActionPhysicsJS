@@ -1,15 +1,7 @@
-// Tom's Suite — SHAPE DROP SWEEP.
-// Every primitive shape, dropped onto the standard floor, straight and tilted. A healthy engine lets
-// each one land and come to REST within a reasonable time. Each check is a live predicate: it flips
-// green the moment the body has been at rest (tiny |v| AND |w|) for a held run of ticks, red if it
-// never settles or if it tunnels/explodes off the floor.
-//
-// One shape per check across all the primitives — a single honest settle sweep,
-// no duplicated bodies. Box tilted case is a 45° corner-down drop (per spec), not on its side.
 (function (Runner, U) {
 	Runner.suite('tom');
 
-	var SETTLE = 300;   // ~5 s at 60 Hz — the "reasonable time" budget
+	var SETTLE = 300;
 
 	function drop(name, page, build, desc) {
 		Runner.test('shape drops', name, function (t) {
@@ -21,7 +13,6 @@
 		}, { visual: true, steps: SETTLE, page: page, description: desc });
 	}
 
-	// ---- BOX ----
 	drop('box — flat drop', 'box',
 		function (t, w) { return t.box(w, 0.5, 0.5, 0.5, 1, { pos: [0, 3, 0], friction: U.MAT.friction, restitution: U.MAT.restitution, linear_damping: U.MAT.linear_damping, angular_damping: U.MAT.angular_damping, color: '#4d89e5' }); },
 		"A unit box dropped flat from y=3. PASS: it lands squarely and settles motionless. A box that " +
@@ -32,13 +23,11 @@
 		"A unit box dropped tilted 45° so it lands corner/edge-first. PASS: it tips onto a face and " +
 		"comes to rest. It must not balance forever on the edge, bounce upward, or spin out.");
 
-	// ---- SPHERE ---- (rotation is meaningless; one drop)
 	drop('sphere — drop', 'sphere',
 		function (t, w) { return t.sphere(w, 0.4, 1, { pos: [0, 3, 0], friction: U.MAT.friction, restitution: U.MAT.restitution, linear_damping: U.MAT.linear_damping, angular_damping: U.MAT.angular_damping, color: '#F4D35E' }); },
 		"A sphere dropped from y=3. PASS: it lands and settles without rolling away or picking up spin " +
 		"from a symmetric contact.");
 
-	// ---- CYLINDER ----
 	drop('cylinder — upright', 'cylinder',
 		function (t, w) { return t.cylinder(w, 0.4, 1, 1, { pos: [0, 3, 0], friction: U.MAT.friction, restitution: U.MAT.restitution, linear_damping: U.MAT.linear_damping, angular_damping: U.MAT.angular_damping, color: '#FFAA00' }); },
 		"A cylinder (half-height 1) dropped standing upright. PASS: it lands on its flat end and settles. " +
@@ -49,7 +38,6 @@
 		"A cylinder laid on its side (90° about Z), landing on its round barrel. PASS: it settles without " +
 		"rolling forever — the case that historically wobbled/crept instead of stopping.");
 
-	// ---- CAPSULE ----
 	drop('capsule — upright', 'capsule',
 		function (t, w) { return t.capsule(w, 0.4, 2, 1, { pos: [0, 3, 0], friction: U.MAT.friction, restitution: U.MAT.restitution, linear_damping: U.MAT.linear_damping, angular_damping: U.MAT.angular_damping, color: '#45B7D1' }); },
 		"A capsule (total height 2) dropped upright. PASS: it lands on a hemispherical cap and settles.");
@@ -59,7 +47,6 @@
 		"A capsule laid on its side, landing on its round barrel. PASS: it settles rather than rolling " +
 		"or wobbling indefinitely.");
 
-	// ---- CONE ----
 	drop('cone — base down', 'cone',
 		function (t, w) { return t.cone(w, 0.4, 0.5, 1, { pos: [0, 3, 0], friction: U.MAT.friction, restitution: U.MAT.restitution, linear_damping: U.MAT.linear_damping, angular_damping: U.MAT.angular_damping, color: '#a3d900' }); },
 		"A cone dropped base-down (its stable rest pose). PASS: it lands flat on its base and settles.");
@@ -69,7 +56,6 @@
 		"A cone dropped nose-down from just above the floor. It lands on its tip, tips onto its slant, " +
 		"and PASS: comes to rest. Never settling here is the classic cone-rolls-forever regression.");
 
-	// ---- CONVEX (octahedron) ----
 	drop('convex — straight', 'convex',
 		function (t, w) { return t.convex(w, [[0, 0.6, 0], [0, -0.6, 0], [0.6, 0, 0], [-0.6, 0, 0], [0, 0, 0.6], [0, 0, -0.6]], 1, { pos: [0, 3, 0], friction: U.MAT.friction, restitution: U.MAT.restitution, linear_damping: U.MAT.linear_damping, angular_damping: U.MAT.angular_damping, color: '#c792ea' }); },
 		"A convex hull (octahedron) dropped point-down. PASS: it tips onto a face and settles.");
@@ -78,7 +64,6 @@
 		function (t, w) { return t.convex(w, [[0, 0.6, 0], [0, -0.6, 0], [0.6, 0, 0], [-0.6, 0, 0], [0, 0, 0.6], [0, 0, -0.6]], 1, { pos: [0, 3, 0], rot: U.axisAngle(t, 1, 0.3, 0, Math.PI / 5), friction: U.MAT.friction, restitution: U.MAT.restitution, linear_damping: U.MAT.linear_damping, angular_damping: U.MAT.angular_damping, color: '#c792ea' }); },
 		"The same octahedron dropped at a tilt so it lands on an edge. PASS: it rolls onto a face and " +
 		"comes to rest.");
-
 })(
 	typeof module !== 'undefined' && module.exports ? require('../runner.js') : window.APRunner,
 	typeof module !== 'undefined' && module.exports ? require('./_util.js') : window.TomUtil
