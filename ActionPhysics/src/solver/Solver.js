@@ -48,8 +48,9 @@ class Solver {
         this._tmpDispA = new Vector3(); this._tmpDispB = new Vector3(); this._tmpPrev = new Vector3(); // friction slip scratch
         this._prevPos = new Map(); // bodyId -> Vector3, this substep's PRE-integration position
         this._prevRot = new Map(); // bodyId -> Quaternion, this substep's PRE-integration rotation
+        this._predictedPos = new Map(); // bodyId -> Vector3, this substep's position after step 1's integration, BEFORE step 3's correction - see step 1's own comment
+        this._predictedRot = new Map(); // bodyId -> Quaternion, same for rotation
         this._preGravityVel = new Map(); // bodyId -> Vector3, this substep's velocity BEFORE gravity is added (see _solvePoint's restitution-capture comment)
-        this._biasDelta = new Map(); // bodyId -> Vector3, this substep's BIAS-ONLY position correction (see _solvePoint's Baumgarte-split comment) - excluded from step 4's derived velocity
     }
 
     // See _solvePoint's own comment. Traced directly across several resting/settling off-center
@@ -62,16 +63,6 @@ class Solver {
     // what a genuine zero-velocity spawn overlap shows (liveRelVel ~0, so no margin multiple changes
     // the outcome there at all).
     static EXPLAINABLE_MARGIN = 3;
-
-    // Below this relative angular speed (rad/s), rolling resistance fully stops it outright instead
-    // of clamping to the Coulomb budget - see _solveRollingResistance's own comment.
-    static ROLLING_FULL_STOP_THRESHOLD = 0.15;
-
-    // See Solver.js step 4's own comment. A body already near rest (angular speed below this) whose
-    // contact anchor just re-picked skips angular derivation for that one substep. Set below any
-    // genuine tumbling motion but above the largest re-pick kick actually measured (traced: a resting
-    // cylinder's kicks ranged roughly 0.005-0.08 rad/s before this fix existed at all).
-    static ANCHOR_REPICK_REST_THRESHOLD = 0.2;
 
 
     /**
@@ -101,9 +92,6 @@ class Solver {
             if (b.bodyType !== RigidBody.DYNAMIC) continue;
             this._prevPos.set(b.id, new Vector3().copy(b.position));
             this._prevRot.set(b.id, new Quaternion().copy(b.rotation));
-            const bias = this._biasDelta.get(b.id) || new Vector3();
-            bias.set(0, 0, 0);
-            this._biasDelta.set(b.id, bias);
             // Snapshot BEFORE gravity/damping/predict below touch it - restitution's pre-solve
             // velocity must be measured from here, not from the post-gravity velocity later in this
             // same substep (see _solvePoint's own comment on the bug this fixes).
@@ -145,6 +133,46 @@ class Solver {
             // the angular math consistent with the per-substep geometry refresh below; a fast-
             // rotating body would otherwise solve against an orientation several substeps stale.
             b._recomputeWorldInverseInertia();
+
+            // Snapshot the PREDICTED position/rotation (integrated from real velocity alone, before
+            // step 3's position-constraint correction runs) - this, not the post-correction result,
+            // is what step 4 derives "how much did real motion move the body" from. The correction's
+            // own contribution to velocity is instead applied DIRECTLY, as a real impulse, at the
+            // moment the correction happens (see _solvePoint/_applyPositionalCorrection) - the
+            // standard way a position-based solver recovers velocity from its own Lagrange multiplier
+            // (impulse = deltaLambda / h), not by re-deriving it from a position/rotation delta that
+            // conflates real motion with whatever the correction did to reach it. This is what
+            // actually fixes the class of bug this file's own header used to work around with
+            // thresholds (a curved contact's re-picked anchor injecting a correction-shaped rotation
+            // that looked identical to real spin once smashed through the same derivation) - the
+            // correction's effect on rotation never enters the derivation at all, so there is nothing
+            // there to mistake for real motion in the first place, regardless of body speed or how
+            // large the correction was.
+            this._predictedPos.set(b.id, new Vector3().copy(b.position));
+            this._predictedRot.set(b.id, new Quaternion().copy(b.rotation));
+        }
+
+        // Derive velocity from FREE MOTION alone, RIGHT HERE - before step 3's position correction
+        // ever runs - so the correction's own impulse (_applyPositionalCorrection, applied directly
+        // via _applyVelocityImpulse) lands as a real ADDITION on top of this free-motion baseline,
+        // not something a later overwrite discards. This ordering IS the fix: running this derivation
+        // AFTER step 3 (as XPBD's usual "derive from the post-correction position" ordering does)
+        // means whatever the correction just added to velocity gets thrown away the instant this loop
+        // runs again, since it unconditionally ASSIGNS linear_velocity from a position delta rather
+        // than accumulating - confirmed directly: a resting box's contact impulse correctly zeroed
+        // its velocity mid-substep, then this derivation (if run afterward) overwrote it right back to
+        // the raw gravity-only value, as if the correction had never happened at all.
+        for (let i = 0; i < bodies.length; i++) {
+            const b = bodies[i];
+            if (b.bodyType !== RigidBody.DYNAMIC) continue;
+            const prevPos = this._prevPos.get(b.id);
+            const prevRot = this._prevRot.get(b.id);
+            const predictedPos = this._predictedPos.get(b.id);
+            const predictedRot = this._predictedRot.get(b.id);
+            b.linear_velocity.x = (predictedPos.x - prevPos.x) / h;
+            b.linear_velocity.y = (predictedPos.y - prevPos.y) / h;
+            b.linear_velocity.z = (predictedPos.z - prevPos.z) / h;
+            Solver._deriveAngularVelocity(b.angular_velocity, prevRot, predictedRot, h);
         }
 
         // 1b. Re-measure contact geometry against the just-predicted positions. This is the
@@ -172,14 +200,15 @@ class Solver {
         for (const manifold of manifolds.values()) {
             for (let i = 0; i < manifold.points.length; i++) {
                 manifold.points[i].normalLambda = 0;
+                manifold.points[i].velocityLambda = 0;
                 manifold.points[i].tangentLambda1 = 0;
                 manifold.points[i].tangentLambda2 = 0;
             }
         }
 
         // 3. Position-level constraint solve: contacts (normal / non-penetration only), then joints.
-        // Same position loop, same substep - a joint's effect shows up in derived velocity the same
-        // way a contact's does, for free (step 4 below reads whatever position the loop left).
+        // Velocity was already derived (from free motion) and each correction's own impulse already
+        // applied directly to it, above - this loop is position-only from here on.
         for (let iter = 0; iter < this.iterations; iter++) {
             for (const manifold of manifolds.values()) {
                 this._solveManifold(manifold, h);
@@ -188,67 +217,6 @@ class Solver {
                 for (let i = 0; i < constraints.length; i++) {
                     if (constraints[i].enabled) constraints[i].solve(h);
                 }
-            }
-        }
-
-        // Bodies whose contact anchor just re-picked this substep (see NarrowPhase.
-        // refreshManifoldGeometry's own comment) - a re-pick changes the position solve's lever arm
-        // on its own, producing a rotation this substep unrelated to the body's real motion. Scanned
-        // once here (cheap - only ever a handful of points touch a re-pick per substep) rather than
-        // per-point in the hot solve loops.
-        this._anchorMovedBodies = this._anchorMovedBodies || new Set();
-        this._anchorMovedBodies.clear();
-        for (const manifold of manifolds.values()) {
-            for (let i = 0; i < manifold.points.length; i++) {
-                const p = manifold.points[i];
-                if (p._anchorJustMoved) {
-                    this._anchorMovedBodies.add(manifold.bodyA.id);
-                    this._anchorMovedBodies.add(manifold.bodyB.id);
-                    p._anchorJustMoved = false;
-                }
-            }
-        }
-
-        // 4. Derive velocity from the position change - RAW, no clamp (see class header), EXCLUDING
-        // any bias-only correction this substep applied (see _solvePoint's own comment: whatever part
-        // of a correction the body's own real closing velocity could not explain is bias, not real
-        // motion). Shifting prevPos forward by the bias amount before this division is equivalent to
-        // subtracting it from the position delta - a body that only moved because of a bias nudge
-        // shows zero derived velocity from that nudge, while the explainable share of the correction
-        // still counts, exactly as before (this still captures the normal solve's stopping effect on
-        // a real impact - a stopped body has ~zero normal velocity here, unchanged for ordinary
-        // shallow contacts, where the correction is small enough to be fully explainable anyway).
-        //
-        // ANGULAR velocity is skipped for a body whose contact anchor just re-picked this substep -
-        // see the scan just above and NarrowPhase's own comment - keeping the value the VELOCITY-PASS
-        // constraints (step 5, e.g. rolling resistance) already converged it toward, rather than
-        // re-deriving from a rotation delta corrupted by the lever-arm jump. This must be scoped to a
-        // body genuinely near rest, not blanket-applied: suppressing derivation during REAL tumbling
-        // motion (a bouncing box's corner contact re-picking mid-flight, an ordinary and frequent
-        // event) silently drops real angular velocity for that substep and reads as fabricated energy
-        // once a later substep "catches up" all at once - a real, confirmed regression (a corner-drop
-        // bounce test measured its apex GROWING instead of only decaying). The re-pick artifact this
-        // exists for only ever matters once a body has settled enough for its own residual spin to be
-        // this small in the first place - a body still genuinely tumbling has real angular velocity
-        // far above this scale, so gating on the body's OWN current speed excludes exactly the
-        // resting case without touching active motion at all.
-        for (let i = 0; i < bodies.length; i++) {
-            const b = bodies[i];
-            if (b.bodyType !== RigidBody.DYNAMIC) continue;
-            const prevPos = this._prevPos.get(b.id);
-            const prevRot = this._prevRot.get(b.id);
-            const bias = this._biasDelta.get(b.id);
-            b.linear_velocity.x = (b.position.x - prevPos.x - bias.x) / h;
-            b.linear_velocity.y = (b.position.y - prevPos.y - bias.y) / h;
-            b.linear_velocity.z = (b.position.z - prevPos.z - bias.z) / h;
-            const w = b.angular_velocity;
-            const wMagSq = w.x * w.x + w.y * w.y + w.z * w.z;
-            if (this._anchorMovedBodies.has(b.id) && wMagSq < Solver.ANCHOR_REPICK_REST_THRESHOLD * Solver.ANCHOR_REPICK_REST_THRESHOLD) {
-                // Near rest and this substep's anchor re-pick is the only thing that would have moved
-                // angular velocity - leave it as step 5 (velocity-pass constraints) already converged
-                // it, not re-derived from a corrupted rotation delta.
-            } else {
-                Solver._deriveAngularVelocity(b.angular_velocity, prevRot, b.rotation, h);
             }
         }
 
@@ -276,14 +244,14 @@ class Solver {
             // the same body-level angular velocity pair, an artifact of sequential per-point solving
             // rather than any real geometric difference between the points.
             if (manifold.points.length > 0) {
-                // Reference point: the most-engaged one (largest |normalLambda|, i.e. the point this
-                // substep's normal solve actually pushed hardest) rather than always points[0] - a
-                // shallow/barely-touching point would otherwise starve the rolling-resistance budget
-                // (which scales off THAT point's own normalLambda) even while a neighbouring point on
-                // the same manifold is carrying the real load.
+                // Reference point: the most-engaged one by ACTUAL velocity impulse (largest
+                // |velocityLambda|, not normalLambda - see ContactDetails's own comment) rather than
+                // always points[0] - a shallow/barely-touching point would otherwise starve the
+                // rolling-resistance budget even while a neighbouring point on the same manifold is
+                // carrying the real velocity-affecting load.
                 let ref = manifold.points[0];
                 for (let i = 1; i < manifold.points.length; i++) {
-                    if (Math.abs(manifold.points[i].normalLambda) > Math.abs(ref.normalLambda)) ref = manifold.points[i];
+                    if (Math.abs(manifold.points[i].velocityLambda) > Math.abs(ref.velocityLambda)) ref = manifold.points[i];
                 }
                 this._solveRollingResistance(ref, bodyA, bodyB, h);
             }
@@ -430,63 +398,34 @@ class Solver {
         const deltaLambda = newLambda - oldLambda;
         point.normalLambda = newLambda;
 
-        // SPLIT BY WHAT'S PHYSICALLY EXPLAINABLE: only the part of this correction that the body's
-        // own real, measured closing velocity (point._preSolveNormalVel, captured above - PRE-gravity,
-        // the actual physical approach speed) could account for over one substep is allowed to become
-        // derived velocity; anything BEYOND that is a pure position edit (bias, excluded from step 4's
-        // derived velocity - see _applyPositionalCorrection's own comment). This is the direct,
-        // non-heuristic reading of PLAN's own standing rule ("if derived velocity explodes, that's a
-        // detection bug, not something to clamp") applied at the one place it is actually knowable
-        // WITHOUT guessing: a body's own already-measured velocity IS the ground truth for "how much
-        // of this correction is real motion," not a magnitude threshold or a fixed fraction.
-        //
-        // Two earlier attempts at this same idea failed for different, narrower reasons - neither
-        // invalidates this one: (1) a FLAT MAGNITUDE cap (Solver.MAX_POSITION_CORRECTION) ignored load
-        // entirely, so a body genuinely resting under weight lost the fight against gravity
-        // re-creating overlap every tick faster than the flat cap could correct it, and sank through
-        // the floor; (2) a FIXED FRACTION of C (Baumgarte's usual 0.1-0.2) still scales with C itself,
-        // so a large one-shot spawn overlap still produces a large fraction-of-C correction and still
-        // launches, just at a reduced (still wrong) magnitude - traced directly: 20% of a 0.1m spawn
-        // overlap still derived vy=4.8 and still climbed to y=1.6 under gravity before falling back.
-        // Gating on the body's OWN velocity instead of C's magnitude or a fraction of it has neither
-        // problem: a resting body under real load has real, nonzero closing velocity behind its
-        // (naturally shallow, speculative-margin-bounded) C every substep, so its correction is never
-        // artificially starved - while a raw spawn/teleport overlap has ZERO real velocity behind a
-        // LARGE C, so this split correctly recognizes almost none of that correction as explainable
-        // and keeps it as position-only bias, letting the overlap resolve gradually instead of
-        // becoming fabricated kinetic energy.
-        // LIVE (post-gravity) relative velocity, not point._preSolveNormalVel - that value is
-        // deliberately PRE-gravity for restitution's own purposes (see the comment above), but here
-        // gravity's own contribution this substep IS real, physically genuine motion the body is
-        // actually undergoing right now, and excluding it as "not explainable" was a real, confirmed
-        // bug: a box resting exactly at rest height, held there only by gravity's own tiny per-substep
-        // nudge, had that entire nudge treated as bias every substep forever, leaving a permanent
-        // unresolved residual velocity (traced directly: vy stuck at exactly -0.0408 for 30+ ticks,
-        // never converging to zero like an ordinary resting contact must) - which cascaded into
-        // stacks, slopes, and settling shapes across the whole suite never coming properly to rest.
-        const liveRelVel = this._contactRelativeNormalVelocity(point, bodyA, bodyB);
-        // EXPLAINABLE_MARGIN: liveRelVel*h is only an approximate lower bound on how much of C a
-        // substep's own real motion accounts for - exact for a pure linear contact at the body's
-        // center, but for an off-center contact (a corner/edge resting point, well off the body's own
-        // center of mass) the angular contribution to C and the angular contribution to liveRelVel's
-        // normal-projection do not cancel to the same value bit-for-bit (different weighting: C comes
-        // from the ANCHOR's actual position delta, liveRelVel from the point-velocity formula
-        // v + omega x r evaluated at a single instant) - close, but not exactly equal. Without a
-        // margin, that small, ordinary numerical gap was mistaken for "extra, non-explainable"
-        // correction on EVERY substep of an off-center resting contact, forever - a real, confirmed
-        // bug: an angled box resting on one corner never converged to zero velocity (stuck at
-        // vy=-0.045 indefinitely) because a small fraction of its own legitimate resting correction
-        // was perpetually misclassified as bias. The margin only ever WIDENS what counts as
-        // explainable - it can never let a genuinely fabricated (zero-velocity spawn) correction
-        // through, since that case has liveRelVel ~0 while C is enormous by comparison, nowhere close
-        // to within a small margin of each other.
-        const explainableBySubstep = Math.max(liveRelVel, 0) * h * Solver.EXPLAINABLE_MARGIN;
-        let velocityC = C;
-        if (velocityC > explainableBySubstep) velocityC = explainableBySubstep;
-        const velocityDelta = -velocityC / wSum;
-        const biasDelta = deltaLambda - velocityDelta;
-        this._applyPositionalCorrection(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, velocityDelta, false);
-        this._applyPositionalCorrection(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, biasDelta, true);
+        // The IMPULSE (velocity side) is bounded by what the body's own real, pre-gravity closing
+        // speed (point._preSolveNormalVel, captured above) could physically explain over this
+        // substep - position still resolves the FULL geometric overlap (deltaLambda, unbounded,
+        // passed straight through above) so a body never stays half-embedded, but only the
+        // EXPLAINABLE share of that correction is allowed to become real velocity. A body genuinely
+        // arriving at a contact (real closing speed behind it) is never starved - its own speed sets
+        // the bound, and a normal/resting contact's C is already within that bound by construction
+        // (that is what "arrived normally" means - see the speculative-margin mechanism above).
+        // A spawn/teleport overlap has ~0 real closing speed behind a large C, so almost none of its
+        // correction is explainable, and the excess simply never becomes velocity - it resolves as a
+        // pure position fix instead, gradually, across ticks, never fabricated kinetic energy. This
+        // is the same physical signal an earlier version of this file used (successfully) before this
+        // session's architecture rewrite - reapplied here directly to the impulse itself, cleanly,
+        // instead of being smuggled through a rotation-delta derivation that could not tell a
+        // correction's own geometric side effects apart from real motion (see this file's own
+        // header for why that indirection was the actual root cause of a separate class of bugs).
+        const explainableC = Math.max(point._preSolveNormalVel, 0) * h * Solver.EXPLAINABLE_MARGIN;
+        let impulseDeltaLambda = deltaLambda;
+        if (C > explainableC) {
+            const boundedNewLambda = Math.min(0, oldLambda - explainableC / wSum);
+            impulseDeltaLambda = boundedNewLambda - oldLambda;
+        }
+        // velocityLambda accumulates the ACTUAL velocity-affecting lambda this substep, separate
+        // from normalLambda's own full geometric accumulation - see this field's own comment on
+        // ContactDetails for why friction/rolling-resistance need this, not normalLambda.
+        point.velocityLambda += impulseDeltaLambda;
+
+        this._applyPositionalCorrection(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, deltaLambda, h, impulseDeltaLambda);
     }
 
     // Generalized inverse mass along direction (dx,dy,dz) for the pair, combining linear and
@@ -535,44 +474,46 @@ class Solver {
     // THIS pairing, not the reversed one that was here before (which pushed the box down, through
     // the ground, for the same inputs - the actual fall-through bug this comment is fixing).
     //
-    // `bias`: true when this call is the non-explainable share of a split correction (see
-    // _solvePoint's own comment) - the body still gets moved (position/geometry must reflect the
-    // correction so the NEXT substep measures a smaller, real overlap), but the movement is ALSO
-    // recorded into this._biasDelta, which step 4 (derive velocity) subtracts back out before
-    // computing v = Δx/h. The other (explainable) call leaves bias untouched, so an ordinary
-    // impact's stopping velocity still derives exactly as before - for a normal shallow contact the
-    // correction is entirely explainable, so that call carries the whole thing and bias never
-    // engages at all.
-    _applyPositionalCorrection(bodyA, bodyB, rA, rB, nx, ny, nz, dLambda, bias) {
+    // Applies the position correction to POSITION (unchanged from the original XPBD update), AND
+    // applies the exact same correction's equivalent VELOCITY impulse directly via
+    // _applyVelocityImpulse - dLambda is a position-space Lagrange multiplier delta; dividing by h
+    // converts it to a velocity-space impulse, the standard relationship a position-based solver
+    // uses to recover real velocity from its own constraint force (this IS the contact's actual
+    // force/torque this substep). This replaces re-deriving velocity from the post-correction
+    // position/rotation delta (see step 4's own comment for why that approach was a real, confirmed
+    // source of bugs - a correction's own geometric side effects, unrelated to real motion, used to
+    // get smashed into the same derivation and read back as real spin).
+    // `impulseDLambda` (optional): the Lagrange-multiplier delta actually converted to a velocity
+    // impulse, if DIFFERENT from `dLambda` - see _solvePoint's own comment for why a spawn/teleport
+    // overlap needs this to differ from the full geometric correction (position must still resolve
+    // the WHOLE overlap - a body left half-embedded is its own bug - but the velocity that overlap
+    // implies is bounded separately, by what the body's own real approach speed can physically
+    // explain). Defaults to `dLambda` (position and velocity impulse are the same thing) for every
+    // ordinary contact, where they always should be.
+    _applyPositionalCorrection(bodyA, bodyB, rA, rB, nx, ny, nz, dLambda, h, impulseDLambda) {
         const px = nx * dLambda, py = ny * dLambda, pz = nz * dLambda;
 
         if (bodyA._massInverted > 0) {
-            const dx = -px * bodyA._massInverted * bodyA.linear_factor.x;
-            const dy = -py * bodyA._massInverted * bodyA.linear_factor.y;
-            const dz = -pz * bodyA._massInverted * bodyA.linear_factor.z;
-            bodyA.position.x += dx; bodyA.position.y += dy; bodyA.position.z += dz;
-            if (bias) {
-                const b = this._biasDelta.get(bodyA.id);
-                if (b) { b.x += dx; b.y += dy; b.z += dz; }
-            }
+            bodyA.position.x -= px * bodyA._massInverted * bodyA.linear_factor.x;
+            bodyA.position.y -= py * bodyA._massInverted * bodyA.linear_factor.y;
+            bodyA.position.z -= pz * bodyA._massInverted * bodyA.linear_factor.z;
             this._applyAngularCorrection(bodyA, rA, -px, -py, -pz);
         }
         if (bodyB._massInverted > 0) {
-            const dx = px * bodyB._massInverted * bodyB.linear_factor.x;
-            const dy = py * bodyB._massInverted * bodyB.linear_factor.y;
-            const dz = pz * bodyB._massInverted * bodyB.linear_factor.z;
-            bodyB.position.x += dx; bodyB.position.y += dy; bodyB.position.z += dz;
-            if (bias) {
-                const b = this._biasDelta.get(bodyB.id);
-                if (b) { b.x += dx; b.y += dy; b.z += dz; }
-            }
+            bodyB.position.x += px * bodyB._massInverted * bodyB.linear_factor.x;
+            bodyB.position.y += py * bodyB._massInverted * bodyB.linear_factor.y;
+            bodyB.position.z += pz * bodyB._massInverted * bodyB.linear_factor.z;
             this._applyAngularCorrection(bodyB, rB, px, py, pz);
         }
+        const forVelocity = impulseDLambda !== undefined ? impulseDLambda : dLambda;
+        this._applyVelocityImpulse(bodyA, bodyB, rA, rB, nx, ny, nz, forVelocity / h);
     }
 
     // Rotates `body` by the small-angle correction (I^-1 * (r x p)) * 0.5, the standard PBD
     // angular position update from a linear positional impulse applied at offset r (Muller et al.
-    // eq 7-8, via the same quaternion-derivative integration _integrateRotation uses).
+    // eq 7-8, via the same quaternion-derivative integration _integrateRotation uses). POSITION ONLY
+    // - this body's angular_velocity is updated separately, directly, via _applyVelocityImpulse in
+    // _applyPositionalCorrection (see its own comment).
     _applyAngularCorrection(body, r, px, py, pz) {
         const torqueX = r.y * pz - r.z * py, torqueY = r.z * px - r.x * pz, torqueZ = r.x * py - r.y * px;
         const I = body._worldInverseInertiaTensor;
@@ -623,12 +564,16 @@ class Solver {
         // --- Friction (tangent) ---
         const friction = Math.sqrt(bodyA.friction * bodyB.friction);
         if (friction <= 0) return;
-        // Coulomb cap on the friction impulse magnitude: mu times the normal impulse the position
-        // solve actually applied this substep. normalLambda is a position Lagrange multiplier;
-        // dividing by h converts it to a velocity-space impulse commensurate with the tangential
-        // impulses computed below. This is the correct, unit-consistent cap that the position-space
-        // attempt never got right.
-        const maxImpulse = friction * Math.abs(point.normalLambda) / h;
+        // Coulomb cap on the friction impulse magnitude: mu times the normal impulse that ACTUALLY
+        // reached velocity this substep (point.velocityLambda, not normalLambda - see
+        // ContactDetails's own comment: normalLambda is the full GEOMETRIC correction, which can be
+        // larger than what the impulse bound let become real velocity for a spawn/teleport-scale
+        // overlap; sizing friction's own budget off the larger, geometry-only number let it apply
+        // more tangential impulse than the body's actual normal-direction velocity change justified,
+        // injecting real energy - traced directly on a corner bounce, apex height growing instead of
+        // only decaying). Dividing by h converts the position-space multiplier to a velocity-space
+        // impulse commensurate with the tangential impulses computed below.
+        const maxImpulse = friction * Math.abs(point.velocityLambda) / h;
         if (maxImpulse <= 0) return;
 
         // Current tangential relative velocity, and the impulse that would zero it.
@@ -684,13 +629,10 @@ class Solver {
         if (bodyA._massInverted > 0) loadMass = Math.min(loadMass, bodyA.mass);
         if (bodyB._massInverted > 0) loadMass = Math.min(loadMass, bodyB.mass);
         const staticFloor = isFinite(loadMass) ? rollingFriction * loadMass * this._gravityMag * h : 0;
-        const maxImpulse = Math.max(rollingFriction * Math.abs(point.normalLambda) / h, staticFloor);
+        const maxImpulse = Math.max(rollingFriction * Math.abs(point.velocityLambda) / h, staticFloor);
         if (maxImpulse <= 0) return;
         let j = relWMag / wSum; // impulse to fully zero the relative angular velocity
-        // Below Solver.ROLLING_FULL_STOP_THRESHOLD, always fully stop instead of clamping to the
-        // budget. A settled round shape's residual spin sits in this tiny band; clamping it to a
-        // small fraction every substep never lets it reach exact zero, it only ever shrinks it.
-        if (relWMag > Solver.ROLLING_FULL_STOP_THRESHOLD && j > maxImpulse) j = maxImpulse;
+        if (j > maxImpulse) j = maxImpulse;
 
         if (bodyA._massInverted > 0) {
             const IA = bodyA._worldInverseInertiaTensor;

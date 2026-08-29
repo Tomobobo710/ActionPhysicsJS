@@ -44,12 +44,16 @@ class ContactDetails {
         // finishes. Written each substep by the solver; not warm-start state.
         this._preSolveNormalVel = 0;
 
-        // True for exactly the one substep NarrowPhase.refreshManifoldGeometry re-anchors this point
-        // to a genuinely different world position (see that method's own comment) - re-picking a
-        // point on a degenerate line/face contact changes the position solve's lever arm on its own,
-        // producing a rotation this substep that has nothing to do with the body's real motion. The
-        // solver checks this once (Solver.js step 4) then clears it.
-        this._anchorJustMoved = false;
+        // The normal-direction Lagrange multiplier that ACTUALLY reached velocity this substep - may
+        // be smaller in magnitude than normalLambda when the impulse bound (see Solver._solvePoint's
+        // own comment) capped a spawn/teleport-scale correction's velocity contribution below its
+        // full geometric size. Friction/rolling-resistance's own Coulomb budgets (_solveContactVelocity,
+        // _solveRollingResistance) must scale off THIS, not normalLambda - a real, confirmed bug: using
+        // the full (uncapped) normalLambda for those budgets let a bounded-impulse contact's tangential
+        // friction/rolling impulse exceed what the body's own ACTUAL normal-direction velocity change
+        // justified, injecting real energy (traced: a corner bounce's apex height grew instead of only
+        // decaying). Written alongside normalLambda every substep; not warm-start state.
+        this.velocityLambda = 0;
     }
 
     // Derives localAnchorA/localAnchorB from the CURRENT pointOnA/pointOnB and the given bodies'
