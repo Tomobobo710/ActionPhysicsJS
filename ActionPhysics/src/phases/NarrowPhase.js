@@ -31,6 +31,14 @@ class NarrowPhase {
     // side jumped by ~0.95-1.0, its own half-length, substep to substep).
     static ANCHOR_REFRESH_MIN_MOVE = 0.05;
 
+    // See _synthesizeMirroredPoint's own comment. |contact normal . shape's own axis| above this
+    // means the contact is on an END CAP (normal roughly parallel to the axis), which genuinely only
+    // ever touches at one real point - mirroring there would fabricate a second point that does not
+    // exist. cos(80 deg) ~= 0.17: only rules out contacts within about 10 degrees of a true end-cap
+    // normal, comfortably wide of an ordinary barrel-resting contact (normal within a few degrees of
+    // perpendicular to the axis).
+    static MIRROR_POINT_MAX_AXIAL_NORMAL = 0.17;
+
     constructor() {
         this.manifolds = new ContactManifoldList();
         this._dt = 1 / 60; // set each tick by step(); the fallback only matters if step() is never called
@@ -43,6 +51,7 @@ class NarrowPhase {
         this._contactPool = []; // reused ContactDetails objects, grown as needed, never shrunk
         this._poolIndex = 0;
         this._scratchVec = new Vector3(); // refreshManifoldGeometry's own anchor-drift check
+        this._mirrorAxis = new Vector3(); this._mirrorOffset = new Vector3(); // _synthesizeMirroredPoint's own scratch
     }
 
     _nextPooledContact() {
@@ -80,6 +89,23 @@ class NarrowPhase {
                 let list = contactsByPair.get(key);
                 if (!list) { list = []; contactsByPair.set(key, list); }
                 list.push(contact);
+
+                // A cylinder/capsule resting on its curved BARREL (not an end-cap) against a flat
+                // surface has a true line of contact, not a point - GJK/EPA can only ever report one
+                // point along that line, and every correction from that single point carries a
+                // nonzero lever arm relative to the body's own axis (the contact point is never
+                // exactly under the center of mass along the contact's own length), even for a
+                // perfectly symmetric, perfectly resting body. That lever arm's torque does not
+                // average out over time - it accumulates, substep after substep, into a real,
+                // exponentially growing rotation (traced directly: a resting cylinder's own rotation
+                // drifted from ~0 to 0.002 rad over 2000 ticks, roughly doubling every 200 ticks,
+                // despite angular_velocity reading exactly zero throughout - a single-point contact
+                // model cannot represent this geometry without this bias). The fix is the same one
+                // any two-point stabilization uses: synthesize a SECOND contact point, mirrored along
+                // the shape's own axis, so the two points' lever arms are symmetric and cancel by
+                // construction instead of compounding in one direction.
+                const mirrored = this._synthesizeMirroredPoint(contact, primitivePairs[i].a, primitivePairs[i].b);
+                if (mirrored) list.push(mirrored);
             }
 
             // Ensure a manifold exists for this pair even if this tick found zero contacts for it
@@ -148,59 +174,75 @@ class NarrowPhase {
         for (const manifold of manifolds.values()) {
             const bodyA = manifold.bodyA, bodyB = manifold.bodyB;
             if (this._isCompoundOrMesh(bodyA.shape) || this._isCompoundOrMesh(bodyB.shape)) continue;
+            if (manifold.points.length === 0) continue;
 
             const placedA = { shape: bodyA.shape, position: bodyA.position, rotation: bodyA.rotation };
             const placedB = { shape: bodyB.shape, position: bodyB.position, rotation: bodyB.rotation };
             const fresh = this._testPrimitivePair(placedA, placedB); // one fresh contact for this pair
+            this._refreshOnePoint(manifold, fresh, bodyA, bodyB, null);
 
-            // Update the nearest existing point (in world space) with the fresh geometry, keeping
-            // its warm-start lambda and its persistent local anchors' IDENTITY - only the values
-            // the solver reads live (normal, and the anchors it recomputes C from) are refreshed.
-            let best = null, bestDistSq = Infinity;
-            for (let i = 0; i < manifold.points.length; i++) {
-                const p = manifold.points[i];
-                const dx = p.point.x - fresh.point.x, dy = p.point.y - fresh.point.y, dz = p.point.z - fresh.point.z;
-                const d = dx * dx + dy * dy + dz * dz;
-                if (d < bestDistSq) { bestDistSq = d; best = p; }
-            }
-            if (!best) continue;
-            // A curved shape resting flush along a LINE (a cylinder's barrel on flat ground, not a
-            // single point) has no unique closest point - GJK/EPA legitimately returns a different,
-            // equally-valid point along that line from one call to the next even though nothing about
-            // the real contact changed. Re-anchoring to every such jump flips the position solve's
-            // lever arm (and so its torque direction) every substep, which kept re-injecting angular
-            // velocity a settled round shape's own rolling resistance had just removed - a resting
-            // cylinder/cone never fully stopped spinning no matter how strong the damping was, because
-            // the anchor itself never held still long enough to stay damped. Re-anchor only when the
-            // fresh point has genuinely moved from where THIS point's CURRENT anchor sits in world
-            // space right now (currentAnchorBInto - the anchor tracks the body's own rotation each
-            // substep even while frozen, so real cumulative drift still crosses this threshold and
-            // triggers a re-anchor; comparing against a stale cached pointOnB instead let real motion
-            // accumulate invisibly and never re-anchor at all, a real, confirmed bug - a cylinder held
-            // at a stale anchor for 1000+ ticks eventually drifted enough to launch outright, y=58+).
-            best.currentAnchorBInto(this._scratchVec, bodyB);
-            const movedSq = (fresh.pointOnB.x - this._scratchVec.x) * (fresh.pointOnB.x - this._scratchVec.x) +
-                (fresh.pointOnB.y - this._scratchVec.y) * (fresh.pointOnB.y - this._scratchVec.y) +
-                (fresh.pointOnB.z - this._scratchVec.z) * (fresh.pointOnB.z - this._scratchVec.z);
-            const genuineMove = movedSq >= NarrowPhase.ANCHOR_REFRESH_MIN_MOVE * NarrowPhase.ANCHOR_REFRESH_MIN_MOVE;
-            best.point.copy(fresh.point);
-            best.signedDistance = fresh.signedDistance;
-            // Keep the ESTABLISHED normal through the exact-touch band, exactly as the manifold's
-            // once-per-tick update() does (ContactManifold.EXACT_TOUCH_BAND) - the per-substep
-            // refresh MUST honour the same rule, or it silently clobbers a good resting normal with
-            // the ambiguous diagonal GJK/EPA returns at signed-distance ~0 every substep, which is
-            // the penetrate-then-launch bug the once-per-tick guard was added to prevent (it bit
-            // spheres hard: a flush sphere kept getting a (-0.71,0,0.71) normal and launched to y=200+).
-            if (Math.abs(fresh.signedDistance) >= ContactManifold.EXACT_TOUCH_BAND) best.normal.copy(fresh.normal);
-            if (genuineMove) {
-                best.pointOnA.copy(fresh.pointOnA);
-                best.pointOnB.copy(fresh.pointOnB);
-                // Re-anchor to the CURRENT geometry so C is measured from where the feature is NOW -
-                // the whole point of refreshing, for a contact that has actually moved. Persisting a
-                // stale anchor through a real migration would defeat this mechanism entirely (see its
-                // own comment above - a fast-rotating body's far corner slamming in undetected).
-                best.setLocalAnchors(bodyA, bodyB);
-            }
+            // A synthesized mirrored point (see _synthesizeMirroredPoint's own comment) needs its OWN
+            // fresh geometry refreshed too, matched independently against whichever manifold point is
+            // nearest IT specifically - reusing the same `fresh` result for both would refresh the
+            // mirrored point with the real point's own geometry, collapsing the two-point stabilization
+            // this mechanism exists for back into a single effective point.
+            const mirrored = this._synthesizeMirroredPoint(fresh, placedA, placedB);
+            if (mirrored) this._refreshOnePoint(manifold, mirrored, bodyA, bodyB, fresh);
+        }
+    }
+
+    // Updates whichever point in `manifold` is nearest `freshContact` (in world space) with its
+    // geometry, keeping the point's warm-start lambda and local-anchor IDENTITY - only the values
+    // the solver reads live (normal, and the anchors it recomputes C from) are refreshed. `exclude`
+    // (optional): a ContactDetails to skip when picking the nearest point, so a real point and its
+    // mirrored counterpart (see refreshManifoldGeometry's own comment) never both claim the same
+    // manifold point when they happen to land close together.
+    _refreshOnePoint(manifold, freshContact, bodyA, bodyB, exclude) {
+        let best = null, bestDistSq = Infinity;
+        for (let i = 0; i < manifold.points.length; i++) {
+            const p = manifold.points[i];
+            if (p === exclude) continue;
+            const dx = p.point.x - freshContact.point.x, dy = p.point.y - freshContact.point.y, dz = p.point.z - freshContact.point.z;
+            const d = dx * dx + dy * dy + dz * dz;
+            if (d < bestDistSq) { bestDistSq = d; best = p; }
+        }
+        if (!best) return;
+        // A curved shape resting flush along a LINE (a cylinder's barrel on flat ground, not a
+        // single point) has no unique closest point - GJK/EPA legitimately returns a different,
+        // equally-valid point along that line from one call to the next even though nothing about
+        // the real contact changed. Re-anchoring to every such jump flips the position solve's
+        // lever arm (and so its torque direction) every substep, which kept re-injecting angular
+        // velocity a settled round shape's own rolling resistance had just removed - a resting
+        // cylinder/cone never fully stopped spinning no matter how strong the damping was, because
+        // the anchor itself never held still long enough to stay damped. Re-anchor only when the
+        // fresh point has genuinely moved from where THIS point's CURRENT anchor sits in world
+        // space right now (currentAnchorBInto - the anchor tracks the body's own rotation each
+        // substep even while frozen, so real cumulative drift still crosses this threshold and
+        // triggers a re-anchor; comparing against a stale cached pointOnB instead let real motion
+        // accumulate invisibly and never re-anchor at all, a real, confirmed bug - a cylinder held
+        // at a stale anchor for 1000+ ticks eventually drifted enough to launch outright, y=58+).
+        best.currentAnchorBInto(this._scratchVec, bodyB);
+        const movedSq = (freshContact.pointOnB.x - this._scratchVec.x) * (freshContact.pointOnB.x - this._scratchVec.x) +
+            (freshContact.pointOnB.y - this._scratchVec.y) * (freshContact.pointOnB.y - this._scratchVec.y) +
+            (freshContact.pointOnB.z - this._scratchVec.z) * (freshContact.pointOnB.z - this._scratchVec.z);
+        const genuineMove = movedSq >= NarrowPhase.ANCHOR_REFRESH_MIN_MOVE * NarrowPhase.ANCHOR_REFRESH_MIN_MOVE;
+        best.point.copy(freshContact.point);
+        best.signedDistance = freshContact.signedDistance;
+        // Keep the ESTABLISHED normal through the exact-touch band, exactly as the manifold's
+        // once-per-tick update() does (ContactManifold.EXACT_TOUCH_BAND) - the per-substep
+        // refresh MUST honour the same rule, or it silently clobbers a good resting normal with
+        // the ambiguous diagonal GJK/EPA returns at signed-distance ~0 every substep, which is
+        // the penetrate-then-launch bug the once-per-tick guard was added to prevent (it bit
+        // spheres hard: a flush sphere kept getting a (-0.71,0,0.71) normal and launched to y=200+).
+        if (Math.abs(freshContact.signedDistance) >= ContactManifold.EXACT_TOUCH_BAND) best.normal.copy(freshContact.normal);
+        if (genuineMove) {
+            best.pointOnA.copy(freshContact.pointOnA);
+            best.pointOnB.copy(freshContact.pointOnB);
+            // Re-anchor to the CURRENT geometry so C is measured from where the feature is NOW -
+            // the whole point of refreshing, for a contact that has actually moved. Persisting a
+            // stale anchor through a real migration would defeat this mechanism entirely (see its
+            // own comment above - a fast-rotating body's far corner slamming in undetected).
+            best.setLocalAnchors(bodyA, bodyB);
         }
     }
 
@@ -225,6 +267,47 @@ class NarrowPhase {
             contact.setFromGJKSeparated(gjkResult);
         }
         return contact;
+    }
+
+    // See step()'s own comment for why this exists. Returns a second ContactDetails mirrored along
+    // whichever of placedA/placedB is a cylinder or capsule resting on its BARREL (contact normal
+    // roughly perpendicular to the shape's own local Y axis - an end-cap contact has the normal
+    // roughly PARALLEL to the axis instead, and genuinely only ever touches at one point, so this
+    // correctly does nothing there), or null if neither side qualifies. Only ever synthesizes for a
+    // primitive-vs-primitive pair already confirmed touching/overlapping by the real contact - never
+    // invents a contact from nothing.
+    _synthesizeMirroredPoint(contact, placedA, placedB) {
+        let axisBody = null, halfLen = 0;
+        if (placedA.shape.type === 'cylinder') { axisBody = placedA; halfLen = placedA.shape.halfHeight; }
+        else if (placedA.shape.type === 'capsule') { axisBody = placedA; halfLen = placedA.shape.segmentHalfLength; }
+        else if (placedB.shape.type === 'cylinder') { axisBody = placedB; halfLen = placedB.shape.halfHeight; }
+        else if (placedB.shape.type === 'capsule') { axisBody = placedB; halfLen = placedB.shape.segmentHalfLength; }
+        if (!axisBody || halfLen <= 0) return null;
+
+        this._mirrorAxis.set(0, 1, 0);
+        axisBody.rotation.transformVectorInPlace(this._mirrorAxis);
+        const nx = contact.normal.x, ny = contact.normal.y, nz = contact.normal.z;
+        const axialComponent = Math.abs(this._mirrorAxis.x * nx + this._mirrorAxis.y * ny + this._mirrorAxis.z * nz);
+        // End-cap contact (normal mostly ALONG the axis) - genuinely one point, do nothing.
+        if (axialComponent > NarrowPhase.MIRROR_POINT_MAX_AXIAL_NORMAL) return null;
+
+        // Where along the axis the real contact point already sits, relative to the shape's own
+        // center - the mirror offset is placed symmetrically on the OTHER side of center from there,
+        // at the same distance, so the two points bracket the center rather than both landing on the
+        // same side (which a fixed +halfLen/-halfLen pair would risk for a contact that is not
+        // perfectly centered to begin with).
+        this._mirrorOffset.copy(contact.point).subInPlace(axisBody.position);
+        const alongAxis = this._mirrorOffset.x * this._mirrorAxis.x + this._mirrorOffset.y * this._mirrorAxis.y + this._mirrorOffset.z * this._mirrorAxis.z;
+        const mirrorAlong = -alongAxis; // reflect through the center
+        const shift = mirrorAlong - alongAxis;
+
+        const mirrored = this._nextPooledContact();
+        mirrored.point.set(contact.point.x + this._mirrorAxis.x * shift, contact.point.y + this._mirrorAxis.y * shift, contact.point.z + this._mirrorAxis.z * shift);
+        mirrored.pointOnA.set(contact.pointOnA.x + this._mirrorAxis.x * shift, contact.pointOnA.y + this._mirrorAxis.y * shift, contact.pointOnA.z + this._mirrorAxis.z * shift);
+        mirrored.pointOnB.set(contact.pointOnB.x + this._mirrorAxis.x * shift, contact.pointOnB.y + this._mirrorAxis.y * shift, contact.pointOnB.z + this._mirrorAxis.z * shift);
+        mirrored.normal.copy(contact.normal);
+        mirrored.signedDistance = contact.signedDistance; // same depth - the barrel's radius is constant along its length
+        return mirrored;
     }
 }
 
