@@ -588,30 +588,48 @@ class Solver {
         Vector3.subInto(this._rB, this._rB, bodyB.position);
         const nx = point.normal.x, ny = point.normal.y, nz = point.normal.z;
 
-        // --- Restitution (normal) ---
-        // Sign convention (normal points B->A): a body APPROACHING the contact has POSITIVE normal
-        // relative velocity (relVel . normal > 0 = closing), and after a bounce it should SEPARATE at
-        // -e * the approach speed (negative relN). Skip slow approaches (a resting body's one-substep
-        // gravity nudge) via a threshold, so restitution does not turn rest into perpetual jitter.
+        // --- Normal velocity solve (accumulated-impulse, warm-started) ---
+        // A proper sequential-impulse normal constraint: drive the contact-relative NORMAL velocity to
+        // its target (0 for a resting/inelastic contact, the restitution separating speed for a
+        // bouncing one), accumulating the applied impulse into point.normalImpulse - a PERSISTENT,
+        // warm-started quantity (see ContactDetails). This is the state that lets "held under load" be
+        // read directly: a resting stack's contact carries a steady nonzero normalImpulse rather than
+        // the load being re-inferred from an instantaneous velocity heuristic every substep. The
+        // accumulated impulse is clamped <= 0 (this file's B->A convention: a pushing contact's normal
+        // impulse is negative, exactly like normalLambda), so the contact can push apart but the
+        // warm-start/solve can never invert into an attractive pull.
         const restitution = Math.max(bodyA.restitution, bodyB.restitution); // combined: max, standard convention
-        const relN = this._contactRelativeNormalVelocity(point, bodyA, bodyB);
+        let targetN = 0;
         if (restitution > 0 && point._preSolveNormalVel > Solver.RESTITUTION_THRESHOLD) {
-            const targetN = -restitution * point._preSolveNormalVel; // desired separating velocity (< 0)
-            // Only ADD separation (make relN more negative); never damp an already-separating contact.
-            if (targetN < relN) {
-                const wN = this._effectiveMass(bodyA, bodyB, this._rA, this._rB, nx, ny, nz);
-                if (wN >= 1e-12) this._applyVelocityImpulse(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, (targetN - relN) / wN);
-            }
+            targetN = -restitution * point._preSolveNormalVel; // desired separating velocity (< 0)
+        }
+        const wN = this._effectiveMass(bodyA, bodyB, this._rA, this._rB, nx, ny, nz);
+        if (wN >= 1e-12) {
+            const relN = this._contactRelativeNormalVelocity(point, bodyA, bodyB);
+            // relN positive = closing (normal points B->A). To move relN toward targetN we need a
+            // negative applied j (see _applyVelocityImpulse: +j increases relN). dJ solves
+            // relN + dJ*wN = targetN.
+            const dJ = (targetN - relN) / wN;
+            const oldImpulse = point.normalImpulse;
+            let newImpulse = oldImpulse + dJ;
+            if (newImpulse > 0) newImpulse = 0; // contact cannot pull; clamp accumulated to no-attraction
+            const applied = newImpulse - oldImpulse;
+            point.normalImpulse = newImpulse;
+            if (applied !== 0) this._applyVelocityImpulse(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, applied);
         }
 
         // --- Friction (tangent) ---
         const friction = Math.sqrt(bodyA.friction * bodyB.friction);
         if (friction <= 0) return;
-        // Coulomb cap on the friction impulse magnitude: mu times the normal impulse the position
-        // solve actually applied this substep. normalLambda is a position Lagrange multiplier;
-        // dividing by h converts it to a velocity-space impulse commensurate with the tangential
-        // impulses computed below. This is the correct, unit-consistent cap that the position-space
-        // attempt never got right.
+        // Coulomb cap on the friction impulse magnitude. Uses normalLambda/h (the position solve's
+        // per-substep normal multiplier) for now: the accumulated velocity-space normalImpulse is the
+        // RIGHT long-term signal (it reflects sustained held load, see its own comment), but while the
+        // POSITION solve still co-owns the normal response, normalImpulse captures only the velocity
+        // solve's share of the total normal force and under-scales friction (traced: newBudget ~8x
+        // smaller than the position-lambda budget for a sliding box, letting it slide forever). The
+        // budget switches to normalImpulse once the normal solve owns the full normal force (next
+        // increment) - keeping the correct-scaled position-lambda budget until then, so the normal
+        // velocity solve above can be measured on its own without a friction regression riding along.
         const maxImpulse = friction * Math.abs(point.normalLambda) / h;
         if (maxImpulse <= 0) return;
 
@@ -674,7 +692,7 @@ class Solver {
         }
         if (wSum < 1e-12) return;
 
-        const maxAngImpulse = rollingFriction * Math.abs(point.normalLambda) / h;
+        const maxAngImpulse = rollingFriction * Math.abs(point.normalLambda) / h; // see friction's budget comment: normalLambda-scaled until the normal solve owns the full normal force
         if (maxAngImpulse <= 0) return;
         let j = relWMag / wSum;
         if (j > maxAngImpulse) j = maxAngImpulse;
