@@ -12,9 +12,6 @@ proto._integrate = function (bodies, gravity, h) {
         const bias = this._biasDelta.get(b.id) || new Vector3();
         bias.set(0, 0, 0);
         this._biasDelta.set(b.id, bias);
-        const deferred = this._deferredRotation.get(b.id) || new Vector3();
-        deferred.set(0, 0, 0);
-        this._deferredRotation.set(b.id, deferred);
         // Snapshot before gravity/damping touch it - restitution's pre-solve velocity reads this,
         // not the post-gravity value (see PositionSolve.js's restitution capture).
         this._preGravityVel.set(b.id, new Vector3().copy(b.linear_velocity));

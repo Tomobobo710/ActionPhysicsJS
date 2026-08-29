@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-28T10:53:11.605Z
+// ActionPhysics 0.1.0 — built 2026-08-28T12:21:10.882Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine.
@@ -6352,7 +6352,6 @@ class Solver {
         this._prevRot = new Map();
         this._preGravityVel = new Map();
         this._biasDelta = new Map(); // per-body bias-only correction this substep; excluded from derived velocity
-        this._deferredRotation = new Map(); // per-body accumulated small-angle rotation for a multi-point manifold pass
         this._restRing = new Map(); // per-body ring buffer of recent transforms for rest-velocity reconciliation
     }
 
@@ -6448,7 +6447,7 @@ class Solver {
             return;
         }
         for (let i = 0; i < n; i++) {
-            this._solvePoint(manifold.points[i], bodyA, bodyB, h, null, true);
+            this._solvePoint(manifold.points[i], bodyA, bodyB, h, true);
         }
     }
 
@@ -6508,9 +6507,6 @@ proto._integrate = function (bodies, gravity, h) {
         const bias = this._biasDelta.get(b.id) || new Vector3();
         bias.set(0, 0, 0);
         this._biasDelta.set(b.id, bias);
-        const deferred = this._deferredRotation.get(b.id) || new Vector3();
-        deferred.set(0, 0, 0);
-        this._deferredRotation.set(b.id, deferred);
         // Snapshot before gravity/damping touch it - restitution's pre-solve velocity reads this,
         // not the post-gravity value (see PositionSolve.js's restitution capture).
         this._preGravityVel.set(b.id, new Vector3().copy(b.linear_velocity));
@@ -6600,7 +6596,7 @@ Solver._deriveAngularVelocity = function (out, prevRot, rotation, h) {
 // and positional-correction helpers it uses.
 var proto = Solver.prototype;
 
-proto._solvePoint = function (point, bodyA, bodyB, h, deferRotation, capPenetration) {
+proto._solvePoint = function (point, bodyA, bodyB, h, capPenetration) {
     point.currentAnchorAInto(this._rA, bodyA);
     point.currentAnchorBInto(this._rB, bodyB);
     const nx = point.normal.x, ny = point.normal.y, nz = point.normal.z;
@@ -6646,8 +6642,8 @@ proto._solvePoint = function (point, bodyA, bodyB, h, deferRotation, capPenetrat
     if (velocityC > explainableBySubstep) velocityC = explainableBySubstep;
     const velocityDelta = -velocityC / wSum;
     const biasDelta = deltaLambda - velocityDelta;
-    this._applyPositionalCorrection(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, velocityDelta, false, deferRotation);
-    this._applyPositionalCorrection(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, biasDelta, true, deferRotation);
+    this._applyPositionalCorrection(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, velocityDelta, false);
+    this._applyPositionalCorrection(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, biasDelta, true);
 };
 
 // Generalized inverse mass along direction (dx,dy,dz): linear + angular contribution from both bodies.
@@ -6679,9 +6675,7 @@ proto._effectiveMass = function (bodyA, bodyB, rA, rB, dx, dy, dz) {
 // `bias`: true for the non-explainable share of a split correction - the body still moves (so the
 // next substep measures a smaller overlap), but the movement is also recorded into this._biasDelta
 // for step 4 to subtract back out.
-// `deferRotation` (optional): accumulates the angular delta instead of composing it into
-// body.rotation immediately - see _applyAngularCorrection / _flushDeferredRotation.
-proto._applyPositionalCorrection = function (bodyA, bodyB, rA, rB, nx, ny, nz, dLambda, bias, deferRotation) {
+proto._applyPositionalCorrection = function (bodyA, bodyB, rA, rB, nx, ny, nz, dLambda, bias) {
     const px = nx * dLambda, py = ny * dLambda, pz = nz * dLambda;
 
     if (bodyA._massInverted > 0) {
@@ -6693,7 +6687,7 @@ proto._applyPositionalCorrection = function (bodyA, bodyB, rA, rB, nx, ny, nz, d
             const b = this._biasDelta.get(bodyA.id);
             if (b) { b.x += dx; b.y += dy; b.z += dz; }
         }
-        this._applyAngularCorrection(bodyA, rA, -px, -py, -pz, deferRotation);
+        this._applyAngularCorrection(bodyA, rA, -px, -py, -pz);
     }
     if (bodyB._massInverted > 0) {
         const dx = px * bodyB._massInverted * bodyB.linear_factor.x;
@@ -6704,36 +6698,20 @@ proto._applyPositionalCorrection = function (bodyA, bodyB, rA, rB, nx, ny, nz, d
             const b = this._biasDelta.get(bodyB.id);
             if (b) { b.x += dx; b.y += dy; b.z += dz; }
         }
-        this._applyAngularCorrection(bodyB, rB, px, py, pz, deferRotation);
+        this._applyAngularCorrection(bodyB, rB, px, py, pz);
     }
 };
 
 // Small-angle PBD angular update from a linear positional impulse p at offset r: I^-1*(r x p)*0.5.
-// With `deferRotation` supplied, adds the small-angle delta into its per-body accumulator instead
-// of composing it into body.rotation immediately - see _applyPositionalCorrection / _flushDeferredRotation.
-proto._applyAngularCorrection = function (body, r, px, py, pz, deferRotation) {
+proto._applyAngularCorrection = function (body, r, px, py, pz) {
     const torqueX = r.y * pz - r.z * py, torqueY = r.z * px - r.x * pz, torqueZ = r.x * py - r.y * px;
     const I = body._worldInverseInertiaTensor;
     const wx = I.e00 * torqueX + I.e01 * torqueY + I.e02 * torqueZ;
     const wy = I.e10 * torqueX + I.e11 * torqueY + I.e12 * torqueZ;
     const wz = I.e20 * torqueX + I.e21 * torqueY + I.e22 * torqueZ;
     const ax = wx * body.angular_factor.x, ay = wy * body.angular_factor.y, az = wz * body.angular_factor.z;
-    if (deferRotation) {
-        const acc = deferRotation.get(body.id);
-        if (acc) { acc.x += ax; acc.y += ay; acc.z += az; return; }
-    }
     this._angularCorrA.set(ax, ay, az);
     Solver._integrateRotation(body.rotation, this._angularCorrA, 1); // h=1: this IS the delta, not a rate
-};
-
-// Applies one body's accumulated deferred small-angle rotation (summed across every point in the
-// manifold's pass) as a single quaternion update, then clears the accumulator.
-proto._flushDeferredRotation = function (body, deferRotation) {
-    const acc = deferRotation.get(body.id);
-    if (!acc || (acc.x === 0 && acc.y === 0 && acc.z === 0)) return;
-    this._angularCorrA.set(acc.x, acc.y, acc.z);
-    Solver._integrateRotation(body.rotation, this._angularCorrA, 1);
-    acc.x = 0; acc.y = 0; acc.z = 0;
 };
 
 
@@ -9298,7 +9276,7 @@ proto._readGhostKnockback = function() {
     if (!world || !world.narrowphase) { return; }
     var ghostBody = this._ghost;
     var pb = this.body.linear_velocity;
-    var mP = this.mass;
+    // var mP = this.mass; // only fed the disabled mass-ratio scale below
 
     var manifolds = world.narrowphase.manifolds.values();
     for (var manifold = manifolds.next(); !manifold.done; manifold = manifolds.next()) {
@@ -9308,7 +9286,7 @@ proto._readGhostKnockback = function() {
             m.bodyB === ghostBody ? m.bodyA : null;
         // A player is a wall, not a pushable object — no knockback from another player's ghost.
         if (other && other.bodyType === RigidBody.DYNAMIC && other._mass > 0 && !other.isKinematicCharacter) {
-            var mB = other._mass;
+            // var mB = other._mass; // only fed the disabled mass-ratio scale below
             var ov = other.linear_velocity;
             var nx = this._ghost.position.x - other.position.x;
             var nz = this._ghost.position.z - other.position.z;
@@ -9326,8 +9304,13 @@ proto._readGhostKnockback = function() {
                 (ov.x - pb.x) * nx + (ov.z - pb.z) * nz :   // legacy: relative closing (self-push included)
                 ov.x * nx + ov.z * nz;                      // box's own inbound speed only
             if (closing > FPSC.KB_CLOSING_MIN) {
-                var massRatio = mB / (mB + mP);
-                var kbv = massRatio * closing;
+                // `closing` is the object's velocity AFTER the solver already resolved its collision
+                // with the ghost — the mass exchange is already baked in. Scaling it again by the
+                // mass ratio below double-counted the mass penalty, cutting knockback to a fraction
+                // of what a free body of the character's mass actually keeps (~0.46 vs ~4 in K1).
+                // var massRatio = mB / (mB + mP);
+                // var kbv = massRatio * closing;
+                var kbv = closing;
                 if (kbv > this._receiveMaxSpeed) { kbv = this._receiveMaxSpeed; }
                 kbv *= this._receiveKnockbackFraction;
                 // Cap the RESULTING along-n speed, not just this tick's increment: clamping only kb

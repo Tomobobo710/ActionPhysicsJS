@@ -23,7 +23,6 @@ class Solver {
         this._prevRot = new Map();
         this._preGravityVel = new Map();
         this._biasDelta = new Map(); // per-body bias-only correction this substep; excluded from derived velocity
-        this._deferredRotation = new Map(); // per-body accumulated small-angle rotation for a multi-point manifold pass
         this._restRing = new Map(); // per-body ring buffer of recent transforms for rest-velocity reconciliation
     }
 
@@ -119,7 +118,7 @@ class Solver {
             return;
         }
         for (let i = 0; i < n; i++) {
-            this._solvePoint(manifold.points[i], bodyA, bodyB, h, null, true);
+            this._solvePoint(manifold.points[i], bodyA, bodyB, h, true);
         }
     }
 

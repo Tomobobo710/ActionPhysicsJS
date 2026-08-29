@@ -60,24 +60,37 @@ fully simulated every tick; a real sleep system makes it nearly free.
 
 ---
 
-## Pyramid stability: iterations is a shared global dial
+## Pyramid stability: position-solve iterations
 
 Turning `collision/pyramid` green needed the position-solve `iterations` default raised from
-1. A single Gauss-Seidel pass can't converge a large coupled stack of contact manifolds, so
-the (deliberately sheared) pyramid crept. This is a real convergence limitation, not an
-artifact.
+1 to 4. A single Gauss-Seidel pass can't converge a large coupled stack of contact manifolds,
+so the (deliberately sheared) pyramid crept. This is a real convergence limitation, not an
+artifact. Cost is ~4x the position-solve work; the resting stacks are what need it.
 
-Tradeoff to be aware of: **`iterations` is one global knob that the pyramid and the
-`fps/knockback` tests pull in opposite directions.** Stacks want a stiff, well-converged
-contact solve; a fresh crate-into-player impact wants a soft single pass that transmits its
-full impulse. Measured:
 
-| iterations | pyramid drift | pyramid green | knockback @1 | knockback @2 |
-|-----------:|--------------:|:-------------:|:------------:|:------------:|
-| 1 (old)    | 1.38          | no            | pass         | pass         |
-| 2          | 0.11          | yes           | 0.49 (needs 0.50) | pass    |
-| 4          | 0.05          | yes           | fail (0.46)  | fail         |
+## K1 knockback: the mass ratio was double-counted (fixed)
 
-The clean long-term fix is **velocity-gated iterations**: iterate resting contacts hard,
-leave fresh/fast impacts on a single pass, so both pass at once. Not yet done — current
-default is a compromise. Check `src/solver/Solver.js` for the value actually in the tree.
+Raising `iterations` to 4 made the crate-vs-character contact stiffer, which briefly LOOKED
+like it broke knockback (K1 went from passing to failing). Chasing that led to the real,
+pre-existing bug — the iterations change only nudged an already-wrong number across the line.
+
+`_readGhostKnockback` (src/character/fps/Ghost.js) applied the character's knockback as
+`massRatio * closing`, where `closing` is the pushing object's velocity **read after the
+solver already resolved its collision with the ghost**. The collision itself already applied
+momentum conservation (the crate decelerated because it dumped momentum into the ghost).
+Multiplying that post-collision velocity by `massRatio = mB/(mB+mP)` again charged the mass
+penalty a SECOND time.
+
+Proof it's a double-count, not physics: a FREE box of the character's mass, hit by the same
+crate with the ghost's exact material (friction 0, restitution 0, linDamp 0, angDamp 0.9),
+settles at peak ~4.0 — that 4.0 already IS the mass-ratio-correct answer from the real solve.
+The character's formula produced ~0.46 for the same hit: `0.23 * 2.0`, i.e. mass-penalized
+twice. (The free-box vs character gap was ~9x, entirely in the controller, not the engine or
+the material — the material was tested and exonerated.)
+
+Fix: knock back by `closing` directly (drop the `massRatio` multiply). All of K1..K13 pass at
+all three scales, including K7 "light ball does not knock" and K8 "no self-knock" — so the
+other gates (closing-speed floor, max-speed cap, self-push exclusion) still hold the line; the
+mass ratio was purely redundant, not load-bearing. This retired the pyramid-vs-knockback
+"opposite directions" tension entirely: iterations:4 and full K1 knockback now coexist, no
+velocity-gating needed.
