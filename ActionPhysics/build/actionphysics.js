@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-25T23:12:23.116Z
+// ActionPhysics 0.1.0 — built 2026-08-26T00:05:53.083Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine.
@@ -6101,6 +6101,13 @@ class NarrowPhase {
     // fast body's contact is still caught a full tick ahead - see step().
     static SPECULATIVE_BASE = 0.02;
 
+    // |contact-normal . curved-shape-axis| above this means the contact is on an END CAP (normal
+    // roughly PARALLEL to the axis - a cylinder stood upright, a cone tip-down), which genuinely
+    // touches at a point/circle the axial-line bracketing does not apply to. cos(80 deg) ~= 0.17: only
+    // a contact within ~10 deg of a true end-cap normal is excluded; an ordinary side/barrel contact
+    // (normal within a few degrees of PERPENDICULAR to the axis) is well clear and gets bracketed.
+    static AXIAL_LINE_MAX_AXIAL_NORMAL = 0.17;
+
     constructor() {
         this.manifolds = new ContactManifoldList();
         this._dt = 1 / 60; // set each tick by step(); the fallback only matters if step() is never called
@@ -6112,6 +6119,7 @@ class NarrowPhase {
         this._epa = new EPA();
         this._contactPool = []; // reused ContactDetails objects, grown as needed, never shrunk
         this._poolIndex = 0;
+        this._axis = new Vector3(); // _addAxialLineContacts scratch
     }
 
     _nextPooledContact() {
@@ -6149,6 +6157,15 @@ class NarrowPhase {
                 let list = contactsByPair.get(key);
                 if (!list) { list = []; contactsByPair.set(key, list); }
                 list.push(contact);
+                // A curved shape (cylinder/capsule/cone) resting on its SIDE touches a flat surface
+                // along a LINE, not a point - but GJK/EPA reports a single point. One point on a line
+                // contact has a lever arm about the shape's own axis, so any per-substep correction at
+                // it injects a torque that does not average out (traced: a resting cylinder's rotation
+                // drifts, its residual spin never decays). Bracket the primary contact with real
+                // additional points along the shape's own axis, so the manifold represents the true
+                // line and the points' torques cancel by construction. Real surface geometry, each an
+                // independent impulse-carrying contact (NOT snapshot 24's synthesized mirror).
+                this._addAxialLineContacts(contact, primitivePairs[i].a, primitivePairs[i].b, list, margin);
             }
 
             // Ensure a manifold exists for this pair even if this tick found zero contacts for it
@@ -6272,6 +6289,68 @@ class NarrowPhase {
             contact.setFromGJKSeparated(gjkResult);
         }
         return contact;
+    }
+
+    // Given the primary GJK/EPA contact for a pair, if exactly one side is a cylinder/capsule/cone
+    // lying on its SIDE (barrel/slant contact, normal roughly perpendicular to that shape's own
+    // axis), append REAL additional contact points spread along the shape's axis so the manifold
+    // represents the true LINE of contact instead of a single point. Each appended point shares the
+    // primary's normal and penetration (a constant-radius barrel touches a flat plane at the same
+    // depth all along its length) and is offset in world space along the shape's axis; the offsets
+    // are placed to bracket the primary symmetrically about the shape's own center, so the points'
+    // lever arms about the axis cancel by construction. The manifold's 4-point cap and matching
+    // absorb these exactly like any other points; each carries its own impulse state in the solver.
+    _addAxialLineContacts(primary, placedA, placedB, list, margin) {
+        // Identify the curved side and its axial half-extent (distance from center to each bracket
+        // point along the axis). Cylinder/capsule: the barrel spans the full segment. Cone: the slant
+        // runs tip (+halfHeight) to base rim (-halfHeight), so bracket across that same span.
+        // Cylinder and capsule only: their contact line is the BARREL, which is parallel to the axis
+        // AND centered on the shape's own center of mass, so symmetric bracket points along the axis
+        // have equal-and-opposite lever arms that cancel by construction. A CONE is deliberately NOT
+        // handled here: it rests on its SLANT (apex to base rim), a line that is neither axis-parallel
+        // nor centered on the COM - the apex and rim endpoints sit at different distances from the
+        // center, so symmetric-offset points do not cancel (tried: the cone's residual spin was
+        // unchanged). The cone needs its two real endpoints (apex, rim) placed asymmetrically, which
+        // is its own geometry - a separate step, not this barrel model forced to fit.
+        let curved = null, halfSpan = 0;
+        const a = placedA.shape, b = placedB.shape;
+        if (a.type === 'cylinder') { curved = placedA; halfSpan = a.halfHeight; }
+        else if (a.type === 'capsule') { curved = placedA; halfSpan = a.segmentHalfLength; }
+        else if (b.type === 'cylinder') { curved = placedB; halfSpan = b.halfHeight; }
+        else if (b.type === 'capsule') { curved = placedB; halfSpan = b.segmentHalfLength; }
+        if (!curved || halfSpan <= 0) return;
+
+        // World-space axis of the curved shape (its local +Y).
+        this._axis.set(0, 1, 0);
+        curved.rotation.transformVectorInPlace(this._axis);
+        const nx = primary.normal.x, ny = primary.normal.y, nz = primary.normal.z;
+        const axialDot = Math.abs(this._axis.x * nx + this._axis.y * ny + this._axis.z * nz);
+        if (axialDot > NarrowPhase.AXIAL_LINE_MAX_AXIAL_NORMAL) return; // end-cap contact, not a side line
+
+        // Project the axis into the contact PLANE (remove its normal component) and renormalize - the
+        // bracket points must move along the contact line, which lies in the plane, not off it into
+        // or out of the surface. For a shape resting flush on its side the axis is already in-plane;
+        // this only matters for a slight tilt, and keeps the appended points ON the surface.
+        const axisDotN = this._axis.x * nx + this._axis.y * ny + this._axis.z * nz;
+        let px = this._axis.x - axisDotN * nx, py = this._axis.y - axisDotN * ny, pz = this._axis.z - axisDotN * nz;
+        const plen = Math.sqrt(px * px + py * py + pz * pz);
+        if (plen < 1e-6) return; // axis is along the normal (end-cap); nothing to spread
+        px /= plen; py /= plen; pz /= plen;
+
+        // Two bracket points, at +/- halfSpan from the primary along the in-plane axis. They share the
+        // primary's normal and signedDistance (constant-radius barrel). pointOnA/pointOnB and point
+        // are the primary's, shifted by the same axial offset, so their body-local anchors (set by the
+        // manifold) land at the true bracketed surface positions.
+        for (let s = -1; s <= 1; s += 2) {
+            const off = s * halfSpan;
+            const extra = this._nextPooledContact();
+            extra.normal.set(nx, ny, nz);
+            extra.signedDistance = primary.signedDistance;
+            extra.point.set(primary.point.x + px * off, primary.point.y + py * off, primary.point.z + pz * off);
+            extra.pointOnA.set(primary.pointOnA.x + px * off, primary.pointOnA.y + py * off, primary.pointOnA.z + pz * off);
+            extra.pointOnB.set(primary.pointOnB.x + px * off, primary.pointOnB.y + py * off, primary.pointOnB.z + pz * off);
+            if (extra.signedDistance >= -margin) list.push(extra);
+        }
     }
 }
 
