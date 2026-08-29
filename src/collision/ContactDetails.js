@@ -38,6 +38,12 @@ class ContactDetails {
         // the solver actually corrects against.
         this.localAnchorA = new Vector3();
         this.localAnchorB = new Vector3();
+
+        // Contact-relative normal velocity captured just before this substep's position solve (which
+        // is about to zero it), so the velocity pass can apply restitution: bounce restores a
+        // fraction of the speed the body was APPROACHING at, which is gone by the time the solve
+        // finishes. Written each substep by the solver; not warm-start state.
+        this._preSolveNormalVel = 0;
     }
 
     // Derives localAnchorA/localAnchorB from the CURRENT pointOnA/pointOnB and the given bodies'

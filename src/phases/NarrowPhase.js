@@ -158,8 +158,14 @@ class NarrowPhase {
             best.point.copy(fresh.point);
             best.pointOnA.copy(fresh.pointOnA);
             best.pointOnB.copy(fresh.pointOnB);
-            best.normal.copy(fresh.normal);
             best.signedDistance = fresh.signedDistance;
+            // Keep the ESTABLISHED normal through the exact-touch band, exactly as the manifold's
+            // once-per-tick update() does (ContactManifold.EXACT_TOUCH_BAND) - the per-substep
+            // refresh MUST honour the same rule, or it silently clobbers a good resting normal with
+            // the ambiguous diagonal GJK/EPA returns at signed-distance ~0 every substep, which is
+            // the penetrate-then-launch bug the once-per-tick guard was added to prevent (it bit
+            // spheres hard: a flush sphere kept getting a (-0.71,0,0.71) normal and launched to y=200+).
+            if (Math.abs(fresh.signedDistance) >= ContactManifold.EXACT_TOUCH_BAND) best.normal.copy(fresh.normal);
             // Re-anchor to the CURRENT geometry so C is measured from where the feature is NOW - the
             // whole point of refreshing. Persisting stale anchors would defeat it. Lambda is left
             // untouched (warm start survives).

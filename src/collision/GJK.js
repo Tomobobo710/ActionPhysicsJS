@@ -71,6 +71,8 @@ class GJK {
         this._scratchRef = new Vector3();
         this._initialProbeDir = new Vector3();
         this._newDir4 = new Vector3();
+        this._probeDir = new Vector3();  // scratch for the strict-interior penetration probe
+        this._probeW = new Vector3();
     }
 
     _clear() { this._count = 0; }
@@ -135,11 +137,15 @@ class GJK {
         this._closest.copy(seeded.closest);
 
         if (this._dir.lengthSquared() < 1e-20) {
-            // Every seed (and its own reduction) settled on the origin exactly - across several
-            // genuinely different probe direction sets, none of which share a plane by
-            // construction. That consistency is itself the practical signal for exact touching
-            // (see the class header) - report it directly.
-            return this._separatedResult(support);
+            // Every seed (and its own reduction) settled on the origin exactly: the origin lies ON
+            // the Minkowski difference boundary. That is EITHER an exact touch (depth 0, SEPARATED by
+            // the pipeline's convention) OR a shallow penetration the seed tetrahedra could not
+            // enclose for this shape-size ratio (a small sphere on a large box, OVERLAPPING). The
+            // simplex alone cannot tell them apart, so probe: the origin is STRICTLY interior (real
+            // penetration) iff every probe direction's support extends strictly past it. If so, it is
+            // overlapping and EPA measures the depth; otherwise it is an exact touch, reported
+            // separated at distance 0 (never NaN - the documented flush-contact discipline).
+            return this._originStrictlyInside(support) ? { overlapping: true, simplex: this } : this._separatedResult(support);
         }
 
         for (let iter = 0; iter < maxIterations; iter++) {
@@ -155,6 +161,24 @@ class GJK {
                 if (along > bestAlong) bestAlong = along;
             }
             if (newAlong <= bestAlong + 1e-10) {
+                // Stall: the support makes no further progress toward the origin. Normally this means
+                // separated - but it ALSO fires when the origin is already ON or just inside the
+                // Minkowski difference and the search direction has collapsed toward zero length
+                // (closest point ~= origin). Those are opposite conclusions. Disambiguate by the
+                // closest DISTANCE: a genuinely separated pair has a POSITIVE gap here, so a closest
+                // distance of ~0 means the origin is enclosed/touching = OVERLAPPING, and the current
+                // simplex is handed to EPA to extract depth. Without this, a small sphere shallowly
+                // penetrating a much larger box (whose seed tetrahedron does not enclose the origin
+                // for that size ratio, and whose incremental walk then stalls at the face) was
+                // reported SEPARATED with distance 0 - so EPA never ran, the penetration went
+                // uncorrected, and the one-shot fix a tick later launched the body. The threshold is
+                // a length, well below any contact depth the solver resolves but far above the
+                // ~1e-8 numerical floor of a true closest-point-at-origin.
+                const closestDistSq = this._closest.x * this._closest.x + this._closest.y * this._closest.y + this._closest.z * this._closest.z;
+                if (closestDistSq < GJK.OVERLAP_DISTANCE_EPSILON * GJK.OVERLAP_DISTANCE_EPSILON) {
+                    // Origin ~= on the boundary: real penetration (strictly inside) or exact touch.
+                    return this._originStrictlyInside(support) ? { overlapping: true, simplex: this } : this._separatedResult(support);
+                }
                 return this._separatedResult(support);
             }
 
@@ -167,10 +191,10 @@ class GJK {
             this._dir.copy(result.direction);
             this._closest.copy(result.closest);
 
-            // See the class header ("EXACT-TOUCHING IS UNDECIDABLE...") for why this is reported
-            // directly as a zero-distance separated result rather than trying to escalate further.
+            // Search direction collapsed to zero: origin on the current simplex - touch or
+            // penetration. Discriminate by strict interiority, same as the post-seed guard above.
             if (this._dir.lengthSquared() < 1e-20) {
-                return this._separatedResult(support);
+                return this._originStrictlyInside(support) ? { overlapping: true, simplex: this } : this._separatedResult(support);
             }
         }
         // Iteration cap reached without a clean termination. This mirrors EPA's own rule below
@@ -195,6 +219,19 @@ class GJK {
     // as the touching case - a real, deep overlap misreported as not-enclosing. Odd-looking
     // component ratios make an exact tie between two support vertices astronomically unlikely for
     // any shape that isn't specifically axis-aligned-symmetric along that exact ratio.
+    // Closest-distance below which a STALLED incremental walk is treated as overlapping rather than
+    // separated (see the stall branch in run()). A length: comfortably below any real contact depth
+    // the solver resolves, comfortably above the numerical noise of a true closest-point-at-origin.
+    static OVERLAP_DISTANCE_EPSILON = 1e-5;
+
+    // Fixed probe directions for the strict-interior penetration test (_originStrictlyInside). The 6
+    // signed axes span every face normal of an axis-aligned contact; the search direction is probed
+    // separately (both signs) for oblique contacts. Enough coverage that an exact touch always
+    // exposes its zero-margin separating direction, cheap enough to run only at the rare collapse.
+    static INTERIOR_PROBE_DIRS = [
+        [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]
+    ];
+
     static SEED_DIRECTION_SETS = [
         [[1, 1, 1], [1, -1, -1], [-1, 1, -1], [-1, -1, 1]],
         [[1, 1, -1], [1, -1, 1], [-1, 1, 1], [-1, -1, -1]],
@@ -242,6 +279,43 @@ class GJK {
         }
         const finalResult = this._simplexTetrahedron();
         return { overlapping: false, direction: finalResult.direction, closest: finalResult.closest };
+    }
+
+    // True iff the origin is STRICTLY inside the Minkowski difference (real penetration), false if it
+    // merely lies on the boundary (exact touch). The support function reaches farthest along any
+    // direction d to the point with the largest d.w; the origin is strictly interior iff that
+    // farthest extent is strictly positive along EVERY direction (support(d).d > margin for all d).
+    // At an exact touch there is a separating direction (the contact normal) where support(d).d is
+    // ~0 - the shapes meet exactly there with no overlap to spare. Probing a fixed spread of
+    // directions plus, crucially, both signs of the last search direction (which points along the
+    // near-degenerate contact normal) reliably catches that zero. The margin is a small absolute
+    // extent, well below any contact depth the solver cares about but above numerical touch noise.
+    _originStrictlyInside(support) {
+        const margin = GJK.OVERLAP_DISTANCE_EPSILON;
+        // The collapsed search direction is (numerically) along the contact normal - the most likely
+        // separating axis - so test it first, both signs.
+        if (this._closest.lengthSquared() > 1e-20) {
+            const l = Math.sqrt(this._closest.lengthSquared());
+            this._probeDir.set(this._closest.x / l, this._closest.y / l, this._closest.z / l);
+            if (!this._supportExceeds(support, this._probeDir, margin)) return false;
+            this._probeDir.set(-this._probeDir.x, -this._probeDir.y, -this._probeDir.z);
+            if (!this._supportExceeds(support, this._probeDir, margin)) return false;
+        }
+        for (let a = 0; a < GJK.INTERIOR_PROBE_DIRS.length; a++) {
+            const d = GJK.INTERIOR_PROBE_DIRS[a];
+            this._probeDir.set(d[0], d[1], d[2]);
+            if (!this._supportExceeds(support, this._probeDir, margin)) return false;
+        }
+        return true;
+    }
+
+    // support(dir).dir > margin ? (dir need not be unit; margin is scaled by |dir| so the comparison
+    // is a true distance along dir.)
+    _supportExceeds(support, dir, margin) {
+        support.supportInto(this._probeW, dir);
+        const along = this._probeW.x * dir.x + this._probeW.y * dir.y + this._probeW.z * dir.z;
+        const len = Math.sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+        return along > margin * len;
     }
 
     // Builds the SEPARATED return value from the current simplex's closest point to the origin.

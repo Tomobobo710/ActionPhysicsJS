@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-24T06:03:00.586Z
+// ActionPhysics 0.1.0 — built 2026-08-24T06:31:13.958Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine.
@@ -4126,6 +4126,8 @@ class GJK {
         this._scratchRef = new Vector3();
         this._initialProbeDir = new Vector3();
         this._newDir4 = new Vector3();
+        this._probeDir = new Vector3();  // scratch for the strict-interior penetration probe
+        this._probeW = new Vector3();
     }
 
     _clear() { this._count = 0; }
@@ -4190,11 +4192,15 @@ class GJK {
         this._closest.copy(seeded.closest);
 
         if (this._dir.lengthSquared() < 1e-20) {
-            // Every seed (and its own reduction) settled on the origin exactly - across several
-            // genuinely different probe direction sets, none of which share a plane by
-            // construction. That consistency is itself the practical signal for exact touching
-            // (see the class header) - report it directly.
-            return this._separatedResult(support);
+            // Every seed (and its own reduction) settled on the origin exactly: the origin lies ON
+            // the Minkowski difference boundary. That is EITHER an exact touch (depth 0, SEPARATED by
+            // the pipeline's convention) OR a shallow penetration the seed tetrahedra could not
+            // enclose for this shape-size ratio (a small sphere on a large box, OVERLAPPING). The
+            // simplex alone cannot tell them apart, so probe: the origin is STRICTLY interior (real
+            // penetration) iff every probe direction's support extends strictly past it. If so, it is
+            // overlapping and EPA measures the depth; otherwise it is an exact touch, reported
+            // separated at distance 0 (never NaN - the documented flush-contact discipline).
+            return this._originStrictlyInside(support) ? { overlapping: true, simplex: this } : this._separatedResult(support);
         }
 
         for (let iter = 0; iter < maxIterations; iter++) {
@@ -4210,6 +4216,24 @@ class GJK {
                 if (along > bestAlong) bestAlong = along;
             }
             if (newAlong <= bestAlong + 1e-10) {
+                // Stall: the support makes no further progress toward the origin. Normally this means
+                // separated - but it ALSO fires when the origin is already ON or just inside the
+                // Minkowski difference and the search direction has collapsed toward zero length
+                // (closest point ~= origin). Those are opposite conclusions. Disambiguate by the
+                // closest DISTANCE: a genuinely separated pair has a POSITIVE gap here, so a closest
+                // distance of ~0 means the origin is enclosed/touching = OVERLAPPING, and the current
+                // simplex is handed to EPA to extract depth. Without this, a small sphere shallowly
+                // penetrating a much larger box (whose seed tetrahedron does not enclose the origin
+                // for that size ratio, and whose incremental walk then stalls at the face) was
+                // reported SEPARATED with distance 0 - so EPA never ran, the penetration went
+                // uncorrected, and the one-shot fix a tick later launched the body. The threshold is
+                // a length, well below any contact depth the solver resolves but far above the
+                // ~1e-8 numerical floor of a true closest-point-at-origin.
+                const closestDistSq = this._closest.x * this._closest.x + this._closest.y * this._closest.y + this._closest.z * this._closest.z;
+                if (closestDistSq < GJK.OVERLAP_DISTANCE_EPSILON * GJK.OVERLAP_DISTANCE_EPSILON) {
+                    // Origin ~= on the boundary: real penetration (strictly inside) or exact touch.
+                    return this._originStrictlyInside(support) ? { overlapping: true, simplex: this } : this._separatedResult(support);
+                }
                 return this._separatedResult(support);
             }
 
@@ -4222,10 +4246,10 @@ class GJK {
             this._dir.copy(result.direction);
             this._closest.copy(result.closest);
 
-            // See the class header ("EXACT-TOUCHING IS UNDECIDABLE...") for why this is reported
-            // directly as a zero-distance separated result rather than trying to escalate further.
+            // Search direction collapsed to zero: origin on the current simplex - touch or
+            // penetration. Discriminate by strict interiority, same as the post-seed guard above.
             if (this._dir.lengthSquared() < 1e-20) {
-                return this._separatedResult(support);
+                return this._originStrictlyInside(support) ? { overlapping: true, simplex: this } : this._separatedResult(support);
             }
         }
         // Iteration cap reached without a clean termination. This mirrors EPA's own rule below
@@ -4250,6 +4274,19 @@ class GJK {
     // as the touching case - a real, deep overlap misreported as not-enclosing. Odd-looking
     // component ratios make an exact tie between two support vertices astronomically unlikely for
     // any shape that isn't specifically axis-aligned-symmetric along that exact ratio.
+    // Closest-distance below which a STALLED incremental walk is treated as overlapping rather than
+    // separated (see the stall branch in run()). A length: comfortably below any real contact depth
+    // the solver resolves, comfortably above the numerical noise of a true closest-point-at-origin.
+    static OVERLAP_DISTANCE_EPSILON = 1e-5;
+
+    // Fixed probe directions for the strict-interior penetration test (_originStrictlyInside). The 6
+    // signed axes span every face normal of an axis-aligned contact; the search direction is probed
+    // separately (both signs) for oblique contacts. Enough coverage that an exact touch always
+    // exposes its zero-margin separating direction, cheap enough to run only at the rare collapse.
+    static INTERIOR_PROBE_DIRS = [
+        [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]
+    ];
+
     static SEED_DIRECTION_SETS = [
         [[1, 1, 1], [1, -1, -1], [-1, 1, -1], [-1, -1, 1]],
         [[1, 1, -1], [1, -1, 1], [-1, 1, 1], [-1, -1, -1]],
@@ -4297,6 +4334,43 @@ class GJK {
         }
         const finalResult = this._simplexTetrahedron();
         return { overlapping: false, direction: finalResult.direction, closest: finalResult.closest };
+    }
+
+    // True iff the origin is STRICTLY inside the Minkowski difference (real penetration), false if it
+    // merely lies on the boundary (exact touch). The support function reaches farthest along any
+    // direction d to the point with the largest d.w; the origin is strictly interior iff that
+    // farthest extent is strictly positive along EVERY direction (support(d).d > margin for all d).
+    // At an exact touch there is a separating direction (the contact normal) where support(d).d is
+    // ~0 - the shapes meet exactly there with no overlap to spare. Probing a fixed spread of
+    // directions plus, crucially, both signs of the last search direction (which points along the
+    // near-degenerate contact normal) reliably catches that zero. The margin is a small absolute
+    // extent, well below any contact depth the solver cares about but above numerical touch noise.
+    _originStrictlyInside(support) {
+        const margin = GJK.OVERLAP_DISTANCE_EPSILON;
+        // The collapsed search direction is (numerically) along the contact normal - the most likely
+        // separating axis - so test it first, both signs.
+        if (this._closest.lengthSquared() > 1e-20) {
+            const l = Math.sqrt(this._closest.lengthSquared());
+            this._probeDir.set(this._closest.x / l, this._closest.y / l, this._closest.z / l);
+            if (!this._supportExceeds(support, this._probeDir, margin)) return false;
+            this._probeDir.set(-this._probeDir.x, -this._probeDir.y, -this._probeDir.z);
+            if (!this._supportExceeds(support, this._probeDir, margin)) return false;
+        }
+        for (let a = 0; a < GJK.INTERIOR_PROBE_DIRS.length; a++) {
+            const d = GJK.INTERIOR_PROBE_DIRS[a];
+            this._probeDir.set(d[0], d[1], d[2]);
+            if (!this._supportExceeds(support, this._probeDir, margin)) return false;
+        }
+        return true;
+    }
+
+    // support(dir).dir > margin ? (dir need not be unit; margin is scaled by |dir| so the comparison
+    // is a true distance along dir.)
+    _supportExceeds(support, dir, margin) {
+        support.supportInto(this._probeW, dir);
+        const along = this._probeW.x * dir.x + this._probeW.y * dir.y + this._probeW.z * dir.z;
+        const len = Math.sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+        return along > margin * len;
     }
 
     // Builds the SEPARATED return value from the current simplex's closest point to the origin.
@@ -4735,20 +4809,125 @@ class EPA {
      * hitting the cap returns the best (closest-to-origin) face tracked across the WHOLE run, not
      * whatever face is live when the loop happens to stop.
      */
+    // Completes a full, non-degenerate tetrahedron (4 points, real volume) in this._wx.. from the
+    // GJK simplex's `_count` points (1..4), adding Minkowski support points as needed. Returns true
+    // on success (4 vertices are in place, indices 0..3), false if the contact is genuinely flat
+    // (no volume obtainable - an exact touch). Standard EPA preamble (van den Bergen).
+    _buildInitialTetrahedron(support, simplex) {
+        this._vertexCount = 0;
+        const n = simplex._count !== undefined ? simplex._count : 4;
+        for (let i = 0; i < n; i++) {
+            this._pushVertex(
+                { x: simplex._wx[i], y: simplex._wy[i], z: simplex._wz[i] },
+                { x: simplex._ax[i], y: simplex._ay[i], z: simplex._az[i] },
+                { x: simplex._bx[i], y: simplex._by[i], z: simplex._bz[i] }
+            );
+        }
+        // A small set of probe directions to grow dimensionality with; each is tried in +/- form.
+        const AXES = [[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [0, 1, 1], [1, 0, 1]];
+
+        // 1 point -> 2: add a support along any axis that gives a distinct point.
+        if (this._vertexCount === 1) {
+            for (let a = 0; a < AXES.length && this._vertexCount < 2; a++) {
+                for (let s = -1; s <= 1 && this._vertexCount < 2; s += 2) {
+                    this._dirScratch.set(AXES[a][0] * s, AXES[a][1] * s, AXES[a][2] * s);
+                    support.supportInto(this._newW, this._dirScratch, this._newA, this._newB);
+                    if (this._distinctFrom(0)) this._pushVertex(this._newW, this._newA, this._newB);
+                }
+            }
+            if (this._vertexCount < 2) return false;
+        }
+        // 2 points -> 3: add a support perpendicular to the segment, giving a non-collinear point.
+        if (this._vertexCount === 2) {
+            const ex = this._wx[1] - this._wx[0], ey = this._wy[1] - this._wy[0], ez = this._wz[1] - this._wz[0];
+            for (let a = 0; a < AXES.length && this._vertexCount < 3; a++) {
+                // direction = axis component perpendicular to the edge
+                let dx = AXES[a][0], dy = AXES[a][1], dz = AXES[a][2];
+                const dot = (dx * ex + dy * ey + dz * ez) / (ex * ex + ey * ey + ez * ez + 1e-30);
+                dx -= dot * ex; dy -= dot * ey; dz -= dot * ez;
+                if (dx * dx + dy * dy + dz * dz < 1e-12) continue;
+                for (let s = -1; s <= 1 && this._vertexCount < 3; s += 2) {
+                    this._dirScratch.set(dx * s, dy * s, dz * s);
+                    support.supportInto(this._newW, this._dirScratch, this._newA, this._newB);
+                    if (this._notCollinear(0, 1)) this._pushVertex(this._newW, this._newA, this._newB);
+                }
+            }
+            if (this._vertexCount < 3) return false;
+        }
+        // 3 points -> 4: add support along the triangle normal (both sides) for a point off-plane.
+        if (this._vertexCount === 3) {
+            const ax = this._wx[0], ay = this._wy[0], az = this._wz[0];
+            const abx = this._wx[1] - ax, aby = this._wy[1] - ay, abz = this._wz[1] - az;
+            const acx = this._wx[2] - ax, acy = this._wy[2] - ay, acz = this._wz[2] - az;
+            let nx = aby * acz - abz * acy, ny = abz * acx - abx * acz, nz = abx * acy - aby * acx;
+            const nl = Math.sqrt(nx * nx + ny * ny + nz * nz);
+            if (nl < 1e-12) return false; // triangle itself degenerate
+            nx /= nl; ny /= nl; nz /= nl;
+            for (let s = -1; s <= 1 && this._vertexCount < 4; s += 2) {
+                this._dirScratch.set(nx * s, ny * s, nz * s);
+                support.supportInto(this._newW, this._dirScratch, this._newA, this._newB);
+                if (this._offPlane(0, 1, 2)) this._pushVertex(this._newW, this._newA, this._newB);
+            }
+            if (this._vertexCount < 4) return false;
+        }
+        return this._vertexCount >= 4;
+    }
+
+    // Is this._newW distinct (beyond epsilon) from stored vertex i?
+    _distinctFrom(i) {
+        const dx = this._newW.x - this._wx[i], dy = this._newW.y - this._wy[i], dz = this._newW.z - this._wz[i];
+        return dx * dx + dy * dy + dz * dz > 1e-10;
+    }
+    // Is this._newW non-collinear with stored vertices i, j?
+    _notCollinear(i, j) {
+        const ex = this._wx[j] - this._wx[i], ey = this._wy[j] - this._wy[i], ez = this._wz[j] - this._wz[i];
+        const fx = this._newW.x - this._wx[i], fy = this._newW.y - this._wy[i], fz = this._newW.z - this._wz[i];
+        const cx = ey * fz - ez * fy, cy = ez * fx - ex * fz, cz = ex * fy - ey * fx;
+        return cx * cx + cy * cy + cz * cz > 1e-12;
+    }
+    // Is this._newW off the plane through stored vertices i, j, k (real tetra volume)?
+    _offPlane(i, j, k) {
+        const ax = this._wx[i], ay = this._wy[i], az = this._wz[i];
+        const abx = this._wx[j] - ax, aby = this._wy[j] - ay, abz = this._wz[j] - az;
+        const acx = this._wx[k] - ax, acy = this._wy[k] - ay, acz = this._wz[k] - az;
+        const nx = aby * acz - abz * acy, ny = abz * acx - abx * acz, nz = abx * acy - aby * acx;
+        const dx = this._newW.x - ax, dy = this._newW.y - ay, dz = this._newW.z - az;
+        const vol = dx * nx + dy * ny + dz * nz;
+        return vol * vol > 1e-14;
+    }
+
+    // Fallback for a genuinely flat (zero-volume) contact: report zero depth, using the simplex's
+    // first witness points and its search normal. The solver treats zero depth as non-penetrating.
+    _zeroDepthResult(simplex) {
+        const pointA = new Vector3(simplex._ax[0], simplex._ay[0], simplex._az[0]);
+        const pointB = new Vector3(simplex._bx[0], simplex._by[0], simplex._bz[0]);
+        let nx = 0, ny = 1, nz = 0;
+        if (simplex._closest && simplex._closest.lengthSquared && simplex._closest.lengthSquared() > 1e-20) {
+            const l = Math.sqrt(simplex._closest.lengthSquared());
+            nx = simplex._closest.x / l; ny = simplex._closest.y / l; nz = simplex._closest.z / l;
+        }
+        return { distance: 0, normal: new Vector3(nx, ny, nz), pointA: pointA, pointB: pointB };
+    }
+
     run(support, simplex, maxIterations) {
         maxIterations = maxIterations || 64;
         this._vertexCount = 0;
         this._faceCount = 0;
 
-        // Seed the polytope from the GJK tetrahedron's 4 points.
-        const idx = [];
-        for (let i = 0; i < 4; i++) {
-            idx.push(this._pushVertex(
-                { x: simplex._wx[i], y: simplex._wy[i], z: simplex._wz[i] },
-                { x: simplex._ax[i], y: simplex._ay[i], z: simplex._az[i] },
-                { x: simplex._bx[i], y: simplex._by[i], z: simplex._bz[i] }
-            ));
+        // GJK may hand over fewer than 4 points: its enclosure/stall paths can confirm overlap from
+        // a 1-, 2-, or 3-point simplex (a small shape shallowly inside a much larger one, where the
+        // seed tetrahedra never enclosed the origin). EPA needs a full, origin-enclosing tetrahedron
+        // to start, so complete one first from whatever GJK provided. Reading _wx[3] unconditionally
+        // when only 3 points exist read stale array slots and crashed (undefined support point) -
+        // this preamble is the fix.
+        if (!this._buildInitialTetrahedron(support, simplex)) {
+            // Could not form a non-degenerate enclosing tetrahedron (true exact touch, or numerically
+            // flat contact): depth is zero along the best direction available. Report a zero-depth
+            // contact using the simplex's first witness points and the search normal - the solver's
+            // C<=0 guard treats a zero-depth contact as non-penetrating, which is correct here.
+            return this._zeroDepthResult(simplex);
         }
+        const idx = [0, 1, 2, 3];
         // Centroid of the 4 seed points, used to orient each face's normal outward.
         const cx = (this._wx[idx[0]] + this._wx[idx[1]] + this._wx[idx[2]] + this._wx[idx[3]]) / 4;
         const cy = (this._wy[idx[0]] + this._wy[idx[1]] + this._wy[idx[2]] + this._wy[idx[3]]) / 4;
@@ -4957,6 +5136,12 @@ class ContactDetails {
         // the solver actually corrects against.
         this.localAnchorA = new Vector3();
         this.localAnchorB = new Vector3();
+
+        // Contact-relative normal velocity captured just before this substep's position solve (which
+        // is about to zero it), so the velocity pass can apply restitution: bounce restores a
+        // fraction of the speed the body was APPROACHING at, which is gone by the time the solve
+        // finishes. Written each substep by the solver; not warm-start state.
+        this._preSolveNormalVel = 0;
     }
 
     // Derives localAnchorA/localAnchorB from the CURRENT pointOnA/pointOnB and the given bodies'
@@ -5485,8 +5670,14 @@ class NarrowPhase {
             best.point.copy(fresh.point);
             best.pointOnA.copy(fresh.pointOnA);
             best.pointOnB.copy(fresh.pointOnB);
-            best.normal.copy(fresh.normal);
             best.signedDistance = fresh.signedDistance;
+            // Keep the ESTABLISHED normal through the exact-touch band, exactly as the manifold's
+            // once-per-tick update() does (ContactManifold.EXACT_TOUCH_BAND) - the per-substep
+            // refresh MUST honour the same rule, or it silently clobbers a good resting normal with
+            // the ambiguous diagonal GJK/EPA returns at signed-distance ~0 every substep, which is
+            // the penetrate-then-launch bug the once-per-tick guard was added to prevent (it bit
+            // spheres hard: a flush sphere kept getting a (-0.71,0,0.71) normal and launched to y=200+).
+            if (Math.abs(fresh.signedDistance) >= ContactManifold.EXACT_TOUCH_BAND) best.normal.copy(fresh.normal);
             // Re-anchor to the CURRENT geometry so C is measured from where the feature is NOW - the
             // whole point of refreshing. Persisting stale anchors would defeat it. Lambda is left
             // untouched (warm start survives).
@@ -5623,6 +5814,18 @@ class Solver {
         // step()'s doc and World.step.
         if (refresh) refresh(manifolds);
 
+        // 1c. Capture the pre-solve contact-relative NORMAL velocity, for restitution. It has to be
+        // read here - after gravity integration and geometry refresh, but BEFORE the normal position
+        // solve removes it - because restitution restores a fraction of the velocity the body was
+        // approaching at, which the solve is about to zero.
+        for (const manifold of manifolds.values()) {
+            const bodyA = manifold.bodyA, bodyB = manifold.bodyB;
+            for (let i = 0; i < manifold.points.length; i++) {
+                const p = manifold.points[i];
+                p._preSolveNormalVel = this._contactRelativeNormalVelocity(p, bodyA, bodyB);
+            }
+        }
+
         // 2. Reset this substep's accumulated lambda to zero (XPBD's lambda is PER-SUBSTEP, reset
         // every substep, not carried across substeps within a tick - only carried across TICKS via
         // the manifold's warm start, which primes the solver's FIRST guess but each substep's own
@@ -5636,14 +5839,15 @@ class Solver {
             }
         }
 
-        // 3. Position-level constraint solve: contacts.
+        // 3. Position-level constraint solve: contacts (normal / non-penetration only).
         for (let iter = 0; iter < this.iterations; iter++) {
             for (const manifold of manifolds.values()) {
                 this._solveManifold(manifold, h);
             }
         }
 
-        // 4. Derive velocity from the position change - RAW, no clamp (see class header).
+        // 4. Derive velocity from the position change - RAW, no clamp (see class header). This
+        // captures the normal solve's effect (a stopped body has ~zero normal velocity here).
         for (let i = 0; i < bodies.length; i++) {
             const b = bodies[i];
             if (b.bodyType !== RigidBody.DYNAMIC) continue;
@@ -5653,6 +5857,19 @@ class Solver {
             b.linear_velocity.y = (b.position.y - prevPos.y) / h;
             b.linear_velocity.z = (b.position.z - prevPos.z) / h;
             Solver._deriveAngularVelocity(b.angular_velocity, prevRot, b.rotation, h);
+        }
+
+        // 5. Friction + restitution, applied in the VELOCITY pass (Muller et al. 2020 sec 3.6). This
+        // is NOT the forbidden derived-velocity clamp (that hid a detection bug by governing the
+        // whole body's velocity); it is the physical contact velocity constraint - friction removes
+        // tangential relative velocity up to the Coulomb limit, restitution restores a fraction of
+        // the pre-solve approach velocity. Both act only at contacts and only on the contact-relative
+        // velocity, which is exactly where they belong.
+        for (const manifold of manifolds.values()) {
+            const bodyA = manifold.bodyA, bodyB = manifold.bodyB;
+            for (let i = 0; i < manifold.points.length; i++) {
+                this._solveContactVelocity(manifold.points[i], bodyA, bodyB, h);
+            }
         }
     }
 
@@ -5761,11 +5978,6 @@ class Solver {
         point.normalLambda = newLambda;
 
         this._applyPositionalCorrection(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, deltaLambda);
-
-        // Friction: tangential position correction, capped by Coulomb's law using the JUST-UPDATED
-        // normalLambda (matches Muller et al.'s ordering: friction uses this iteration's normal
-        // impulse, not last iteration's). Two tangent directions spanning the contact plane.
-        this._solveFriction(point, bodyA, bodyB, h);
     }
 
     // Generalized inverse mass along direction (dx,dy,dz) for the pair, combining linear and
@@ -5843,85 +6055,131 @@ class Solver {
         Solver._integrateRotation(body.rotation, this._angularCorrA, 1); // h=1: this IS the delta, not a rate
     }
 
-    // Friction via a persistent anchor, scaled to match the normal constraint's per-substep units.
-    //
-    // The friction anchor is a material point coincident on both bodies when the contact last stuck.
-    // Its tangential separation NOW is the total slip to resist, but that raw separation grows every
-    // substep while the normal constraint's error C is a small per-substep penetration - solving the
-    // raw separation directly produces a lambda in different units from |normalLambda|, so the
-    // Coulomb cap (mu*|normalLambda|) is meaningless against it and friction either never bites or
-    // always saturates (the bug that made a box slide down a 15-degree slope it should stick on).
-    //
-    // The fix: this XPBD contact lambda scales with h^2 (deltaLambda = -C/wSum where the normal C is
-    // itself the h^2-order overlap). To keep friction commensurate, the tangential error is likewise
-    // taken as a per-substep quantity: the slip that occurred THIS substep (anchor separation minus
-    // what it was at substep start), not the accumulated total. That per-substep slip is the same
-    // order as the normal penetration, so mu*|normalLambda| caps it correctly - static stick when the
-    // slip stays within the cone, dynamic slide (anchor dragged) when it exceeds it.
-    _solveFriction(point, bodyA, bodyB, h) {
-        const friction = Math.sqrt(bodyA.friction * bodyB.friction); // combined friction, geometric mean (standard convention)
-        if (friction <= 0) return;
-        const maxFriction = friction * Math.abs(point.normalLambda); // Coulomb cap magnitude (normalLambda <= 0 here)
-        if (maxFriction <= 0) return;
+    // Velocity-pass contact solve: friction and restitution, applied to the contact-relative
+    // velocity AFTER the position solve has set velocities (Muller et al. 2020 sec 3.6). Working in
+    // velocity space here (not position) is what makes friction stable and gives true static stick:
+    // a resting body's tangential contact velocity is driven to exactly zero, capped by the Coulomb
+    // limit, so it does not creep - the position-anchor approach kept saturating its cap and letting
+    // the body slide down a shallow slope. This is a physical contact constraint on the relative
+    // velocity, NOT the derived-velocity clamp plan.md forbids (that governed a whole body's velocity
+    // to hide a detection bug; this only removes the tangential rub and restores a chosen restitution
+    // at the contact, which is exactly what friction and bounce ARE).
+    _solveContactVelocity(point, bodyA, bodyB, h) {
+        // Only act on a contact that is actually touching/overlapping right now (normalLambda < 0
+        // means the normal solve pushed this substep). A purely speculative point that never engaged
+        // has normalLambda == 0 and no contact velocity to correct.
+        if (point.normalLambda >= 0) return;
 
-        Solver._tangentBasis(point.normal, this._tangent1, this._tangent2);
-        this._currentMaxFriction = maxFriction;
-        this._solveFrictionAxis(point, bodyA, bodyB, this._tangent1, true);
-        this._solveFrictionAxis(point, bodyA, bodyB, this._tangent2, false);
-    }
-
-    // One tangent axis: resist THIS substep's tangential slip of the contact anchors, Coulomb-capped
-    // as a disc against the other axis (isotropic, so diagonal friction cannot exceed mu*N by
-    // sqrt(2)). The slip is measured from prevPos/prevRot (substep start) to now, so it is a
-    // per-substep quantity commensurate with the normal constraint - see _solveFriction's header.
-    _solveFrictionAxis(point, bodyA, bodyB, tangent, isFirstAxis) {
-        const slip = this._contactSlipAlong(point, bodyA, bodyB, tangent);
         point.currentAnchorAInto(this._rA, bodyA);
         point.currentAnchorBInto(this._rB, bodyB);
         Vector3.subInto(this._rA, this._rA, bodyA.position);
         Vector3.subInto(this._rB, this._rB, bodyB.position);
-        const tx = tangent.x, ty = tangent.y, tz = tangent.z;
-        const wSum = this._effectiveMass(bodyA, bodyB, this._rA, this._rB, tx, ty, tz);
-        if (wSum < 1e-12) return;
+        const nx = point.normal.x, ny = point.normal.y, nz = point.normal.z;
 
-        const lambdaBefore = isFirstAxis ? point.tangentLambda1 : point.tangentLambda2;
-        let newLambda = lambdaBefore - slip / wSum;
-        // Coulomb disc cap on the COMBINED two-axis magnitude.
-        const other = isFirstAxis ? point.tangentLambda2 : point.tangentLambda1;
-        const maxFriction = this._currentMaxFriction;
-        const mag = Math.sqrt(newLambda * newLambda + other * other);
-        if (mag > maxFriction && mag > 0) newLambda *= maxFriction / mag;
-        const deltaLambda = newLambda - lambdaBefore;
-        if (isFirstAxis) point.tangentLambda1 = newLambda; else point.tangentLambda2 = newLambda;
+        // --- Restitution (normal) ---
+        // Sign convention (normal points B->A): a body APPROACHING the contact has POSITIVE normal
+        // relative velocity (relVel . normal > 0 = closing), and after a bounce it should SEPARATE at
+        // -e * the approach speed (negative relN). Skip slow approaches (a resting body's one-substep
+        // gravity nudge) via a threshold, so restitution does not turn rest into perpetual jitter.
+        const restitution = Math.max(bodyA.restitution, bodyB.restitution); // combined: max, standard convention
+        const relN = this._contactRelativeNormalVelocity(point, bodyA, bodyB);
+        if (restitution > 0 && point._preSolveNormalVel > Solver.RESTITUTION_THRESHOLD) {
+            const targetN = -restitution * point._preSolveNormalVel; // desired separating velocity (< 0)
+            // Only ADD separation (make relN more negative); never damp an already-separating contact.
+            if (targetN < relN) {
+                const wN = this._effectiveMass(bodyA, bodyB, this._rA, this._rB, nx, ny, nz);
+                if (wN >= 1e-12) this._applyVelocityImpulse(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, (targetN - relN) / wN);
+            }
+        }
 
-        this._applyPositionalCorrection(bodyA, bodyB, this._rA, this._rB, tx, ty, tz, deltaLambda);
+        // --- Friction (tangent) ---
+        const friction = Math.sqrt(bodyA.friction * bodyB.friction);
+        if (friction <= 0) return;
+        // Coulomb cap on the friction impulse magnitude: mu times the normal impulse the position
+        // solve actually applied this substep. normalLambda is a position Lagrange multiplier;
+        // dividing by h converts it to a velocity-space impulse commensurate with the tangential
+        // impulses computed below. This is the correct, unit-consistent cap that the position-space
+        // attempt never got right.
+        const maxImpulse = friction * Math.abs(point.normalLambda) / h;
+        if (maxImpulse <= 0) return;
+
+        // Current tangential relative velocity, and the impulse that would zero it.
+        this._contactRelativeVelocity(point, bodyA, bodyB, this._tmpDispA); // full relative velocity -> _tmpDispA
+        const vn = this._tmpDispA.x * nx + this._tmpDispA.y * ny + this._tmpDispA.z * nz;
+        let vtx = this._tmpDispA.x - vn * nx, vty = this._tmpDispA.y - vn * ny, vtz = this._tmpDispA.z - vn * nz;
+        const vtMag = Math.sqrt(vtx * vtx + vty * vty + vtz * vtz);
+        if (vtMag < 1e-12) return; // no tangential motion to resist
+
+        const tx = vtx / vtMag, ty = vty / vtMag, tz = vtz / vtMag; // tangent = slip direction
+        const wT = this._effectiveMass(bodyA, bodyB, this._rA, this._rB, tx, ty, tz);
+        if (wT < 1e-12) return;
+        // Impulse to fully stop the tangential velocity, clamped to the Coulomb cap (static stick
+        // when the full stop is within budget, dynamic slide when clamped).
+        let jt = vtMag / wT;
+        if (jt > maxImpulse) jt = maxImpulse;
+        // Apply along -tangent (oppose the slip).
+        this._applyVelocityImpulse(bodyA, bodyB, this._rA, this._rB, -tx, -ty, -tz, jt);
     }
 
-    // Tangential slip along `tangent` this substep: (dispB - dispA).tangent, where dispX is how far
-    // body X's contact anchor moved from substep start (prevPos/prevRot) to now. (B - A) ordering
-    // matches the normal constraint so the shared correction OPPOSES slip rather than reinforcing it
-    // (the opposite ordering turns friction into an accelerator). A static body has no prev entry and
-    // contributes zero displacement - correct, it did not move.
-    _contactSlipAlong(point, bodyA, bodyB, tangent) {
-        const dispA = this._anchorDisplacement(point.localAnchorA, bodyA, this._tmpDispA);
-        const dispB = this._anchorDisplacement(point.localAnchorB, bodyB, this._tmpDispB);
-        const dx = dispB.x - dispA.x, dy = dispB.y - dispA.y, dz = dispB.z - dispA.z;
-        return dx * tangent.x + dy * tangent.y + dz * tangent.z;
-    }
-
-    // World displacement of the point at `localAnchor` on `body` from substep start to now.
-    _anchorDisplacement(localAnchor, body, out) {
-        const prevPos = this._prevPos.get(body.id);
-        if (!prevPos) { out.set(0, 0, 0); return out; } // static/kinematic: did not move this substep
-        const prevRot = this._prevRot.get(body.id);
-        out.copy(localAnchor);
-        body.rotation.transformVectorInPlace(out);
-        out.addInPlace(body.position);
-        this._tmpPrev.copy(localAnchor);
-        prevRot.transformVectorInPlace(this._tmpPrev);
-        this._tmpPrev.addInPlace(prevPos);
-        out.subInPlace(this._tmpPrev);
+    // Contact-relative velocity (velocity of B's contact point minus A's), into `out`. rA/rB are the
+    // center-relative contact offsets (already in this._rA/_rB when called from the velocity pass,
+    // but recomputed here from the anchors so this is usable standalone).
+    _contactRelativeVelocity(point, bodyA, bodyB, out) {
+        point.currentAnchorAInto(this._tmpPrev, bodyA);
+        this._tmpPrev.subInPlace(bodyA.position); // rA (center-relative)
+        const va = this._pointVelocity(bodyA, this._tmpPrev, this._tmpDispB);
+        const vax = va.x, vay = va.y, vaz = va.z;
+        point.currentAnchorBInto(this._tmpPrev, bodyB);
+        this._tmpPrev.subInPlace(bodyB.position); // rB
+        const vb = this._pointVelocity(bodyB, this._tmpPrev, this._tmpDispB);
+        out.set(vb.x - vax, vb.y - vay, vb.z - vaz);
         return out;
+    }
+
+    // Velocity of the material point at center-relative offset r on `body`: v + omega x r.
+    _pointVelocity(body, r, out) {
+        const w = body.angular_velocity, v = body.linear_velocity;
+        out.set(
+            v.x + (w.y * r.z - w.z * r.y),
+            v.y + (w.z * r.x - w.x * r.z),
+            v.z + (w.x * r.y - w.y * r.x)
+        );
+        return out;
+    }
+
+    // Contact-relative velocity along the normal (B->A). Scalar.
+    _contactRelativeNormalVelocity(point, bodyA, bodyB) {
+        this._contactRelativeVelocity(point, bodyA, bodyB, this._tmpDispA);
+        return this._tmpDispA.x * point.normal.x + this._tmpDispA.y * point.normal.y + this._tmpDispA.z * point.normal.z;
+    }
+
+    // Apply a velocity-space impulse j*(dir) at contact offsets rA/rB: A gets -j (B->A convention,
+    // matching the position correction's own pairing), B gets +j, each scaled by inverse mass, with
+    // the matching angular velocity change. rA/rB are center-relative offsets.
+    _applyVelocityImpulse(bodyA, bodyB, rA, rB, dx, dy, dz, j) {
+        const px = dx * j, py = dy * j, pz = dz * j;
+        if (bodyA._massInverted > 0) {
+            bodyA.linear_velocity.x -= px * bodyA._massInverted * bodyA.linear_factor.x;
+            bodyA.linear_velocity.y -= py * bodyA._massInverted * bodyA.linear_factor.y;
+            bodyA.linear_velocity.z -= pz * bodyA._massInverted * bodyA.linear_factor.z;
+            this._applyAngularVelocityImpulse(bodyA, rA, -px, -py, -pz);
+        }
+        if (bodyB._massInverted > 0) {
+            bodyB.linear_velocity.x += px * bodyB._massInverted * bodyB.linear_factor.x;
+            bodyB.linear_velocity.y += py * bodyB._massInverted * bodyB.linear_factor.y;
+            bodyB.linear_velocity.z += pz * bodyB._massInverted * bodyB.linear_factor.z;
+            this._applyAngularVelocityImpulse(bodyB, rB, px, py, pz);
+        }
+    }
+
+    // Angular velocity change from a linear impulse p applied at center-relative offset r:
+    // dOmega = I^-1 (r x p). (Velocity-space analog of _applyAngularCorrection.)
+    _applyAngularVelocityImpulse(body, r, px, py, pz) {
+        const tqx = r.y * pz - r.z * py, tqy = r.z * px - r.x * pz, tqz = r.x * py - r.y * px;
+        const I = body._worldInverseInertiaTensor;
+        body.angular_velocity.x += (I.e00 * tqx + I.e01 * tqy + I.e02 * tqz) * body.angular_factor.x;
+        body.angular_velocity.y += (I.e10 * tqx + I.e11 * tqy + I.e12 * tqz) * body.angular_factor.y;
+        body.angular_velocity.z += (I.e20 * tqx + I.e21 * tqy + I.e22 * tqz) * body.angular_factor.z;
     }
 
     // Two unit vectors spanning the plane perpendicular to `normal` - the friction directions.
@@ -5930,6 +6188,10 @@ class Solver {
         Vector3.crossInto(outT2, normal, outT1);
     }
 }
+
+// Approach speeds slower than this (m/s) do not bounce - below it, restitution would turn a resting
+// body's one-substep gravity nudge into perpetual micro-jitter. Standard restitution slop.
+Solver.RESTITUTION_THRESHOLD = 0.5;
 
 ActionPhysics.Solver = Solver;
 

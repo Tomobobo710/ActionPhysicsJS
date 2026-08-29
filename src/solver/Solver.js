@@ -99,6 +99,18 @@ class Solver {
         // step()'s doc and World.step.
         if (refresh) refresh(manifolds);
 
+        // 1c. Capture the pre-solve contact-relative NORMAL velocity, for restitution. It has to be
+        // read here - after gravity integration and geometry refresh, but BEFORE the normal position
+        // solve removes it - because restitution restores a fraction of the velocity the body was
+        // approaching at, which the solve is about to zero.
+        for (const manifold of manifolds.values()) {
+            const bodyA = manifold.bodyA, bodyB = manifold.bodyB;
+            for (let i = 0; i < manifold.points.length; i++) {
+                const p = manifold.points[i];
+                p._preSolveNormalVel = this._contactRelativeNormalVelocity(p, bodyA, bodyB);
+            }
+        }
+
         // 2. Reset this substep's accumulated lambda to zero (XPBD's lambda is PER-SUBSTEP, reset
         // every substep, not carried across substeps within a tick - only carried across TICKS via
         // the manifold's warm start, which primes the solver's FIRST guess but each substep's own
@@ -112,14 +124,15 @@ class Solver {
             }
         }
 
-        // 3. Position-level constraint solve: contacts.
+        // 3. Position-level constraint solve: contacts (normal / non-penetration only).
         for (let iter = 0; iter < this.iterations; iter++) {
             for (const manifold of manifolds.values()) {
                 this._solveManifold(manifold, h);
             }
         }
 
-        // 4. Derive velocity from the position change - RAW, no clamp (see class header).
+        // 4. Derive velocity from the position change - RAW, no clamp (see class header). This
+        // captures the normal solve's effect (a stopped body has ~zero normal velocity here).
         for (let i = 0; i < bodies.length; i++) {
             const b = bodies[i];
             if (b.bodyType !== RigidBody.DYNAMIC) continue;
@@ -129,6 +142,19 @@ class Solver {
             b.linear_velocity.y = (b.position.y - prevPos.y) / h;
             b.linear_velocity.z = (b.position.z - prevPos.z) / h;
             Solver._deriveAngularVelocity(b.angular_velocity, prevRot, b.rotation, h);
+        }
+
+        // 5. Friction + restitution, applied in the VELOCITY pass (Muller et al. 2020 sec 3.6). This
+        // is NOT the forbidden derived-velocity clamp (that hid a detection bug by governing the
+        // whole body's velocity); it is the physical contact velocity constraint - friction removes
+        // tangential relative velocity up to the Coulomb limit, restitution restores a fraction of
+        // the pre-solve approach velocity. Both act only at contacts and only on the contact-relative
+        // velocity, which is exactly where they belong.
+        for (const manifold of manifolds.values()) {
+            const bodyA = manifold.bodyA, bodyB = manifold.bodyB;
+            for (let i = 0; i < manifold.points.length; i++) {
+                this._solveContactVelocity(manifold.points[i], bodyA, bodyB, h);
+            }
         }
     }
 
@@ -237,11 +263,6 @@ class Solver {
         point.normalLambda = newLambda;
 
         this._applyPositionalCorrection(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, deltaLambda);
-
-        // Friction: tangential position correction, capped by Coulomb's law using the JUST-UPDATED
-        // normalLambda (matches Muller et al.'s ordering: friction uses this iteration's normal
-        // impulse, not last iteration's). Two tangent directions spanning the contact plane.
-        this._solveFriction(point, bodyA, bodyB, h);
     }
 
     // Generalized inverse mass along direction (dx,dy,dz) for the pair, combining linear and
@@ -319,85 +340,131 @@ class Solver {
         Solver._integrateRotation(body.rotation, this._angularCorrA, 1); // h=1: this IS the delta, not a rate
     }
 
-    // Friction via a persistent anchor, scaled to match the normal constraint's per-substep units.
-    //
-    // The friction anchor is a material point coincident on both bodies when the contact last stuck.
-    // Its tangential separation NOW is the total slip to resist, but that raw separation grows every
-    // substep while the normal constraint's error C is a small per-substep penetration - solving the
-    // raw separation directly produces a lambda in different units from |normalLambda|, so the
-    // Coulomb cap (mu*|normalLambda|) is meaningless against it and friction either never bites or
-    // always saturates (the bug that made a box slide down a 15-degree slope it should stick on).
-    //
-    // The fix: this XPBD contact lambda scales with h^2 (deltaLambda = -C/wSum where the normal C is
-    // itself the h^2-order overlap). To keep friction commensurate, the tangential error is likewise
-    // taken as a per-substep quantity: the slip that occurred THIS substep (anchor separation minus
-    // what it was at substep start), not the accumulated total. That per-substep slip is the same
-    // order as the normal penetration, so mu*|normalLambda| caps it correctly - static stick when the
-    // slip stays within the cone, dynamic slide (anchor dragged) when it exceeds it.
-    _solveFriction(point, bodyA, bodyB, h) {
-        const friction = Math.sqrt(bodyA.friction * bodyB.friction); // combined friction, geometric mean (standard convention)
-        if (friction <= 0) return;
-        const maxFriction = friction * Math.abs(point.normalLambda); // Coulomb cap magnitude (normalLambda <= 0 here)
-        if (maxFriction <= 0) return;
+    // Velocity-pass contact solve: friction and restitution, applied to the contact-relative
+    // velocity AFTER the position solve has set velocities (Muller et al. 2020 sec 3.6). Working in
+    // velocity space here (not position) is what makes friction stable and gives true static stick:
+    // a resting body's tangential contact velocity is driven to exactly zero, capped by the Coulomb
+    // limit, so it does not creep - the position-anchor approach kept saturating its cap and letting
+    // the body slide down a shallow slope. This is a physical contact constraint on the relative
+    // velocity, NOT the derived-velocity clamp plan.md forbids (that governed a whole body's velocity
+    // to hide a detection bug; this only removes the tangential rub and restores a chosen restitution
+    // at the contact, which is exactly what friction and bounce ARE).
+    _solveContactVelocity(point, bodyA, bodyB, h) {
+        // Only act on a contact that is actually touching/overlapping right now (normalLambda < 0
+        // means the normal solve pushed this substep). A purely speculative point that never engaged
+        // has normalLambda == 0 and no contact velocity to correct.
+        if (point.normalLambda >= 0) return;
 
-        Solver._tangentBasis(point.normal, this._tangent1, this._tangent2);
-        this._currentMaxFriction = maxFriction;
-        this._solveFrictionAxis(point, bodyA, bodyB, this._tangent1, true);
-        this._solveFrictionAxis(point, bodyA, bodyB, this._tangent2, false);
-    }
-
-    // One tangent axis: resist THIS substep's tangential slip of the contact anchors, Coulomb-capped
-    // as a disc against the other axis (isotropic, so diagonal friction cannot exceed mu*N by
-    // sqrt(2)). The slip is measured from prevPos/prevRot (substep start) to now, so it is a
-    // per-substep quantity commensurate with the normal constraint - see _solveFriction's header.
-    _solveFrictionAxis(point, bodyA, bodyB, tangent, isFirstAxis) {
-        const slip = this._contactSlipAlong(point, bodyA, bodyB, tangent);
         point.currentAnchorAInto(this._rA, bodyA);
         point.currentAnchorBInto(this._rB, bodyB);
         Vector3.subInto(this._rA, this._rA, bodyA.position);
         Vector3.subInto(this._rB, this._rB, bodyB.position);
-        const tx = tangent.x, ty = tangent.y, tz = tangent.z;
-        const wSum = this._effectiveMass(bodyA, bodyB, this._rA, this._rB, tx, ty, tz);
-        if (wSum < 1e-12) return;
+        const nx = point.normal.x, ny = point.normal.y, nz = point.normal.z;
 
-        const lambdaBefore = isFirstAxis ? point.tangentLambda1 : point.tangentLambda2;
-        let newLambda = lambdaBefore - slip / wSum;
-        // Coulomb disc cap on the COMBINED two-axis magnitude.
-        const other = isFirstAxis ? point.tangentLambda2 : point.tangentLambda1;
-        const maxFriction = this._currentMaxFriction;
-        const mag = Math.sqrt(newLambda * newLambda + other * other);
-        if (mag > maxFriction && mag > 0) newLambda *= maxFriction / mag;
-        const deltaLambda = newLambda - lambdaBefore;
-        if (isFirstAxis) point.tangentLambda1 = newLambda; else point.tangentLambda2 = newLambda;
+        // --- Restitution (normal) ---
+        // Sign convention (normal points B->A): a body APPROACHING the contact has POSITIVE normal
+        // relative velocity (relVel . normal > 0 = closing), and after a bounce it should SEPARATE at
+        // -e * the approach speed (negative relN). Skip slow approaches (a resting body's one-substep
+        // gravity nudge) via a threshold, so restitution does not turn rest into perpetual jitter.
+        const restitution = Math.max(bodyA.restitution, bodyB.restitution); // combined: max, standard convention
+        const relN = this._contactRelativeNormalVelocity(point, bodyA, bodyB);
+        if (restitution > 0 && point._preSolveNormalVel > Solver.RESTITUTION_THRESHOLD) {
+            const targetN = -restitution * point._preSolveNormalVel; // desired separating velocity (< 0)
+            // Only ADD separation (make relN more negative); never damp an already-separating contact.
+            if (targetN < relN) {
+                const wN = this._effectiveMass(bodyA, bodyB, this._rA, this._rB, nx, ny, nz);
+                if (wN >= 1e-12) this._applyVelocityImpulse(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, (targetN - relN) / wN);
+            }
+        }
 
-        this._applyPositionalCorrection(bodyA, bodyB, this._rA, this._rB, tx, ty, tz, deltaLambda);
+        // --- Friction (tangent) ---
+        const friction = Math.sqrt(bodyA.friction * bodyB.friction);
+        if (friction <= 0) return;
+        // Coulomb cap on the friction impulse magnitude: mu times the normal impulse the position
+        // solve actually applied this substep. normalLambda is a position Lagrange multiplier;
+        // dividing by h converts it to a velocity-space impulse commensurate with the tangential
+        // impulses computed below. This is the correct, unit-consistent cap that the position-space
+        // attempt never got right.
+        const maxImpulse = friction * Math.abs(point.normalLambda) / h;
+        if (maxImpulse <= 0) return;
+
+        // Current tangential relative velocity, and the impulse that would zero it.
+        this._contactRelativeVelocity(point, bodyA, bodyB, this._tmpDispA); // full relative velocity -> _tmpDispA
+        const vn = this._tmpDispA.x * nx + this._tmpDispA.y * ny + this._tmpDispA.z * nz;
+        let vtx = this._tmpDispA.x - vn * nx, vty = this._tmpDispA.y - vn * ny, vtz = this._tmpDispA.z - vn * nz;
+        const vtMag = Math.sqrt(vtx * vtx + vty * vty + vtz * vtz);
+        if (vtMag < 1e-12) return; // no tangential motion to resist
+
+        const tx = vtx / vtMag, ty = vty / vtMag, tz = vtz / vtMag; // tangent = slip direction
+        const wT = this._effectiveMass(bodyA, bodyB, this._rA, this._rB, tx, ty, tz);
+        if (wT < 1e-12) return;
+        // Impulse to fully stop the tangential velocity, clamped to the Coulomb cap (static stick
+        // when the full stop is within budget, dynamic slide when clamped).
+        let jt = vtMag / wT;
+        if (jt > maxImpulse) jt = maxImpulse;
+        // Apply along -tangent (oppose the slip).
+        this._applyVelocityImpulse(bodyA, bodyB, this._rA, this._rB, -tx, -ty, -tz, jt);
     }
 
-    // Tangential slip along `tangent` this substep: (dispB - dispA).tangent, where dispX is how far
-    // body X's contact anchor moved from substep start (prevPos/prevRot) to now. (B - A) ordering
-    // matches the normal constraint so the shared correction OPPOSES slip rather than reinforcing it
-    // (the opposite ordering turns friction into an accelerator). A static body has no prev entry and
-    // contributes zero displacement - correct, it did not move.
-    _contactSlipAlong(point, bodyA, bodyB, tangent) {
-        const dispA = this._anchorDisplacement(point.localAnchorA, bodyA, this._tmpDispA);
-        const dispB = this._anchorDisplacement(point.localAnchorB, bodyB, this._tmpDispB);
-        const dx = dispB.x - dispA.x, dy = dispB.y - dispA.y, dz = dispB.z - dispA.z;
-        return dx * tangent.x + dy * tangent.y + dz * tangent.z;
-    }
-
-    // World displacement of the point at `localAnchor` on `body` from substep start to now.
-    _anchorDisplacement(localAnchor, body, out) {
-        const prevPos = this._prevPos.get(body.id);
-        if (!prevPos) { out.set(0, 0, 0); return out; } // static/kinematic: did not move this substep
-        const prevRot = this._prevRot.get(body.id);
-        out.copy(localAnchor);
-        body.rotation.transformVectorInPlace(out);
-        out.addInPlace(body.position);
-        this._tmpPrev.copy(localAnchor);
-        prevRot.transformVectorInPlace(this._tmpPrev);
-        this._tmpPrev.addInPlace(prevPos);
-        out.subInPlace(this._tmpPrev);
+    // Contact-relative velocity (velocity of B's contact point minus A's), into `out`. rA/rB are the
+    // center-relative contact offsets (already in this._rA/_rB when called from the velocity pass,
+    // but recomputed here from the anchors so this is usable standalone).
+    _contactRelativeVelocity(point, bodyA, bodyB, out) {
+        point.currentAnchorAInto(this._tmpPrev, bodyA);
+        this._tmpPrev.subInPlace(bodyA.position); // rA (center-relative)
+        const va = this._pointVelocity(bodyA, this._tmpPrev, this._tmpDispB);
+        const vax = va.x, vay = va.y, vaz = va.z;
+        point.currentAnchorBInto(this._tmpPrev, bodyB);
+        this._tmpPrev.subInPlace(bodyB.position); // rB
+        const vb = this._pointVelocity(bodyB, this._tmpPrev, this._tmpDispB);
+        out.set(vb.x - vax, vb.y - vay, vb.z - vaz);
         return out;
+    }
+
+    // Velocity of the material point at center-relative offset r on `body`: v + omega x r.
+    _pointVelocity(body, r, out) {
+        const w = body.angular_velocity, v = body.linear_velocity;
+        out.set(
+            v.x + (w.y * r.z - w.z * r.y),
+            v.y + (w.z * r.x - w.x * r.z),
+            v.z + (w.x * r.y - w.y * r.x)
+        );
+        return out;
+    }
+
+    // Contact-relative velocity along the normal (B->A). Scalar.
+    _contactRelativeNormalVelocity(point, bodyA, bodyB) {
+        this._contactRelativeVelocity(point, bodyA, bodyB, this._tmpDispA);
+        return this._tmpDispA.x * point.normal.x + this._tmpDispA.y * point.normal.y + this._tmpDispA.z * point.normal.z;
+    }
+
+    // Apply a velocity-space impulse j*(dir) at contact offsets rA/rB: A gets -j (B->A convention,
+    // matching the position correction's own pairing), B gets +j, each scaled by inverse mass, with
+    // the matching angular velocity change. rA/rB are center-relative offsets.
+    _applyVelocityImpulse(bodyA, bodyB, rA, rB, dx, dy, dz, j) {
+        const px = dx * j, py = dy * j, pz = dz * j;
+        if (bodyA._massInverted > 0) {
+            bodyA.linear_velocity.x -= px * bodyA._massInverted * bodyA.linear_factor.x;
+            bodyA.linear_velocity.y -= py * bodyA._massInverted * bodyA.linear_factor.y;
+            bodyA.linear_velocity.z -= pz * bodyA._massInverted * bodyA.linear_factor.z;
+            this._applyAngularVelocityImpulse(bodyA, rA, -px, -py, -pz);
+        }
+        if (bodyB._massInverted > 0) {
+            bodyB.linear_velocity.x += px * bodyB._massInverted * bodyB.linear_factor.x;
+            bodyB.linear_velocity.y += py * bodyB._massInverted * bodyB.linear_factor.y;
+            bodyB.linear_velocity.z += pz * bodyB._massInverted * bodyB.linear_factor.z;
+            this._applyAngularVelocityImpulse(bodyB, rB, px, py, pz);
+        }
+    }
+
+    // Angular velocity change from a linear impulse p applied at center-relative offset r:
+    // dOmega = I^-1 (r x p). (Velocity-space analog of _applyAngularCorrection.)
+    _applyAngularVelocityImpulse(body, r, px, py, pz) {
+        const tqx = r.y * pz - r.z * py, tqy = r.z * px - r.x * pz, tqz = r.x * py - r.y * px;
+        const I = body._worldInverseInertiaTensor;
+        body.angular_velocity.x += (I.e00 * tqx + I.e01 * tqy + I.e02 * tqz) * body.angular_factor.x;
+        body.angular_velocity.y += (I.e10 * tqx + I.e11 * tqy + I.e12 * tqz) * body.angular_factor.y;
+        body.angular_velocity.z += (I.e20 * tqx + I.e21 * tqy + I.e22 * tqz) * body.angular_factor.z;
     }
 
     // Two unit vectors spanning the plane perpendicular to `normal` - the friction directions.
@@ -406,5 +473,9 @@ class Solver {
         Vector3.crossInto(outT2, normal, outT1);
     }
 }
+
+// Approach speeds slower than this (m/s) do not bounce - below it, restitution would turn a resting
+// body's one-substep gravity nudge into perpetual micro-jitter. Standard restitution slop.
+Solver.RESTITUTION_THRESHOLD = 0.5;
 
 ActionPhysics.Solver = Solver;
