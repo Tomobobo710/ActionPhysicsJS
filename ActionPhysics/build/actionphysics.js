@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-27T02:33:54.486Z
+// ActionPhysics 0.1.0 — built 2026-08-28T10:53:11.605Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine.
@@ -6340,7 +6340,7 @@ class Solver {
     constructor(opts) {
         opts = opts || {};
         this.substeps = opts.substeps || 4;
-        this.iterations = opts.iterations || 1; // position-solve passes per substep
+        this.iterations = opts.iterations || 4; // position-solve passes per substep
 
         this._rA = new Vector3(); this._rB = new Vector3();
         this._deltaPos = new Vector3();
@@ -6353,6 +6353,7 @@ class Solver {
         this._preGravityVel = new Map();
         this._biasDelta = new Map(); // per-body bias-only correction this substep; excluded from derived velocity
         this._deferredRotation = new Map(); // per-body accumulated small-angle rotation for a multi-point manifold pass
+        this._restRing = new Map(); // per-body ring buffer of recent transforms for rest-velocity reconciliation
     }
 
     // Margin widening what counts as "explainable by the body's own velocity" in _solvePoint's
@@ -6369,6 +6370,39 @@ class Solver {
         const h = dt / this.substeps;
         for (let s = 0; s < this.substeps; s++) {
             this._substep(bodies, manifolds, gravity, h, refresh, constraints);
+        }
+        this._reconcileRestVelocity(bodies, dt);
+    }
+
+    // Zeroes the velocity of a body whose sustained motion over the last REST_WINDOW ticks is below
+    // the rest thresholds, from a per-body ring buffer of recent transforms. See NOTES.md.
+    _reconcileRestVelocity(bodies, dt) {
+        const win = REST_WINDOW;
+        for (let i = 0; i < bodies.length; i++) {
+            const b = bodies[i];
+            if (b.bodyType !== RigidBody.DYNAMIC) continue;
+            let r = this._restRing.get(b.id);
+            if (!r) {
+                r = { pos: [], rot: [], head: 0, count: 0 };
+                for (let k = 0; k < win; k++) { r.pos.push(new Vector3()); r.rot.push(new Quaternion()); }
+                this._restRing.set(b.id, r);
+            }
+
+            if (r.count === win) {
+                // Oldest sample is the one about to be overwritten at head.
+                const oldPos = r.pos[r.head], oldRot = r.rot[r.head];
+                const span = win * dt;
+                const ndx = b.position.x - oldPos.x, ndy = b.position.y - oldPos.y, ndz = b.position.z - oldPos.z;
+                const windowedLinSpeed = Math.sqrt(ndx * ndx + ndy * ndy + ndz * ndz) / span;
+                if (windowedLinSpeed < REST_LINEAR_SPEED) b.linear_velocity.set(0, 0, 0);
+                Solver._deriveAngularVelocity(this._tmpDispA, oldRot, b.rotation, span);
+                if (this._tmpDispA.length() < REST_ANGULAR_SPEED) b.angular_velocity.set(0, 0, 0);
+            } else {
+                r.count++;
+            }
+            r.pos[r.head].copy(b.position);
+            r.rot[r.head].copy(b.rotation);
+            r.head = (r.head + 1) % win;
         }
     }
 
@@ -6450,6 +6484,11 @@ Solver.RESTITUTION_SLOP_FACTOR = 8;
 // remainder is real, live-measured penetration, picked up on the next substep instead of all at
 // once - keeps one point's correction from moving the body before its manifold siblings are read.
 Solver.MAX_PENETRATION_PER_SUBSTEP = 0.005;
+
+// Rest-velocity reconciliation thresholds (see Solver._reconcileRestVelocity, NOTES.md).
+var REST_WINDOW = 8;              // ticks in the trailing velocity window
+var REST_LINEAR_SPEED = 0.02;     // units/s windowed speed below which a settled body is zeroed
+var REST_ANGULAR_SPEED = 0.05;    // rad/s windowed speed below which a settled body is zeroed
 
 ActionPhysics.Solver = Solver;
 
@@ -9482,52 +9521,61 @@ proto._sweptCollideAndSlide = function(opts) {
         }
     }
     function findBlock(start, end) {
-        var h = world.shapeIntersect(boxShape, start, end, null, queryIgnore);
-        if (!h) { return null; }
-        var hn = h.normal;
-        if (!hn || !isFinite(hn.x) || !isFinite(hn.y) || !isFinite(hn.z)) { return null; }
-        var nlen = Math.sqrt(hn.x * hn.x + hn.y * hn.y + hn.z * hn.z);
-        if (nlen < FPSC.N_DEGENERATE) { return null; }
-        // Negate: see this function's own header comment for why the raw query result is flipped
-        // here, once, before any of the "points into the wall" math below reads it.
-        var n = { x: -hn.x, y: -hn.y, z: -hn.z };
-        if (Math.abs(n.y) >= minStandableNy) { return null; }
-        // Vertical wall: normal horizontal, points character->object; heading in is v.n > 0.
-        // Too-steep floor-like face (0.1 < n.y < cutoff): normal tilts up-and-back, so heading
-        // in is v.(n.x,n.z) < 0 — sign flipped below.
-        var floorLike = n.y > FPSC.NY_FLOORLIKE;
-        // A floor-like too-steep face is only a legitimate "slope ahead" block near the feet
-        // (walking into a ramp's toe). The same face type contacted up near head height is an
-        // OVERHANG (ramp underside above a wedged character), not a slope to stop forward
-        // progress on — treating it as a wall-slide clip can zero velocity in every direction,
-        // including retreat, trapping the character. Overhead clearance is the headroom gate's
-        // job; skip it here so a sideways/backward escape isn't blocked by the same contact.
-        if (floorLike && h.point && (h.point.y - (p.y - height / 2)) > height * FPSC.TOE_BAND_FRAC) { return null; }
-        if (climbSteepSlopes && self_._climbableSlopeAhead(start, mdx0, mdz0)) { return null; }
-        var into = floorLike ? -(vx * n.x + vz * n.z) : (vx * n.x + vz * n.z);
-        if (into <= 0) { return null; }
-        var keep = 0;
-        var b = h.body;
-        // Platforms never yield like a pushable object — they're scripted geometry. Another
-        // player's ghost is a full body-block too — a player is a wall, not a pushable box.
-        if (b && !b.isPlatform && !b.isCharacterGhost && b.bodyType === RigidBody.DYNAMIC && b._mass > 0 &&
-            b._mass <= self_._pushMassLimit) {
-            keep = mass / (mass + b._mass);
+        var localIgnore = queryIgnore.slice();
+        for (var tries = 0; tries < 8; tries++) {
+            var h = world.shapeIntersect(boxShape, start, end, null, localIgnore);
+            if (!h) { return null; }
+            var hn = h.normal;
+            if (!hn || !isFinite(hn.x) || !isFinite(hn.y) || !isFinite(hn.z)) { return null; }
+            var nlen = Math.sqrt(hn.x * hn.x + hn.y * hn.y + hn.z * hn.z);
+            if (nlen < FPSC.N_DEGENERATE) { return null; }
+            // Negate: see this function's own header comment for why the raw query result is flipped
+            // here, once, before any of the "points into the wall" math below reads it.
+            var n = { x: -hn.x, y: -hn.y, z: -hn.z };
+            if (Math.abs(n.y) >= minStandableNy) { localIgnore.push(h.body); continue; }
+            // Vertical wall: normal horizontal, points character->object; heading in is v.n > 0.
+            // Too-steep floor-like face (0.1 < n.y < cutoff): normal tilts up-and-back, so heading
+            // in is v.(n.x,n.z) < 0 — sign flipped below.
+            var floorLike = n.y > FPSC.NY_FLOORLIKE;
+            // A floor-like too-steep face is only a legitimate "slope ahead" block near the feet
+            // (walking into a ramp's toe). The same face type contacted up near head height is an
+            // OVERHANG (ramp underside above a wedged character), not a slope to stop forward
+            // progress on — treating it as a wall-slide clip can zero velocity in every direction,
+            // including retreat, trapping the character. Overhead clearance is the headroom gate's
+            // job; skip it here so a sideways/backward escape isn't blocked by the same contact.
+            if (floorLike && h.point && (h.point.y - (p.y - height / 2)) > height * FPSC.TOE_BAND_FRAC) { localIgnore.push(h.body); continue; }
+            if (climbSteepSlopes && self_._climbableSlopeAhead(start, mdx0, mdz0)) { localIgnore.push(h.body); continue; }
+            var overlapped = h.fraction === 0 && h.distance === 0;
+            var into = floorLike ? -(vx * n.x + vz * n.z) : (vx * n.x + vz * n.z);
+            if (into <= 0 && !overlapped) { return null; }
+            var keep = 0;
+            var b = h.body;
+            // Platforms never yield like a pushable object — they're scripted geometry. Another
+            // player's ghost is a full body-block too — a player is a wall, not a pushable box.
+            if (b && !b.isPlatform && !b.isCharacterGhost && b.bodyType === RigidBody.DYNAMIC && b._mass > 0 &&
+                b._mass <= self_._pushMassLimit) {
+                keep = mass / (mass + b._mass);
+            }
+            return { n: n, keep: keep, overlapped: overlapped };
         }
-        return { n: n, keep: keep };
+        return null;
     }
 
     // Contact test with no directional gate (unlike findBlock). Used by the recovery back-probe,
     // since after velocity is clipped the body is no longer "moving into" the wall.
     function contactAt(x, y, z) {
         var pt = new Vector3(x, y, z);
-        var h = world.shapeIntersect(boxShape, pt, pt, null, queryIgnore);
-        if (!h) { return false; }
-        var n = h.normal;
-        if (!n || !isFinite(n.x) || !isFinite(n.y) || !isFinite(n.z)) { return false; }
-        if (Math.sqrt(n.x * n.x + n.y * n.y + n.z * n.z) < FPSC.N_DEGENERATE) { return false; }
-        if (Math.abs(n.y) >= minStandableNy) { return false; } // walkable ground/ramp — not a wall
-        return true;
+        var localIgnore = queryIgnore.slice();
+        for (var tries = 0; tries < 8; tries++) {
+            var h = world.shapeIntersect(boxShape, pt, pt, null, localIgnore);
+            if (!h) { return false; }
+            var n = h.normal;
+            if (!n || !isFinite(n.x) || !isFinite(n.y) || !isFinite(n.z)) { return false; }
+            if (Math.sqrt(n.x * n.x + n.y * n.y + n.z * n.z) < FPSC.N_DEGENERATE) { return false; }
+            if (Math.abs(n.y) >= minStandableNy) { localIgnore.push(h.body); continue; } // walkable ground/ramp — not a wall
+            return true;
+        }
+        return false;
     }
 
     var sy = p.y + yOffset;
@@ -9572,7 +9620,7 @@ proto._sweptCollideAndSlide = function(opts) {
             // see findBlock's own comment; contactAt below is the real, load-bearing check, not an
             // early-out guard). Vertical walls only; a floor-like too-steep toe is owned by the
             // clamp / steep-slope path.
-            if (!floorLike && keep < FPSC.KEEP_BLOCKED) {
+            if (!floorLike && keep < FPSC.KEEP_BLOCKED && (blk.overlapped || dot > 0)) {
                 var step = Math.min(width, depth) * FPSC.BACKPROBE_WIDTH_FRAC;
                 if (contactAt(cx - n.x * step, sy, cz - n.z * step)) {
                     depenX -= n.x * step; depenZ -= n.z * step;

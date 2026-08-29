@@ -158,52 +158,61 @@ proto._sweptCollideAndSlide = function(opts) {
         }
     }
     function findBlock(start, end) {
-        var h = world.shapeIntersect(boxShape, start, end, null, queryIgnore);
-        if (!h) { return null; }
-        var hn = h.normal;
-        if (!hn || !isFinite(hn.x) || !isFinite(hn.y) || !isFinite(hn.z)) { return null; }
-        var nlen = Math.sqrt(hn.x * hn.x + hn.y * hn.y + hn.z * hn.z);
-        if (nlen < FPSC.N_DEGENERATE) { return null; }
-        // Negate: see this function's own header comment for why the raw query result is flipped
-        // here, once, before any of the "points into the wall" math below reads it.
-        var n = { x: -hn.x, y: -hn.y, z: -hn.z };
-        if (Math.abs(n.y) >= minStandableNy) { return null; }
-        // Vertical wall: normal horizontal, points character->object; heading in is v.n > 0.
-        // Too-steep floor-like face (0.1 < n.y < cutoff): normal tilts up-and-back, so heading
-        // in is v.(n.x,n.z) < 0 — sign flipped below.
-        var floorLike = n.y > FPSC.NY_FLOORLIKE;
-        // A floor-like too-steep face is only a legitimate "slope ahead" block near the feet
-        // (walking into a ramp's toe). The same face type contacted up near head height is an
-        // OVERHANG (ramp underside above a wedged character), not a slope to stop forward
-        // progress on — treating it as a wall-slide clip can zero velocity in every direction,
-        // including retreat, trapping the character. Overhead clearance is the headroom gate's
-        // job; skip it here so a sideways/backward escape isn't blocked by the same contact.
-        if (floorLike && h.point && (h.point.y - (p.y - height / 2)) > height * FPSC.TOE_BAND_FRAC) { return null; }
-        if (climbSteepSlopes && self_._climbableSlopeAhead(start, mdx0, mdz0)) { return null; }
-        var into = floorLike ? -(vx * n.x + vz * n.z) : (vx * n.x + vz * n.z);
-        if (into <= 0) { return null; }
-        var keep = 0;
-        var b = h.body;
-        // Platforms never yield like a pushable object — they're scripted geometry. Another
-        // player's ghost is a full body-block too — a player is a wall, not a pushable box.
-        if (b && !b.isPlatform && !b.isCharacterGhost && b.bodyType === RigidBody.DYNAMIC && b._mass > 0 &&
-            b._mass <= self_._pushMassLimit) {
-            keep = mass / (mass + b._mass);
+        var localIgnore = queryIgnore.slice();
+        for (var tries = 0; tries < 8; tries++) {
+            var h = world.shapeIntersect(boxShape, start, end, null, localIgnore);
+            if (!h) { return null; }
+            var hn = h.normal;
+            if (!hn || !isFinite(hn.x) || !isFinite(hn.y) || !isFinite(hn.z)) { return null; }
+            var nlen = Math.sqrt(hn.x * hn.x + hn.y * hn.y + hn.z * hn.z);
+            if (nlen < FPSC.N_DEGENERATE) { return null; }
+            // Negate: see this function's own header comment for why the raw query result is flipped
+            // here, once, before any of the "points into the wall" math below reads it.
+            var n = { x: -hn.x, y: -hn.y, z: -hn.z };
+            if (Math.abs(n.y) >= minStandableNy) { localIgnore.push(h.body); continue; }
+            // Vertical wall: normal horizontal, points character->object; heading in is v.n > 0.
+            // Too-steep floor-like face (0.1 < n.y < cutoff): normal tilts up-and-back, so heading
+            // in is v.(n.x,n.z) < 0 — sign flipped below.
+            var floorLike = n.y > FPSC.NY_FLOORLIKE;
+            // A floor-like too-steep face is only a legitimate "slope ahead" block near the feet
+            // (walking into a ramp's toe). The same face type contacted up near head height is an
+            // OVERHANG (ramp underside above a wedged character), not a slope to stop forward
+            // progress on — treating it as a wall-slide clip can zero velocity in every direction,
+            // including retreat, trapping the character. Overhead clearance is the headroom gate's
+            // job; skip it here so a sideways/backward escape isn't blocked by the same contact.
+            if (floorLike && h.point && (h.point.y - (p.y - height / 2)) > height * FPSC.TOE_BAND_FRAC) { localIgnore.push(h.body); continue; }
+            if (climbSteepSlopes && self_._climbableSlopeAhead(start, mdx0, mdz0)) { localIgnore.push(h.body); continue; }
+            var overlapped = h.fraction === 0 && h.distance === 0;
+            var into = floorLike ? -(vx * n.x + vz * n.z) : (vx * n.x + vz * n.z);
+            if (into <= 0 && !overlapped) { return null; }
+            var keep = 0;
+            var b = h.body;
+            // Platforms never yield like a pushable object — they're scripted geometry. Another
+            // player's ghost is a full body-block too — a player is a wall, not a pushable box.
+            if (b && !b.isPlatform && !b.isCharacterGhost && b.bodyType === RigidBody.DYNAMIC && b._mass > 0 &&
+                b._mass <= self_._pushMassLimit) {
+                keep = mass / (mass + b._mass);
+            }
+            return { n: n, keep: keep, overlapped: overlapped };
         }
-        return { n: n, keep: keep };
+        return null;
     }
 
     // Contact test with no directional gate (unlike findBlock). Used by the recovery back-probe,
     // since after velocity is clipped the body is no longer "moving into" the wall.
     function contactAt(x, y, z) {
         var pt = new Vector3(x, y, z);
-        var h = world.shapeIntersect(boxShape, pt, pt, null, queryIgnore);
-        if (!h) { return false; }
-        var n = h.normal;
-        if (!n || !isFinite(n.x) || !isFinite(n.y) || !isFinite(n.z)) { return false; }
-        if (Math.sqrt(n.x * n.x + n.y * n.y + n.z * n.z) < FPSC.N_DEGENERATE) { return false; }
-        if (Math.abs(n.y) >= minStandableNy) { return false; } // walkable ground/ramp — not a wall
-        return true;
+        var localIgnore = queryIgnore.slice();
+        for (var tries = 0; tries < 8; tries++) {
+            var h = world.shapeIntersect(boxShape, pt, pt, null, localIgnore);
+            if (!h) { return false; }
+            var n = h.normal;
+            if (!n || !isFinite(n.x) || !isFinite(n.y) || !isFinite(n.z)) { return false; }
+            if (Math.sqrt(n.x * n.x + n.y * n.y + n.z * n.z) < FPSC.N_DEGENERATE) { return false; }
+            if (Math.abs(n.y) >= minStandableNy) { localIgnore.push(h.body); continue; } // walkable ground/ramp — not a wall
+            return true;
+        }
+        return false;
     }
 
     var sy = p.y + yOffset;
@@ -248,7 +257,7 @@ proto._sweptCollideAndSlide = function(opts) {
             // see findBlock's own comment; contactAt below is the real, load-bearing check, not an
             // early-out guard). Vertical walls only; a floor-like too-steep toe is owned by the
             // clamp / steep-slope path.
-            if (!floorLike && keep < FPSC.KEEP_BLOCKED) {
+            if (!floorLike && keep < FPSC.KEEP_BLOCKED && (blk.overlapped || dot > 0)) {
                 var step = Math.min(width, depth) * FPSC.BACKPROBE_WIDTH_FRAC;
                 if (contactAt(cx - n.x * step, sy, cz - n.z * step)) {
                     depenX -= n.x * step; depenZ -= n.z * step;
