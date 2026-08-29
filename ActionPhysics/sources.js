@@ -69,6 +69,11 @@ module.exports = [
     // Solver - XPBD.
     'src/solver/Solver.js',
 
+    // Sleep: island grouping + park/wake. Reads RigidBody (loaded above) and this tick's
+    // manifolds/constraints; run by World between narrowphase and the solver. Independent of Solver
+    // itself. Loaded before World, which constructs it.
+    'src/solver/IslandManager.js',
+
     // Constraints (joints) - position-level XPBD constraints, built on the solver's own
     // Solver._integrateRotation and each body's mass/inertia fields. Loaded after Solver.
     'src/constraints/Constraint.js',

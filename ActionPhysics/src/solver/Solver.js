@@ -88,6 +88,12 @@ class Solver {
         for (let i = 0; i < bodies.length; i++) {
             const b = bodies[i];
             if (b.bodyType !== RigidBody.DYNAMIC) continue;
+            // A sleeping body is skipped entirely: no gravity, no force integration, no position
+            // predict, no velocity derivation. It holds its exact parked pose (RigidBody.sleep zeroed
+            // its velocity) until the island manager wakes it. This skip - repeated in the solve loops
+            // below - is where sleep's stability and CPU savings actually come from; everything else
+            // (islands, timers) exists to decide isAwake correctly, but THIS is what it buys.
+            if (!b.isAwake) continue;
             this._prevPos.set(b.id, new Vector3().copy(b.position));
             this._prevRot.set(b.id, new Quaternion().copy(b.rotation));
             const bias = this._biasDelta.get(b.id) || new Vector3();
@@ -171,11 +177,21 @@ class Solver {
         // way a contact's does, for free (step 4 below reads whatever position the loop left).
         for (let iter = 0; iter < this.iterations; iter++) {
             for (const manifold of manifolds.values()) {
+                if (Solver._manifoldIsSleeping(manifold)) continue; // nothing here can move - see helper
                 this._solveManifold(manifold, h);
             }
             if (constraints) {
                 for (let i = 0; i < constraints.length; i++) {
-                    if (constraints[i].enabled) constraints[i].solve(h);
+                    const c = constraints[i];
+                    if (!c.enabled) continue;
+                    // Skip a joint whose movable side(s) are all asleep - same rule as contacts. A
+                    // constraint couples two dynamic bodies into one island (or anchors one to the
+                    // world), so an asleep bodyA implies the whole joint is parked; a world-anchored
+                    // joint (bodyB null) is skippable when its single dynamic body sleeps.
+                    const aAwakeDyn = c.bodyA.bodyType === RigidBody.DYNAMIC && c.bodyA.isAwake;
+                    const bAwakeDyn = c.bodyB && c.bodyB.bodyType === RigidBody.DYNAMIC && c.bodyB.isAwake;
+                    if (!aAwakeDyn && !bAwakeDyn) continue;
+                    c.solve(h);
                 }
             }
         }
@@ -192,6 +208,7 @@ class Solver {
         for (let i = 0; i < bodies.length; i++) {
             const b = bodies[i];
             if (b.bodyType !== RigidBody.DYNAMIC) continue;
+            if (!b.isAwake) continue; // sleeping: never integrated in step 1, so its _prevPos/_biasDelta were not set this substep - and its velocity stays parked at zero regardless
             const prevPos = this._prevPos.get(b.id);
             const prevRot = this._prevRot.get(b.id);
             const bias = this._biasDelta.get(b.id);
@@ -208,6 +225,7 @@ class Solver {
         // the pre-solve approach velocity. Both act only at contacts and only on the contact-relative
         // velocity, which is exactly where they belong.
         for (const manifold of manifolds.values()) {
+            if (Solver._manifoldIsSleeping(manifold)) continue; // nothing here can move - see helper
             const bodyA = manifold.bodyA, bodyB = manifold.bodyB;
             for (let i = 0; i < manifold.points.length; i++) {
                 this._solveContactVelocity(manifold.points[i], bodyA, bodyB, h);
@@ -282,6 +300,23 @@ class Solver {
         for (let i = 0; i < manifold.points.length; i++) {
             this._solvePoint(manifold.points[i], bodyA, bodyB, h);
         }
+    }
+
+    // True when NEITHER body in this manifold is an awake dynamic body - i.e. nothing here can move,
+    // so the whole contact can be skipped this substep. The two cases: both bodies sleeping (a parked
+    // pile's internal contacts), or one sleeping dynamic + one static (a crate asleep on the floor).
+    // A sleeping dynamic body can never share a manifold with an AWAKE dynamic body, because two
+    // touching dynamic bodies are unioned into the same island and sleep or wake together as a unit
+    // (see IslandManager) - so there is no "awake body needs to push a sleeper" case to worry about
+    // here; that invariant is what makes this simple skip correct rather than a body-by-body immovable
+    // -mass dance through every solve site. A kinematic body counts as not-awake-dynamic (it is driven
+    // externally, never by the solver), and a dynamic body resting on a MOVING kinematic one is force
+    // -woken by the island manager, so it is awake here and this returns false as it must.
+    static _manifoldIsSleeping(manifold) {
+        const a = manifold.bodyA, b = manifold.bodyB;
+        const aAwakeDyn = a.bodyType === RigidBody.DYNAMIC && a.isAwake;
+        const bAwakeDyn = b.bodyType === RigidBody.DYNAMIC && b.isAwake;
+        return !aAwakeDyn && !bAwakeDyn;
     }
 
     // One XPBD position-constraint solve for a single contact point.

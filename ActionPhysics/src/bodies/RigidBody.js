@@ -126,6 +126,7 @@ class RigidBody {
     // re-applied every tick by whoever wants them to keep acting.
     applyImpulse(impulse) {
         if (this._massInverted <= 0) return this;
+        this.wake();
         this.linear_velocity.x += impulse.x * this._massInverted * this.linear_factor.x;
         this.linear_velocity.y += impulse.y * this._massInverted * this.linear_factor.y;
         this.linear_velocity.z += impulse.z * this._massInverted * this.linear_factor.z;
@@ -150,6 +151,7 @@ class RigidBody {
 
     applyTorqueImpulse(torqueImpulse) {
         if (this._massInverted <= 0) return this;
+        this.wake();
         const I = this._worldInverseInertiaTensor;
         const tx = torqueImpulse.x, ty = torqueImpulse.y, tz = torqueImpulse.z;
         this.angular_velocity.x += (I.e00 * tx + I.e01 * ty + I.e02 * tz) * this.angular_factor.x;
@@ -162,6 +164,7 @@ class RigidBody {
     // does not overwrite - multiple applyForce calls in the same tick (gravity plus thrust plus wind)
     // all contribute, matching accumulated_force's own name.
     applyForce(force) {
+        this.wake();
         this.accumulated_force.x += force.x;
         this.accumulated_force.y += force.y;
         this.accumulated_force.z += force.z;
@@ -169,6 +172,7 @@ class RigidBody {
     }
 
     applyTorque(torque) {
+        this.wake();
         this.accumulated_torque.x += torque.x;
         this.accumulated_torque.y += torque.y;
         this.accumulated_torque.z += torque.z;
@@ -192,6 +196,36 @@ class RigidBody {
     clearForces() {
         this.accumulated_force.set(0, 0, 0);
         this.accumulated_torque.set(0, 0, 0);
+        return this;
+    }
+
+    // Wakes this body: clears the sleep state so the island manager and solver treat it as active
+    // again, and resets its below-threshold timer to zero (it must earn sleep afresh). Called by
+    // every disturbance that enters through this body's own API (applyImpulse/applyForce/applyTorque
+    // and their at-point/torque variants above), and by the island manager when any member of a
+    // sleeping island is disturbed - waking is all-or-nothing per island (see IslandManager). Cheap
+    // and idempotent, so callers never have to check isAwake first. A direct write to
+    // linear_velocity/angular_velocity (a Vector3 this class cannot intercept) does NOT route through
+    // here, but a body left with above-threshold velocity simply fails the island's sleep test next
+    // tick and never sleeps in the first place - so that path stays correct without a wake() hook.
+    wake() {
+        this.isAwake = true;
+        this.sleepTimer = 0;
+        return this;
+    }
+
+    // Parks this body: zeroes its velocities (a sleeping body holds still by definition - leaving a
+    // sliver of residual velocity would let it drift while the solver skips it) and clears isAwake so
+    // integration and the constraint solve skip it entirely. Called only by the island manager, and
+    // only for a whole island at once - never park one body of a coupled group while its neighbours
+    // stay awake (a sleeping body a still-awake one rests on must keep resolving that contact, or the
+    // awake one sags through it; the island rule is exactly what prevents that). accumulated_force is
+    // left as-is: it is cleared every tick by World.step regardless, and a force applied this tick
+    // already routed through applyForce -> wake(), so a body reaching sleep has none pending.
+    sleep() {
+        this.linear_velocity.set(0, 0, 0);
+        this.angular_velocity.set(0, 0, 0);
+        this.isAwake = false;
         return this;
     }
 

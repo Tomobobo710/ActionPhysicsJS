@@ -13,6 +13,7 @@ class World {
         this.narrowphase = narrowphase;
         this.solver = solver;
         this.midphase = new Midphase();
+        this.islands = new IslandManager();
         this.gravity = new Vector3(0, -9.81, 0);
         this.bodies = []; // all bodies, static and dynamic alike - broadphase filters by type itself
         this.constraints = []; // joints - Point/Hinge/Slider/Weld, all solved by the same solver each substep
@@ -68,6 +69,12 @@ class World {
 
         const pairs = this.broadphase.computePairs();
         const manifolds = this.narrowphase.step(pairs, this.midphase, dt);
+
+        // Sleep: group coupled bodies into islands and park/wake each island as a unit, using this
+        // tick's manifolds+constraints for connectivity. Runs BETWEEN narrowphase and the solver so
+        // it has the contacts to build islands from and the solver can then skip sleeping bodies
+        // (Solver.step reads each body's isAwake). See IslandManager.
+        this.islands.update(this.bodies, manifolds, this.constraints, dt);
 
         // Interleaved detect-then-solve: the solver re-measures contact geometry against each
         // substep's predicted positions via this callback (see Solver.step and
