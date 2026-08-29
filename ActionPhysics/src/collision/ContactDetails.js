@@ -56,6 +56,10 @@ class ContactDetails {
         // fraction of the speed the body was APPROACHING at, which is gone by the time the solve
         // finishes. Written each substep by the solver; not warm-start state.
         this._preSolveNormalVel = 0;
+
+        // Live penetration depth captured by the position solve each substep, read by the velocity
+        // solve as its Baumgarte push-out target so the normal VELOCITY solve carries depenetration.
+        this._penetration = 0;
     }
 
     // Derives localAnchorA/localAnchorB from the CURRENT pointOnA/pointOnB and the given bodies'

@@ -63,6 +63,18 @@ class Solver {
     // the outcome there at all).
     static EXPLAINABLE_MARGIN = 3;
 
+    // Baumgarte push-out for the velocity-space normal solve: fraction of residual penetration turned
+    // into a separating-velocity target per substep, so the accumulated normalImpulse carries the
+    // depenetration force now that the position solve is position-only for the normal. 0.2 is the
+    // standard Baumgarte/ERP fraction.
+    static BAUMGARTE = 0.2;
+    // Penetration below this (metres) does not trigger push-out - keeps resting noise from becoming a
+    // perpetual micro-separation.
+    static PENETRATION_SLOP = 0.0005;
+    // Hard cap (m/s) on the Baumgarte separating velocity, so depenetration can never LAUNCH a body -
+    // a deep spawn overlap resolves gradually at this bounded speed instead of being ejected.
+    static MAX_DEPENETRATION_VEL = 0.5;
+
 
     /**
      * Advances every dynamic body in `bodies` by `dt`, resolving the contacts in `manifolds`
@@ -414,63 +426,18 @@ class Solver {
         const deltaLambda = newLambda - oldLambda;
         point.normalLambda = newLambda;
 
-        // SPLIT BY WHAT'S PHYSICALLY EXPLAINABLE: only the part of this correction that the body's
-        // own real, measured closing velocity (point._preSolveNormalVel, captured above - PRE-gravity,
-        // the actual physical approach speed) could account for over one substep is allowed to become
-        // derived velocity; anything BEYOND that is a pure position edit (bias, excluded from step 4's
-        // derived velocity - see _applyPositionalCorrection's own comment). This is the direct,
-        // non-heuristic reading of PLAN's own standing rule ("if derived velocity explodes, that's a
-        // detection bug, not something to clamp") applied at the one place it is actually knowable
-        // WITHOUT guessing: a body's own already-measured velocity IS the ground truth for "how much
-        // of this correction is real motion," not a magnitude threshold or a fixed fraction.
-        //
-        // Two earlier attempts at this same idea failed for different, narrower reasons - neither
-        // invalidates this one: (1) a FLAT MAGNITUDE cap (Solver.MAX_POSITION_CORRECTION) ignored load
-        // entirely, so a body genuinely resting under weight lost the fight against gravity
-        // re-creating overlap every tick faster than the flat cap could correct it, and sank through
-        // the floor; (2) a FIXED FRACTION of C (Baumgarte's usual 0.1-0.2) still scales with C itself,
-        // so a large one-shot spawn overlap still produces a large fraction-of-C correction and still
-        // launches, just at a reduced (still wrong) magnitude - traced directly: 20% of a 0.1m spawn
-        // overlap still derived vy=4.8 and still climbed to y=1.6 under gravity before falling back.
-        // Gating on the body's OWN velocity instead of C's magnitude or a fraction of it has neither
-        // problem: a resting body under real load has real, nonzero closing velocity behind its
-        // (naturally shallow, speculative-margin-bounded) C every substep, so its correction is never
-        // artificially starved - while a raw spawn/teleport overlap has ZERO real velocity behind a
-        // LARGE C, so this split correctly recognizes almost none of that correction as explainable
-        // and keeps it as position-only bias, letting the overlap resolve gradually instead of
-        // becoming fabricated kinetic energy.
-        // LIVE (post-gravity) relative velocity, not point._preSolveNormalVel - that value is
-        // deliberately PRE-gravity for restitution's own purposes (see the comment above), but here
-        // gravity's own contribution this substep IS real, physically genuine motion the body is
-        // actually undergoing right now, and excluding it as "not explainable" was a real, confirmed
-        // bug: a box resting exactly at rest height, held there only by gravity's own tiny per-substep
-        // nudge, had that entire nudge treated as bias every substep forever, leaving a permanent
-        // unresolved residual velocity (traced directly: vy stuck at exactly -0.0408 for 30+ ticks,
-        // never converging to zero like an ordinary resting contact must) - which cascaded into
-        // stacks, slopes, and settling shapes across the whole suite never coming properly to rest.
-        const liveRelVel = this._contactRelativeNormalVelocity(point, bodyA, bodyB);
-        // EXPLAINABLE_MARGIN: liveRelVel*h is only an approximate lower bound on how much of C a
-        // substep's own real motion accounts for - exact for a pure linear contact at the body's
-        // center, but for an off-center contact (a corner/edge resting point, well off the body's own
-        // center of mass) the angular contribution to C and the angular contribution to liveRelVel's
-        // normal-projection do not cancel to the same value bit-for-bit (different weighting: C comes
-        // from the ANCHOR's actual position delta, liveRelVel from the point-velocity formula
-        // v + omega x r evaluated at a single instant) - close, but not exactly equal. Without a
-        // margin, that small, ordinary numerical gap was mistaken for "extra, non-explainable"
-        // correction on EVERY substep of an off-center resting contact, forever - a real, confirmed
-        // bug: an angled box resting on one corner never converged to zero velocity (stuck at
-        // vy=-0.045 indefinitely) because a small fraction of its own legitimate resting correction
-        // was perpetually misclassified as bias. The margin only ever WIDENS what counts as
-        // explainable - it can never let a genuinely fabricated (zero-velocity spawn) correction
-        // through, since that case has liveRelVel ~0 while C is enormous by comparison, nowhere close
-        // to within a small margin of each other.
-        const explainableBySubstep = Math.max(liveRelVel, 0) * h * Solver.EXPLAINABLE_MARGIN;
-        let velocityC = C;
-        if (velocityC > explainableBySubstep) velocityC = explainableBySubstep;
-        const velocityDelta = -velocityC / wSum;
-        const biasDelta = deltaLambda - velocityDelta;
-        this._applyPositionalCorrection(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, velocityDelta, false);
-        this._applyPositionalCorrection(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, biasDelta, true);
+        // Normal position correction is 100% BIAS: it moves position to resolve penetration but feeds
+        // NOTHING into derived velocity (step 4 subtracts _biasDelta out). The velocity solve
+        // (_solveContactVelocity, step 5) OWNS all contact normal velocity - it drives the contact-
+        // relative normal velocity to the restitution target with a capped Baumgarte push-out (using
+        // point._penetration below), accumulating the full normal impulse into normalImpulse. This is
+        // the DECOUPLING: position-correction (geometry: depenetration, flush, the per-substep
+        // geometry refresh) no longer becomes velocity, so refreshing a curved shape's contact points
+        // to hold it flush cannot inject spin - the flush-vs-spin seesaw is gone because the two are
+        // separate variables. The old explainability split (EXPLAINABLE_MARGIN, liveRelVel) that used
+        // to derive normal velocity here is retired. C (live penetration) is handed to the velocity solve.
+        point._penetration = C;
+        this._applyPositionalCorrection(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, deltaLambda, true);
     }
 
     // Generalized inverse mass along direction (dx,dy,dz) for the pair, combining linear and
@@ -603,6 +570,13 @@ class Solver {
         if (restitution > 0 && point._preSolveNormalVel > Solver.RESTITUTION_THRESHOLD) {
             targetN = -restitution * point._preSolveNormalVel; // desired separating velocity (< 0)
         }
+        // NOTE: no Baumgarte velocity push-out. Penetration is resolved entirely by the POSITION solve
+        // as bias (position moves, no velocity) - a resting box is held up by the position correction,
+        // not by a separating velocity. Turning penetration into a separating VELOCITY here fabricated
+        // kinetic energy for a deep spawn overlap (a body spawned embedded must settle with ZERO
+        // velocity, not be pushed out at the depenetration-cap speed). The velocity solve's job is only
+        // to zero the real APPROACHING velocity (non-penetration) and apply restitution/friction - not
+        // to depenetrate. This keeps depenetration and velocity fully decoupled, which is the point.
         const wN = this._effectiveMass(bodyA, bodyB, this._rA, this._rB, nx, ny, nz);
         if (wN >= 1e-12) {
             const relN = this._contactRelativeNormalVelocity(point, bodyA, bodyB);
@@ -630,7 +604,7 @@ class Solver {
         // budget switches to normalImpulse once the normal solve owns the full normal force (next
         // increment) - keeping the correct-scaled position-lambda budget until then, so the normal
         // velocity solve above can be measured on its own without a friction regression riding along.
-        const maxImpulse = friction * Math.abs(point.normalLambda) / h;
+        const maxImpulse = friction * Math.abs(point.normalImpulse); // decoupled: velocity solve owns the full normal impulse
         if (maxImpulse <= 0) return;
 
         // Current tangential relative velocity, and the impulse that would zero it.
@@ -692,7 +666,7 @@ class Solver {
         }
         if (wSum < 1e-12) return;
 
-        const maxAngImpulse = rollingFriction * Math.abs(point.normalLambda) / h; // see friction's budget comment: normalLambda-scaled until the normal solve owns the full normal force
+        const maxAngImpulse = rollingFriction * Math.abs(point.normalImpulse); // decoupled: sustained normal impulse
         if (maxAngImpulse <= 0) return;
         let j = relWMag / wSum;
         if (j > maxAngImpulse) j = maxAngImpulse;
