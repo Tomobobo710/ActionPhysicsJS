@@ -49,30 +49,35 @@ var SKIP_FILES = {
 	'sleep.js': true,
 };
 
-// Suite files. A leading _ marks a shared helper, loaded first and never treated as a suite.
-var suitesDir = path.join(HERE, 'js', 'suites');
-var utilFile = path.join(suitesDir, '_util.js');
-if (fs.existsSync(utilFile)) require(utilFile);
-fs.readdirSync(suitesDir)
-	.filter(function (f) { return f.endsWith('.js') && f.charAt(0) !== '_' && !SKIP_FILES[f]; })
+// The suite IS the folder. tests/js/ holds the runner, the renderer, the shared _*.js helpers, and
+// one directory per suite. Load the helpers first (they're plain requires, not test files), then walk
+// each suite folder in SUITE_ORDER, calling Runner.suite('<folder>') before requiring its files so
+// every test in that folder registers under the folder name. Any suite folder not in SUITE_ORDER
+// still loads (sorted last), so a new folder needs no wiring here.
+var jsDir = path.join(HERE, 'js');
+fs.readdirSync(jsDir)
+	.filter(function (f) { return f.charAt(0) === '_' && f.endsWith('.js'); })
 	.sort()
-	.forEach(function (f) { require(path.join(suitesDir, f)); });
+	.forEach(function (f) { require(path.join(jsDir, f)); });
 
-// Tom's suite: a separate directory (not folded into js/suites/) of scene-style FPS/physics
-// regression tests, kept apart because it has its own shared helpers (_util.js, _util_fps.js) and
-// naming conventions distinct from the base engine suite. Loaded the same way - _-prefixed files
-// first (as plain requires, not test files), then everything else.
-var tomDir = path.join(HERE, 'js', 'tom');
-if (fs.existsSync(tomDir)) {
-	fs.readdirSync(tomDir)
-		.filter(function (f) { return f.endsWith('.js') && f.charAt(0) === '_'; })
-		.sort()
-		.forEach(function (f) { require(path.join(tomDir, f)); });
-	fs.readdirSync(tomDir)
+var suiteDirs = fs.readdirSync(jsDir).filter(function (f) {
+	return f !== 'adapters' && fs.statSync(path.join(jsDir, f)).isDirectory();
+});
+// Load in display order (mirrors runner.js SUITE_ORDER); folders not listed here load last.
+var ORDER = ['math', 'shapes', 'collision-detection', 'contacts', 'solver', 'stacking',
+	'constraints', 'queries', 'character', 'fps', 'scenes'];
+suiteDirs.sort(function (a, b) {
+	var ia = ORDER.indexOf(a), ib = ORDER.indexOf(b);
+	if (ia === -1) ia = ORDER.length; if (ib === -1) ib = ORDER.length;
+	return ia - ib || (a < b ? -1 : 1);
+});
+suiteDirs.forEach(function (dir) {
+	Runner.suite(dir);
+	fs.readdirSync(path.join(jsDir, dir))
 		.filter(function (f) { return f.endsWith('.js') && f.charAt(0) !== '_' && !SKIP_FILES[f]; })
 		.sort()
-		.forEach(function (f) { require(path.join(tomDir, f)); });
-}
+		.forEach(function (f) { require(path.join(jsDir, dir, f)); });
+});
 
 var onlySuite = null, only = null, showLogs = false, bySuite = false, bail = false;
 process.argv.slice(2).forEach(function (a) {

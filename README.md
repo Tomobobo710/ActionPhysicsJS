@@ -36,8 +36,10 @@ src/
   world/             — Top-level physics world (step(), add/remove bodies, contact events)
 
 tests/
-  js/suites/         — Unit and integration test suites
-  js/tom/            — Scene-level tests (FPS scenarios, menagerie, knockback, pyramid stacking, etc.)
+  js/                — runner.js, render.js, shared _util*.js helpers, and one folder per suite
+  js/<suite>/        — the suite IS the folder: math, shapes, collision-detection, contacts, solver,
+                       stacking, constraints, queries, character, fps, scenes. A test's category is
+                       where it sits on disk; test files never name a suite themselves.
   lib/               — Three.js for visual test bench
 
 build/               — Bundled output (actionphysics.js)

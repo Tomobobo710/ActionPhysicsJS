@@ -22,20 +22,32 @@
 
 	var tests = [];
 
-	// Suite currently being registered. Test files call Runner.suite(key) at the top, then register
-	// their tests. Drives run order and the frontend's suite picker.
+	// Suite currently being registered. The SUITE IS THE FOLDER: every test file lives in
+	// tests/js/<suite>/, and the loader (run_headless.js / suite.html) calls Runner.suite('<folder>')
+	// once before requiring that folder's files. Test files never call suite() themselves — a test's
+	// category is where it sits on disk, nothing else. Drives run order and the frontend's picker.
 	var _currentSuite = 'math';
 	function suite(key) { _currentSuite = key; }
 
-	// Display order. An unlisted suite still runs, it just sorts last.
-	var SUITE_ORDER = ['math', 'shapes', 'collision', 'solver', 'character', 'tom'];
+	// Display order, following the engine pipeline: math -> shapes -> collision detection -> contact
+	// generation -> solver -> stacking stress -> constraints -> queries -> character -> fps -> loose
+	// scenes. An unlisted suite still runs, it just sorts last.
+	var SUITE_ORDER = [
+		'math', 'shapes', 'collision-detection', 'contacts', 'solver', 'stacking',
+		'constraints', 'queries', 'character', 'fps', 'scenes'
+	];
 	var SUITE_NAMES = {
 		math: 'Math',
 		shapes: 'Shapes',
-		collision: 'Collision',
+		'collision-detection': 'Collision Detection',
+		contacts: 'Contacts',
 		solver: 'Solver',
+		stacking: 'Stacking',
+		constraints: 'Constraints',
+		queries: 'Queries',
 		character: 'Character',
-		tom: "Tom's Suite"
+		fps: 'FPS Controller',
+		scenes: 'Scenes'
 	};
 
 	// A failed assertion throws this; a real code error is anything else. The runner distinguishes them.

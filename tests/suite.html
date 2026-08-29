@@ -16,9 +16,6 @@
 		.controls button { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; padding: 5px 9px; cursor: pointer; font-family: monospace; font-size: 12px; border-radius: 4px; }
 		.controls button.active { background: #1f6feb; border-color: #1f6feb; color: #fff; }
 		.controls button:hover { border-color: #8b949e; }
-		.controls .runsuite { margin-left: auto; background: #238636; border-color: #2ea043; color: #fff; }
-		.controls .runsuite:hover { background: #2ea043; }
-		.controls .runsuite:disabled { background: #21262d; border-color: #30363d; color: #8b949e; cursor: default; }
 		#testNow { width: 100%; background: #238636; border: 1px solid #2ea043; color: #fff; padding: 8px; font-size: 13px; font-weight: bold; border-radius: 5px; cursor: pointer; font-family: monospace; }
 		#testNow:hover { background: #2ea043; }
 		#testNow:disabled { background: #21262d; border-color: #30363d; color: #8b949e; cursor: default; }
@@ -92,95 +89,56 @@
 
 	<script>
 	(function () {
-		var FILES = [
-			// vendored renderer deps (not npm packages)
+		// The suite IS the folder: tests/js/<suite>/*.js. This manifest just lists each folder's files
+		// (a browser can't scan a directory). Before each folder's files, an inline call to
+		// APRunner.suite('<folder>') sets the suite every test in it registers under — the test files
+		// themselves never name a suite. To add a test: drop it in the right folder and add one line
+		// here. Headless (run_headless.js) discovers the same folders automatically.
+		var HEAD = [
 			"lib/three.min.js",
 			"lib/ConvexGeometry.js",
-			// the engine under test
 			"../build/actionphysics.js",
-			// harness
 			"js/runner.js",
 			"js/adapters/three-adapter.js",
-			// suites (register via suite()/test())
-			"js/suites/scalar.js",
-			"js/suites/vector3.js",
-			"js/suites/quaternion.js",
-			"js/suites/matrix.js",
-			"js/suites/shapes.js",
-			"js/suites/bodies.js",
-			"js/suites/broadphase.js",
-			"js/suites/bvh.js",
-			"js/suites/midphase.js",
-			"js/suites/gjk.js",
-			"js/suites/epa.js",
-			"js/suites/contacts.js",
-			"js/suites/solver.js",
-			"js/suites/speculative.js",
-			"js/suites/friction_restitution.js",
-			"js/suites/constraints.js",
-			"js/suites/queries.js",
-			"js/suites/pyramid.js",
-			"js/suites/damping.js",
-			"js/suites/balance.js",
-			"js/suites/gravity.js",
-			"js/suites/box_sphere.js",
-			"js/suites/box_box.js",
-			"js/suites/sphere_sphere.js",
-			"js/suites/gjk_epa_configs.js",
-			"js/suites/constraint_slider_scene.js",
-			"js/suites/constraint_weld_scene.js",
-			"js/suites/sphere_pyramid_scene.js",
-			"js/suites/support_points.js",
-			"js/suites/raytracing.js",
-			"js/suites/contact_events.js",
-			"js/suites/convexshape.js",
-			"js/suites/sweptshapes.js",
-			"js/suites/sphere_stack_scene.js",
-			"js/suites/sphere_stack_spawn_scene.js",
-			"js/suites/constraint_point_scene.js",
-			"js/suites/constraint_hinge_scene.js",
-			"js/suites/character_controller_scene.js",
-
-			// Tom's suite - a separate directory with its own shared helpers (_util.js, _util_fps.js),
-			// loaded first since every test file below depends on them.
-			"js/tom/_util.js",
-			"js/tom/_util_fps.js",
-			"js/tom/balance.js",
-			"js/tom/bounce-energy.js",
-			"js/tom/capsule-support.js",
-			"js/tom/compound-mesh-cache.js",
-			"js/tom/compound-mesh.js",
-			"js/tom/fps-character-collision.js",
-			"js/tom/fps-entangle.js",
-			"js/tom/fps-ghost.js",
-			"js/tom/fps-ground-shell.js",
-			"js/tom/fps-knockback.js",
-			"js/tom/fps-ladder.js",
-			"js/tom/fps-mantle.js",
-			"js/tom/fps-movement.js",
-			"js/tom/fps-netcode.js",
-			"js/tom/fps-platform.js",
-			"js/tom/fps-push.js",
-			"js/tom/fps-ramp.js",
-			"js/tom/fps-state.js",
-			"js/tom/fps-walls.js",
-			"js/tom/menagerie.js",
-			"js/tom/meshmesh-collision.js",
-			"js/tom/perf-settle-scene-compound.js",
-			"js/tom/perf-settle-scene.js",
-			"js/tom/rest.js",
-			"js/tom/roll.js",
-			"js/tom/shapes-drop.js",
-			// "js/tom/sleep.js",  // island sleeping — IslandManager not yet wired into the world step; every test fails
-			"js/tom/smear.js",
-			"js/tom/special-shapes.js",
-			"js/tom/swept-mesh-query.js",
-			"js/tom/swept-shape-matrix.js",
-
-			// renderer LAST, after every test has registered
-			"js/render.js"
+			"js/_util.js",       // shared scene helpers (were js/tom/_util*.js)
+			"js/_util_fps.js"
 		];
-		FILES.forEach(function (src) { document.write('<script src="' + src + '?v=' + Date.now() + '"><\/script>'); });
+		// Load order mirrors runner.js SUITE_ORDER (the engine pipeline).
+		var SUITES = {
+			"math":                ["scalar.js", "vector3.js", "quaternion.js", "matrix.js"],
+			"shapes":              ["shapes.js", "bodies.js"],
+			"collision-detection": ["broadphase.js", "bvh.js", "midphase.js", "gjk.js", "epa.js",
+			                        "gjk_epa_configs.js", "support_points.js", "capsule-support.js"],
+			"contacts":            ["contacts.js", "contact_events.js", "box_sphere.js", "box_box.js",
+			                        "sphere_sphere.js", "convexshape.js"],
+			"solver":              ["solver.js", "gravity.js", "damping.js", "balance.js",
+			                        "speculative.js", "friction_restitution.js"],
+			"stacking":            ["pyramid.js", "sphere_pyramid_scene.js", "sphere_stack_scene.js",
+			                        "sphere_stack_spawn_scene.js"],
+			"constraints":         ["constraints.js", "constraint_point_scene.js", "constraint_hinge_scene.js",
+			                        "constraint_weld_scene.js", "constraint_slider_scene.js"],
+			"queries":             ["queries.js", "raytracing.js", "sweptshapes.js"],
+			"character":           ["character_controller_scene.js"],
+			"fps":                 ["fps-character-collision.js", "fps-entangle.js", "fps-ghost.js",
+			                        "fps-ground-shell.js", "fps-knockback.js", "fps-ladder.js", "fps-mantle.js",
+			                        "fps-movement.js", "fps-netcode.js", "fps-platform.js", "fps-push.js",
+			                        "fps-ramp.js", "fps-state.js", "fps-walls.js"],
+			"scenes":              ["balance.js", "bounce-energy.js", "compound-mesh.js", "compound-mesh-cache.js",
+			                        "menagerie.js", "meshmesh-collision.js", "rest.js", "roll.js",
+			                        "shapes-drop.js", "smear.js", "special-shapes.js", "swept-mesh-query.js",
+			                        "swept-shape-matrix.js", "perf-settle-scene.js", "perf-settle-scene-compound.js"]
+			// "scenes" also holds sleep.js — omitted: IslandManager isn't wired into the world step yet, every test fails.
+		};
+		var v = "?v=" + Date.now();
+		function emit(src) { document.write('<script src="' + src + v + '"><\/script>'); }
+		function emitInline(js) { document.write('<script>' + js + '<\/script>'); }
+
+		HEAD.forEach(emit);
+		Object.keys(SUITES).forEach(function (suite) {
+			emitInline("window.APRunner.suite('" + suite + "');");
+			SUITES[suite].forEach(function (f) { emit("js/" + suite + "/" + f); });
+		});
+		emit("js/render.js");   // renderer LAST, after every test has registered
 	})();
 	</script>
 </head>
@@ -233,44 +191,6 @@
 		mkBtn('all', 'All');
 		Runner.suites().forEach(function (s) { mkBtn(s.key, s.name); });
 
-		// "run suite ▶" — run every test in the active suite sequentially, visually, one after another,
-		// with a live subtotal in the summary line. "all" runs each suite as its own block in turn.
-		var runSuiteBtn = document.createElement('button');
-		runSuiteBtn.className = 'runsuite'; runSuiteBtn.textContent = 'run suite ▶';
-		runSuiteBtn.onclick = function () {
-			var groups = (activeSuite === 'all')
-				? Runner.suites().map(function (s) { return { key: s.key, name: s.name }; })
-				: [{ key: activeSuite, name: (suiteName[activeSuite] || activeSuite) }];
-			var pass = 0, fail = 0;
-			runSuiteBtn.disabled = true; testNow.disabled = true; quickTest.disabled = true;
-			runSuiteBtn.textContent = 'running…';
-			var gi = 0;
-			(function nextGroup() {
-				if (gi >= groups.length) {
-					runSuiteBtn.disabled = false; testNow.disabled = false; quickTest.disabled = false;
-					runSuiteBtn.textContent = 'run suite ▶';
-					return;
-				}
-				var g = groups[gi++];
-				var list = Runner.orderedTests().filter(function (t) { return t.suite === g.key; });
-				list.forEach(function (t) { setDot(t, 'running'); });
-				var i = 0;
-				(function next() {
-					if (i >= list.length) { setTimeout(nextGroup, 0); return; }
-					var t = list[i++];
-					Render.run(t, { fast: true, onComplete: function (r) {
-						results[key(t)] = r; setDot(t, r.ok ? 'pass' : 'fail');
-						r.ok ? pass++ : fail++;
-						document.getElementById('summary').innerHTML =
-							'<b>' + pass + '</b> passed, <b style="color:' + (fail ? '#f85149' : '#3fb950') + '">' + fail + '</b> failed'
-							+ ' <span style="color:#8b949e">(' + g.name + ' ' + i + '/' + list.length + ')</span>';
-						setTimeout(next, t.steps > 0 ? 700 : 120);
-					} });
-				})();
-			})();
-		};
-		picker.appendChild(runSuiteBtn);
-
 		// ---- build the collapsible per-page list ----
 		function visibleTests() {
 			return Runner.orderedTests().filter(function (t) { return activeSuite === 'all' || t.suite === activeSuite; });
@@ -301,7 +221,7 @@
 						+ '<span class="sn">' + (suiteName[pg.suite] || pg.suite) + '</span>'
 						+ '<span class="scnt">' + suiteTests.length + '</span>'
 						+ '<button class="runsuite-inline quick" type="button">quick</button>'
-						+ '<button class="runsuite-inline live" type="button">run ▶</button>';
+						+ '<button class="runsuite-inline live" type="button">run</button>';
 					sh.querySelector('.quick').onclick = function (ev) { ev.stopPropagation(); runPageQuick(suiteTests, ev.target); };
 					sh.querySelector('.live').onclick = function (ev) { ev.stopPropagation(); runPageLive(suiteTests, ev.target); };
 					list.appendChild(sh);
