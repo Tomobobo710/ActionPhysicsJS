@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-28T13:38:03.927Z
+// ActionPhysics 0.1.0 — built 2026-08-28T14:20:06.984Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine.
@@ -8145,6 +8145,12 @@ class World {
             const b = this.bodies[i];
             if (b.bodyType === RigidBody.DYNAMIC) b.clearForces();
         }
+
+        // This tick's real contacts (the same ContactManifoldList the solver just resolved), for any
+        // listener that wants to observe genuine touches - each manifold carries bodyA/bodyB and its
+        // surviving contact points. Emitted after the solve so positions/points reflect the resolved
+        // state. A pair with no manifold (or a pruned, zero-point one) simply isn't present.
+        this.emit('contacts', manifolds);
 
         this.emit('stepEnd', dt);
     }

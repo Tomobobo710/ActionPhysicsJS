@@ -5,8 +5,17 @@
 // Deliberately NOT pinned to one expected trajectory/orientation (see git history: an earlier test
 // in this style asserted one exact final resting face and had to be pulled — it passed while
 // looking visibly wrong, and failed the moment a shape's tumble path changed for an unrelated
-// reason). This file is a visual/data-gathering rig: watch it, then look at the real per-shape
-// numbers together and decide what's actually worth asserting.
+// reason).
+//
+// What IS asserted is contact, not pose: every shape must make a real engine contact (a
+// ContactManifold with live points, read off the World's per-tick 'contacts' event — never a
+// geometric distance guess) with each of the three surfaces it travels across — the ramp, the raised
+// debug bar mid-ramp, and the floor. One criterion per shape per surface, so a regression names the
+// exact culprit ("sphere ✗ ramp"), and each flips green live as the shape arrives. This survives any
+// change to HOW a shape tumbles while still catching a shape that misses a surface entirely — e.g.
+// the box-box flat-contact behaviour this rig helped shake out (before that fix a box on this ramp
+// could drift/skew off its expected path; the contact asserts guard that the shapes still travel the
+// whole ramp→bar→floor journey they're meant to).
 (function (Runner, U, AP) {
 	Runner.suite('tom');
 
@@ -48,7 +57,7 @@
 		var w = t.makeWorld({ gravity: -9.8 });
 
 		// Floor.
-		U.ground(t, w);
+		var floor = U.ground(t, w);
 
 		// Camera-framing anchors only (see render.js's frameCamera: it centers the initial view on the
 		// AVERAGE position of every registered body, unweighted - one floor counts the same as one tiny
@@ -66,14 +75,14 @@
 		// U.axisAngle returns a plain [x,y,z,w] array (see _util.js), not a Quaternion instance -
 		// used directly as t.box's `rot` array.
 		var rampRot = U.axisAngle(t, 1, 0, 0, RAMP_ANGLE);
-		t.box(w, RAMP_HALF.x, RAMP_HALF.y, RAMP_HALF.z, 0, {
+		var ramp = t.box(w, RAMP_HALF.x, RAMP_HALF.y, RAMP_HALF.z, 0, {
 			pos: [rampCenter.x, rampCenter.y, rampCenter.z], rot: rampRot,
 			friction: 0.5, restitution: 0.1, color: '#6a5a4a'
 		});
 
 		// DEBUG marker: RAMP_WIDTHx1x1 box (long on X) at the ramp's own halfway point, same rotation
 		// as the ramp, for manual positioning. RAMP_HALF.x*2 is the ramp's full width.
-		t.box(w, RAMP_HALF.x, 0.25, 0.25, 0, {
+		var debugBar = t.box(w, RAMP_HALF.x, 0.25, 0.25, 0, {
 			pos: [rampCenter.x, rampCenter.y, rampCenter.z], rot: rampRot,
 			color: '#ff00ff'
 		});
@@ -128,6 +137,51 @@
 			}
 		});
 
+		// ---- Real-contact tracking ----------------------------------------------------------------
+		// "Touch" is a genuine engine contact, not a geometric proximity guess: the World emits its
+		// per-tick ContactManifoldList (the very manifolds the solver just resolved) as a 'contacts'
+		// event. A shape has touched a surface once a manifold exists for that exact body pair with at
+		// least one surviving contact point. This is robust to HOW each shape tumbles (the whole point
+		// of this rig - see file header): we assert that contact happened, never where or in what pose.
+		// Each shape gets a per-surface latch that, once set, stays set - so a momentary touch counts
+		// even after the shape has moved on.
+		var touched = {}; // name -> { ramp, bar, floor }
+		for (var si = 0; si < shapes.length; si++) touched[shapes[si].name] = { ramp: false, bar: false, floor: false };
+
+		w.addListener('contacts', function (manifolds) {
+			for (var mi = manifolds.values(), m = mi.next(); !m.done; m = mi.next()) {
+				var man = m.value;
+				if (man.points.length === 0) continue;
+				for (var i = 0; i < shapes.length; i++) {
+					var body = shapes[i].body, rec = touched[shapes[i].name];
+					var other = man.bodyA === body ? man.bodyB : (man.bodyB === body ? man.bodyA : null);
+					if (other === null) continue;
+					if (other === ramp) rec.ramp = true;
+					else if (other === debugBar) rec.bar = true;
+					else if (other === floor) rec.floor = true;
+				}
+			}
+		});
+
+		// One criterion PER SHAPE PER SURFACE (5 shapes x 3 surfaces = 15), each going green the tick
+		// that specific shape first contacts that specific surface. Deliberately granular: a future
+		// regression reads as exactly "sphere ✗ ramp" or "box ✗ bar" - you see which shape missed which
+		// part, not just that "something" didn't touch. Each fires independently and in real time as the
+		// run plays, so the viewer shows them flipping to green in the order the shapes actually arrive.
+		function touches(shapeName, surface) {
+			return function () {
+				if (touched[shapeName][surface]) return { ok: true, detail: shapeName + ' contacted the ' + surface };
+				return { ok: false, detail: shapeName + ' has not contacted the ' + surface + ' yet' };
+			};
+		}
+		var SURFACES = ['ramp', 'bar', 'floor'];
+		for (var ci = 0; ci < shapes.length; ci++) {
+			for (var cs = 0; cs < SURFACES.length; cs++) {
+				var nm = shapes[ci].name, sf = SURFACES[cs];
+				t.expect(nm + ' makes real contact with the ' + sf, touches(nm, sf));
+			}
+		}
+
 		// Minimal sanity gate only (no pinned trajectory/pose - see file header) - just enough of a
 		// real t.expect() for the viewer to treat this as a live/steppable scene instead of a frozen
 		// setup-only snapshot (render.js's captureSetup only schedules live stepping when at least one
@@ -151,8 +205,10 @@
 		description:
 			"Coin-pusher rig: five shapes (box, sphere, capsule, cone, cylinder) lined up on a high " +
 			"platform get slowly shoved off the edge by a moving pusher box, fall onto a steep ramp, " +
-			"and tumble down onto the floor. No pinned pass/fail criteria yet — watch it, then look " +
-			"at the real per-shape numbers together before deciding what's worth asserting."
+			"and tumble down onto the floor. Asserts real engine contact (not pose) per shape per " +
+			"surface: every shape must actually touch the ramp, the raised debug bar, and the floor — " +
+			"15 criteria that flip green live as each shape arrives, so a regression names the exact " +
+			"shape-and-surface that was missed."
 	});
 })(
 	typeof module !== 'undefined' && module.exports ? require('../runner.js') : window.APRunner,
