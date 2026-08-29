@@ -27,15 +27,14 @@ var stampLine = fs.readFileSync(buildFile, 'utf8').split(/\r?\n/)[0];
 console.log(stampLine.replace(/^\/\/\s*/, '=== ') + ' ===');
 
 // Skipped from headless runs: the 385-box pyramid (1200 ticks x 385 bodies) is slow and would
-// dominate every run's signal during perf iteration. The file is untouched, just unloaded here;
-// remove the entry to fold it back into every run.
+// dominate every run's signal during perf iteration. The two perf-settle scenes are pure timing
+// benchmarks, not pass/fail correctness tests, and dominate wall-clock time; skipped by explicit
+// standing instruction until told otherwise. The files are untouched, just unloaded here; remove
+// an entry to fold it back into every run.
 var SKIP_FILES = {
 	'pyramid.js': true,
-	// Skipped until further notice: these two dominate a full run's wall-clock time (large body
-	// counts / triangle counts settling over hundreds of ticks) and were making routine full-suite
-	// runs impractically slow during iteration. Remove these entries to fold them back in.
 	'perf-settle-scene.js': true,
-	'perf-settle-scene-compound.js': true
+	'perf-settle-scene-compound.js': true,
 };
 
 // Suite files. A leading _ marks a shared helper, loaded first and never treated as a suite.

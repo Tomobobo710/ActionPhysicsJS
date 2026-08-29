@@ -68,13 +68,10 @@ class RigidBody {
         // Rolling resistance coefficient (metres): opposes a round shape's spin AT a contact by
         // capping the angular velocity component about the contact's tangent plane, the same way
         // Coulomb friction caps tangential slip - see Solver._solveContactVelocity's rolling pass.
-        // Was 0 (matching Goblin's own default and ActionEngineJS's MATERIAL_DEFAULTS, which has no
-        // rollingFriction field). Root cause of the residual spin: the position solve's per-substep
-        // angular correction at a curved contact flips sign substep to substep (the contact anchor
-        // legitimately migrates as the shape spins), re-injecting a kick of similar size to what
-        // rolling resistance's own torque removes. 0.05 is the smallest tested value whose torque
-        // reliably outweighs that kick so the residual actually converges to rest.
-        this.rolling_friction = 0.05;
+        // Defaults to 0, matching Goblin's own RigidBody.rolling_friction default and ActionEngineJS's
+        // MATERIAL_DEFAULTS (which has no rollingFriction field at all - it relies on angular_damping
+        // alone). Opt-in, not part of either upstream default material.
+        this.rolling_friction = 0;
 
         // ---- Filtering ----
         this.collision_mask = 0xFFFFFFFF;

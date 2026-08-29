@@ -126,20 +126,20 @@
 
 	visualTest('restitution', 'four restitution sub-tests (shared world)', function (t) {
 		var world = t.makeWorld({ gravity: 0 });
-		// linear_damping/angular_damping explicitly zeroed on every body: the engine's own default
-		// material (linear_damping 0.1) would otherwise slowly bleed each ball's post-bounce free-
-		// flight speed over the ~90 remaining ticks this test watches, which reads as a restitution
-		// bug (exit speed measured well under the target) but is actually just ordinary damping doing
-		// its job on a test that predates the engine's default-material change and was never updated
-		// to hold its own material explicit, unlike the other tests already fixed for this.
-		var t1_stat = t.sphere(world, 1, 0, { pos: [0, 0, 0], restitution: 1, linear_damping: 0, angular_damping: 0, color: '#888' });
-		var t1_dyn = t.sphere(world, 1, 1, { pos: [0, 5, 0], vel: [0, -3, 0], restitution: 1, linear_damping: 0, angular_damping: 0, color: '#F4D35E' });
-		var t2_stat = t.sphere(world, 1, 0, { pos: [3, 0, 0], restitution: 0.2, linear_damping: 0, angular_damping: 0, color: '#888' });
-		var t2_dyn = t.sphere(world, 1, 1, { pos: [3, 5, 0], vel: [0, -3, 0], restitution: 0.2, linear_damping: 0, angular_damping: 0, color: '#EE964B' });
-		var t3_a = t.sphere(world, 1, 1, { pos: [6, 0, 0], restitution: 1, linear_damping: 0, angular_damping: 0, color: '#45B7D1' });
-		var t3_b = t.sphere(world, 1, 1, { pos: [6, 3, 0], vel: [0, -2, 0], restitution: 1, linear_damping: 0, angular_damping: 0, color: '#45B7D1' });
-		var t4_a = t.sphere(world, 1, 1, { pos: [9, 0, 0], linear_damping: 0, angular_damping: 0, color: '#8367C7' });
-		var t4_b = t.sphere(world, 1, 1, { pos: [9, 3, 0], vel: [0, -2, 0], linear_damping: 0, angular_damping: 0, color: '#8367C7' });
+		// linear_damping 0 on every body here: these four sub-tests assert EXACT velocity invariants
+		// to a 0.0001 tolerance (full elastic rebound vy->+3, perfect momentum transfer sep->2), which
+		// only hold when nothing bleeds velocity between impact and measurement. RigidBody's default
+		// linear_damping (0.1) applies every substep and decays the post-bounce speed below tolerance
+		// over the 150-tick window (an elastic vy that should read +3.0000 measured ~2.34). Damping is
+		// a real, wanted default for ordinary bodies - it just has no place in a conservation test.
+		var t1_stat = t.sphere(world, 1, 0, { pos: [0, 0, 0], restitution: 1, linear_damping: 0, color: '#888' });
+		var t1_dyn = t.sphere(world, 1, 1, { pos: [0, 5, 0], vel: [0, -3, 0], restitution: 1, linear_damping: 0, color: '#F4D35E' });
+		var t2_stat = t.sphere(world, 1, 0, { pos: [3, 0, 0], restitution: 0.2, linear_damping: 0, color: '#888' });
+		var t2_dyn = t.sphere(world, 1, 1, { pos: [3, 5, 0], vel: [0, -3, 0], restitution: 0.2, linear_damping: 0, color: '#EE964B' });
+		var t3_a = t.sphere(world, 1, 1, { pos: [6, 0, 0], restitution: 1, linear_damping: 0, color: '#45B7D1' });
+		var t3_b = t.sphere(world, 1, 1, { pos: [6, 3, 0], vel: [0, -2, 0], restitution: 1, linear_damping: 0, color: '#45B7D1' });
+		var t4_a = t.sphere(world, 1, 1, { pos: [9, 0, 0], linear_damping: 0, color: '#8367C7' });
+		var t4_b = t.sphere(world, 1, 1, { pos: [9, 3, 0], vel: [0, -2, 0], linear_damping: 0, color: '#8367C7' });
 
 		function reachesVy(b, v, eps) { return function () { var d = Math.abs(b.linear_velocity.y - v); return { ok: d <= eps, detail: 'vy=' + b.linear_velocity.y.toFixed(4) }; }; }
 		function sepSpeed(a, b, v, eps) { return function () { var s = a.linear_velocity.length() + b.linear_velocity.length(); return { ok: Math.abs(s - v) <= eps, detail: 'sep=' + s.toFixed(4) }; }; }

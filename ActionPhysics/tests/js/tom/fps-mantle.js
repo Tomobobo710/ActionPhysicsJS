@@ -241,7 +241,7 @@
 		// consistent at every scale: light enough to genuinely drift when walked into, but heavy
 		// enough (still well below the wall threshold) to stay close by and be there to land on
 		// once the mantle arc completes a moment later.
-		var pushableMass = p._pushMassLimit * 0.2;
+		var pushableMass = p._pushMassLimit * 0.3;
 		var box = PBF.object(w, side, pushableMass, { x: 0, y: side / 2, z: side / 2 }, '#7a5a3a', { friction: 0.4, restitution: 0.1 });
 		PBF.renderables(t, p);
 

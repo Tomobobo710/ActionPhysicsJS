@@ -43,17 +43,6 @@ class ContactDetails {
         // fraction of the speed the body was APPROACHING at, which is gone by the time the solve
         // finishes. Written each substep by the solver; not warm-start state.
         this._preSolveNormalVel = 0;
-
-        // The normal-direction Lagrange multiplier that ACTUALLY reached velocity this substep - may
-        // be smaller in magnitude than normalLambda when the impulse bound (see Solver._solvePoint's
-        // own comment) capped a spawn/teleport-scale correction's velocity contribution below its
-        // full geometric size. Friction/rolling-resistance's own Coulomb budgets (_solveContactVelocity,
-        // _solveRollingResistance) must scale off THIS, not normalLambda - a real, confirmed bug: using
-        // the full (uncapped) normalLambda for those budgets let a bounded-impulse contact's tangential
-        // friction/rolling impulse exceed what the body's own ACTUAL normal-direction velocity change
-        // justified, injecting real energy (traced: a corner bounce's apex height grew instead of only
-        // decaying). Written alongside normalLambda every substep; not warm-start state.
-        this.velocityLambda = 0;
     }
 
     // Derives localAnchorA/localAnchorB from the CURRENT pointOnA/pointOnB and the given bodies'
