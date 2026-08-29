@@ -88,6 +88,7 @@ module.exports = [
     'src/phases/BoxBox.js',
     'src/phases/TriTri.js',
     'src/phases/ConvexTri.js',
+    'src/phases/TriPlaneCull.js',
     'src/phases/PairTest.js',
     'src/phases/SpeculativeMargin.js',
     'src/phases/GeometryRefresh.js',

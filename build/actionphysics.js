@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-29T12:13:02.102Z
+// ActionPhysics 0.1.0 — built 2026-08-29T18:24:19.621Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine. Ships as one concatenated
@@ -5090,7 +5090,19 @@ class ContactDetails {
         this.localAnchorB = new Vector3();
 
         this._preSolveNormalVel = 0; // for restitution, written each substep
-        this.fromMeshFace = false;   // set by TriTri; gates the mesh-face merge and patch solve
+        this.fromMeshFace = false;   // set by TriTri/ConvexTri; gates the mesh-face merge and patch solve
+
+        // Source triangle for a mesh-face contact, in world space (the mesh side is static ground,
+        // so these verts don't move within a tick). Lets GeometryRefresh re-clip only the triangle
+        // that produced this point each substep instead of re-running the whole midphase +
+        // narrowphase for the pair. Set by TriTri/ConvexTri alongside fromMeshFace; meshTriValid
+        // stays false when unset so the refresh can fall back.
+        this.meshTriValid = false;
+        this.meshTriA = new Vector3();
+        this.meshTriB = new Vector3();
+        this.meshTriC = new Vector3();
+        this.meshTriBodyCenter = new Vector3();
+        this.meshTriIsSideA = false; // was the triangle placedA (true) or placedB (false) in the pair
     }
 
     // Derives local anchors from the current witness points. Called once at creation, never on a
@@ -5152,6 +5164,25 @@ class ContactDetails {
         this.tangentLambda1 = other.tangentLambda1;
         this.tangentLambda2 = other.tangentLambda2;
         this.fromMeshFace = other.fromMeshFace;
+        this.meshTriValid = other.meshTriValid;
+        if (other.meshTriValid) {
+            this.meshTriA.copy(other.meshTriA);
+            this.meshTriB.copy(other.meshTriB);
+            this.meshTriC.copy(other.meshTriC);
+            this.meshTriBodyCenter.copy(other.meshTriBodyCenter);
+            this.meshTriIsSideA = other.meshTriIsSideA;
+        }
+        return this;
+    }
+
+    // Records the world-space source triangle for a mesh-face contact (see the field comments).
+    setMeshTriangle(a, b, c, bodyCenter, isSideA) {
+        this.meshTriValid = true;
+        this.meshTriA.copy(a);
+        this.meshTriB.copy(b);
+        this.meshTriC.copy(c);
+        if (bodyCenter) this.meshTriBodyCenter.copy(bodyCenter); else this.meshTriBodyCenter.set(0, 0, 0);
+        this.meshTriIsSideA = isSideA;
         return this;
     }
 
@@ -6196,33 +6227,64 @@ ConvexTri._pointInTri = function (hx, hy, hz, t0, t1, t2, tn, slack) {
     // `tn` here is refN, which may have been flipped away from the triangle's winding normal, so
     // the three sub-areas share a sign but which one is unknown - accept either, like TriTri.
     const d0 = s0 / l0, d1 = s1 / l1, d2 = s2 / l2;
-    return (d0 >= -slack && d1 >= -slack && d2 >= -slack) ||
-        (d0 <= slack && d1 <= slack && d2 <= slack);
+    // How far outside the nearest edge (metres); <= 0 means inside. Take the better of the two
+    // winding-sign interpretations.
+    const outPos = Math.max(-d0, -d1, -d2);   // if the triangle is CCW about tn
+    const outNeg = Math.max(d0, d1, d2);      // if CW
+    ConvexTri._lastOutside = Math.min(outPos, outNeg);
+    return ConvexTri._lastOutside <= slack;
 };
 
 // out: array to push ContactDetails into (pooled via nextContact()). Returns out on success (may
 // be empty, which still vetoes the GJK/EPA fallback), or null to fall through to GJK/EPA.
-ConvexTri.test = function (placedA, placedB, out, nextContact) {
+//
+// hintNormalBToA (optional): the established contact normal (B -> A) from an existing manifold
+// point. When given, the reference face is oriented to match it instead of the convex-centre
+// heuristic. GeometryRefresh passes this every substep: a settling convex's centroid can creep to
+// within a hair of the (heightfield) triangle plane, at which point the centre heuristic flips the
+// normal and the contact shoves the body through. The established normal doesn't drift, so the
+// re-clip stays stable.
+ConvexTri.test = function (placedA, placedB, out, nextContact, hintNormalBToA) {
     const aIsTri = placedA.shape instanceof TriangleShape;
     const triPlaced = aIsTri ? placedA : placedB;
     const cvxPlaced = aIsTri ? placedB : placedA;
     const tri = triPlaced.shape;
     const t0 = tri.a, t1 = tri.b, t2 = tri.c;
 
-    // refN = the triangle's normal, oriented toward the side the convex's CENTRE is on (its
-    // resting/free side). Using the centre - not the deepest point - is what gives one-sided
-    // recovery: a convex whose surface has dipped just behind the face still has its centre on
-    // the free side (centre-to-face distance is ~the shape radius, larger than any penetration
-    // we keep resolving), so refN stays put and the contact pushes it back out along +refN
-    // rather than flipping and shoving it through. t0 is a triangle vertex - always local and
-    // correct - so this works for both outward- and inward-wound mesh geometry without needing a
-    // body-centre hint (which is degenerate for a compound ground's per-tile children).
+    // refN = the triangle's normal, oriented toward the convex's resting/free side. When an
+    // established contact normal is supplied, match it (contact.normal is B -> A, and the emitted
+    // normal below is -refN when the triangle is A / +refN when the triangle is B - so refN points
+    // opposite the B->A normal on the A-triangle branch). Otherwise fall back to the convex-centre
+    // heuristic: a convex approaching from clearly outside has its centre a full radius off the
+    // plane, so the sign is unambiguous at first contact (which is the only place this branch runs).
     const refN = ConvexTri._refN;
     if (!ConvexTri._normalInto(refN, t0, t1, t2)) return null;
-    const cvxPos = cvxPlaced.position;
-    if ((cvxPos.x - t0.x) * refN.x + (cvxPos.y - t0.y) * refN.y + (cvxPos.z - t0.z) * refN.z < 0) {
-        refN.scaleInPlace(-1);
+    if (hintNormalBToA) {
+        // want refN aligned with: aIsTri ? -hintNormal : +hintNormal
+        const dot = refN.x * hintNormalBToA.x + refN.y * hintNormalBToA.y + refN.z * hintNormalBToA.z;
+        if ((aIsTri && dot > 0) || (!aIsTri && dot < 0)) refN.scaleInPlace(-1);
+    } else {
+        const cvxPos = cvxPlaced.position;
+        if ((cvxPos.x - t0.x) * refN.x + (cvxPos.y - t0.y) * refN.y + (cvxPos.z - t0.z) * refN.z < 0) {
+            refN.scaleInPlace(-1);
+        }
     }
+
+    // Diagnostics read by GeometryRefresh's fast per-triangle re-clip to decide whether the stored
+    // triangle is still trustworthy. lastDeepestInTriangle: the true deepest point projects inside
+    // the triangle (+ EDGE_SLACK). lastDeepestOutsideDist: how far outside it projects, in metres
+    // (0 when inside). A settled body jittering at a tile edge keeps this tiny; a body that has
+    // drifted onto a neighbour tile pushes it past a fraction of the tile size, at which point the
+    // caller must re-expand to pick up the new supporting triangle.
+    ConvexTri.lastDeepestInTriangle = false;
+    ConvexTri.lastDeepestOutsideDist = Infinity;
+    // 'contact' | 'separated' | 'maybe'. 'separated' means the convex provably has no contact with
+    // this triangle (its nearest point toward the plane is clear of the speculative band), so the
+    // caller can skip the GJK/EPA fallback entirely - that fallback would just re-derive the same
+    // separation at ~100x the cost, and for a prop resting on one tile of a big compound ground
+    // that is the overwhelmingly common case. 'maybe' means no face contact but an edge/vertex hit
+    // is still possible - fall through to GJK/EPA.
+    ConvexTri.lastVerdict = 'maybe';
 
     // Deepest convex point toward the triangle = support along -refN.
     const probeDir = ConvexTri._probeDir;
@@ -6233,7 +6295,13 @@ ConvexTri.test = function (placedA, placedB, out, nextContact) {
     probeDir.set(-refN.x, -refN.y, -refN.z);
     MinkowskiSupport.supportOfInto(dp, cvxPlaced, invRot, probeDir, scratchDir);
     const gap = (dp.x - t0.x) * refN.x + (dp.y - t0.y) * refN.y + (dp.z - t0.z) * refN.z;
-    if (gap > ConvexTri.SEPARATION_LIMIT || gap < -ConvexTri.PENETRATION_LIMIT) return null;
+    if (gap > ConvexTri.SEPARATION_LIMIT) {
+        // Every point of the convex is at least `gap` in front of the triangle's plane, so it
+        // cannot be touching the triangle (which lies in that plane). Definitively separated.
+        ConvexTri.lastVerdict = 'separated';
+        return null;
+    }
+    if (gap < -ConvexTri.PENETRATION_LIMIT) return null; // deep behind - let GJK/EPA judge
 
     // Gather up to four candidate points: the true deepest point, plus a probe tilted toward each
     // triangle edge midpoint. The tilted probes give a flat-faced or side-lying convex a
@@ -6272,10 +6340,19 @@ ConvexTri.test = function (placedA, placedB, out, nextContact) {
     for (let i = 0; i < nCand; i++) {
         const p = cand[i];
         const g = (p.x - t0.x) * refN.x + (p.y - t0.y) * refN.y + (p.z - t0.z) * refN.z;
+        // Record how the true deepest point relates to this triangle, in/out-of-band included.
+        if (i === 0 && (g > ConvexTri.SEPARATION_LIMIT || g < -ConvexTri.PENETRATION_LIMIT)) {
+            ConvexTri.lastDeepestOutsideDist = Infinity;
+        }
         if (g > ConvexTri.SEPARATION_LIMIT || g < -ConvexTri.PENETRATION_LIMIT) continue;
         // project onto the triangle plane
         const projX = p.x - g * refN.x, projY = p.y - g * refN.y, projZ = p.z - g * refN.z;
-        if (!ConvexTri._pointInTri(projX, projY, projZ, t0, t1, t2, refN, ConvexTri.EDGE_SLACK)) continue;
+        const inTri = ConvexTri._pointInTri(projX, projY, projZ, t0, t1, t2, refN, ConvexTri.EDGE_SLACK);
+        if (i === 0) {
+            ConvexTri.lastDeepestOutsideDist = ConvexTri._lastOutside;
+            if (inTri) ConvexTri.lastDeepestInTriangle = true;
+        }
+        if (!inTri) continue;
 
         // dedupe against already-emitted points
         let dup = false;
@@ -6298,12 +6375,28 @@ ConvexTri.test = function (placedA, placedB, out, nextContact) {
         contact.normal.set(normX, normY, normZ);                 // B -> A
         contact.signedDistance = -g;                             // positive = penetrating
         contact.fromMeshFace = true;
+        contact.setMeshTriangle(t0, t1, t2, triPlaced.bodyCenter, aIsTri); // for per-substep re-clip
         Vector3.addInto(contact.point, contact.pointOnA, contact.pointOnB).scaleInPlace(0.5);
         out.push(contact);
         emitted++;
     }
 
-    if (emitted === 0) return null;
+    if (emitted === 0) {
+        // No face contact. Decide whether the convex is nonetheless provably clear of the
+        // triangle so the caller can skip GJK/EPA. The nearest triangle feature to the convex's
+        // deepest point is an edge (the point projects outside), so a lower bound on the
+        // convex-to-triangle distance is hypot(along-plane gap, how-far-outside). When that bound
+        // clears the speculative band, it is 'separated'; otherwise an edge/vertex contact is
+        // still possible and we leave the verdict at 'maybe' for the GJK/EPA fallback. This is the
+        // common case for a prop resting on one tile of a big compound ground: its AABB overlaps
+        // the neighbouring coplanar tiles (gap ~ 0) but it sits laterally outside them.
+        const outside = ConvexTri.lastDeepestOutsideDist;
+        const along = gap > 0 ? gap : 0;
+        if (isFinite(outside) && Math.sqrt(along * along + outside * outside) > ConvexTri.SEPARATION_LIMIT) {
+            ConvexTri.lastVerdict = 'separated';
+        }
+        return null;
+    }
     return out;
 };
 
@@ -6314,8 +6407,76 @@ ConvexTri._invRot = new Quaternion();
 ConvexTri._dp = new Vector3();
 ConvexTri._edgeMid = new Vector3();
 ConvexTri._cand = [new Vector3(), new Vector3(), new Vector3(), new Vector3()];
+ConvexTri.lastDeepestInTriangle = false;
+ConvexTri.lastDeepestOutsideDist = Infinity;
+ConvexTri._lastOutside = 0;
+ConvexTri.lastVerdict = 'maybe';
+// Fast re-clip may trust a stored triangle while the convex's deepest point sits at most this far
+// (metres) outside it - covers settled-body jitter and a shallow overhang, but not a real slide
+// onto the neighbouring tile.
+ConvexTri.REFRESH_DRIFT_TOLERANCE = 0.35;
 
 ActionPhysics.ConvexTri = ConvexTri;
+
+
+// ==== src/phases/TriPlaneCull.js ====
+// Cheap conservative "is this convex provably not touching this triangle" test, for the GJK/EPA
+// fallback in PairTest to skip. One support-map query plus a point-in-triangle check, vs GJK
+// running a full iteration loop only to report the same separation.
+//
+// Dominant case for a big CompoundShape ground: a prop rests on one tile, its broadphase AABB
+// overlaps the neighbouring coplanar tiles, and GJK would run on each just to say "separated".
+// ConvexTri already does this for curved convexes as a side effect of building its face contact;
+// this covers the flat-faced ones (BoxShape, ConvexShape) it deliberately skips.
+const TriPlaneCull = {};
+
+// Same generous bound ConvexTri uses: beyond this a convex can't be in contact with the triangle.
+// Comfortably exceeds any per-pair speculative margin at these speeds, so a pair rejected here is
+// one PairTest.step() would have discarded against the real margin anyway.
+TriPlaneCull.FACE_LIMIT = 0.5;
+
+// placedA/placedB: exactly one is a TriangleShape (world-space verts, identity transform), the
+// other any convex. Returns true only when separation is certain (safe to skip GJK/EPA).
+TriPlaneCull.separated = function (placedA, placedB) {
+    const aTri = placedA.shape instanceof TriangleShape;
+    const tri = (aTri ? placedA : placedB).shape;
+    const cvx = aTri ? placedB : placedA;
+    const t0 = tri.a, t1 = tri.b, t2 = tri.c;
+
+    const n = TriPlaneCull._n;
+    if (!ConvexTri._normalInto(n, t0, t1, t2)) return false; // degenerate triangle - let GJK handle
+
+    // Orient n toward the convex, then find the convex's deepest point back toward the triangle.
+    const cvxPos = cvx.position;
+    if ((cvxPos.x - t0.x) * n.x + (cvxPos.y - t0.y) * n.y + (cvxPos.z - t0.z) * n.z < 0) n.scaleInPlace(-1);
+
+    const probe = TriPlaneCull._probe.set(-n.x, -n.y, -n.z);
+    const dp = TriPlaneCull._dp;
+    const invRot = TriPlaneCull._invRot.copy(cvx.rotation).invert();
+    MinkowskiSupport.supportOfInto(dp, cvx, invRot, probe, TriPlaneCull._scratchDir);
+
+    // Signed distance of the deepest point from the triangle's plane (negative = pokes behind).
+    const along = (dp.x - t0.x) * n.x + (dp.y - t0.y) * n.y + (dp.z - t0.z) * n.z;
+    if (along < -TriPlaneCull.FACE_LIMIT) return false; // pokes well behind - GJK/EPA judges depth
+    if (along > TriPlaneCull.FACE_LIMIT) return true;   // whole convex clears the plane - separated
+
+    // Deepest point is within the band of the plane. Project it and measure how far outside the
+    // triangle that projection lands; the true gap is then hypot(along, outside).
+    const px = dp.x - along * n.x, py = dp.y - along * n.y, pz = dp.z - along * n.z;
+    ConvexTri._pointInTri(px, py, pz, t0, t1, t2, n, 0); // sets ConvexTri._lastOutside
+    const outside = ConvexTri._lastOutside;
+    if (outside <= 0) return false; // deepest point is over the triangle - contact plausible
+    const a = along > 0 ? along : 0;
+    return Math.sqrt(a * a + outside * outside) > TriPlaneCull.FACE_LIMIT;
+};
+
+TriPlaneCull._n = new Vector3();
+TriPlaneCull._probe = new Vector3();
+TriPlaneCull._dp = new Vector3();
+TriPlaneCull._invRot = new Quaternion();
+TriPlaneCull._scratchDir = new Vector3();
+
+ActionPhysics.TriPlaneCull = TriPlaneCull;
 
 
 // ==== src/phases/PairTest.js ====
@@ -6326,6 +6487,7 @@ proto._nextPooledContact = function () {
     if (this._poolIndex >= this._contactPool.length) this._contactPool.push(new ContactDetails());
     const c = this._contactPool[this._poolIndex++];
     c.fromMeshFace = false;
+    c.meshTriValid = false;
     return c;
 };
 
@@ -6336,11 +6498,37 @@ proto.step = function (broadphasePairs, midphase, dt) {
     this._poolIndex = 0;
     const contactsByPair = new Map(); // canonical "idA:idB" key -> ContactDetails[]
 
+    // Tick-start speeds, consulted by the per-substep geometry refresh to skip re-clipping a
+    // manifold whose bodies are effectively at rest (their contact geometry is not moving within
+    // the tick, so a re-clip would reproduce the tick-start geometry anyway).
+    const spd = this._tickStartSpeedSq || (this._tickStartSpeedSq = new Map());
+    spd.clear();
+    for (let p = 0; p < broadphasePairs.length; p++) {
+        for (let s = 0; s < 2; s++) {
+            const b = broadphasePairs[p][s];
+            if (b.bodyType !== RigidBody.DYNAMIC || spd.has(b.id)) continue;
+            const lv = b.linear_velocity, av = b.angular_velocity;
+            spd.set(b.id, {
+                lin: lv.x * lv.x + lv.y * lv.y + lv.z * lv.z,
+                ang: av.x * av.x + av.y * av.y + av.z * av.z
+            });
+        }
+    }
+
     for (let p = 0; p < broadphasePairs.length; p++) {
         const bodyA = broadphasePairs[p][0], bodyB = broadphasePairs[p][1];
         const primitivePairs = midphase.expandPair(bodyA, bodyB);
         const key = bodyA.id < bodyB.id ? bodyA.id + ':' + bodyB.id : bodyB.id + ':' + bodyA.id;
         const margin = this._speculativeMargin(bodyA, bodyB);
+
+        // If this pair already has a mesh-face manifold, hand ConvexTri its established normal so
+        // it orients the reference face by that instead of the convex-centre heuristic (which
+        // flips once a settling convex's centroid creeps to the triangle plane). First contact
+        // has no prior manifold and falls back to the heuristic, which is safe when approaching
+        // from clearly outside.
+        const existing = this.manifolds._manifolds.get(key);
+        this._ctHintNormal = (existing && existing.points.length > 0 && existing.points[0].fromMeshFace)
+            ? existing.points[0].normal : null;
 
         let sawMeshFace = false;
         for (let i = 0; i < primitivePairs.length; i++) {
@@ -6402,10 +6590,18 @@ proto._testPrimitivePair = function (placedA, placedB) {
 
     if (ConvexTri.applies(placedA, placedB)) {
         const self = this;
-        // null = not a face contact (convex off the triangle, or gap outside the band); fall
-        // through to GJK/EPA (same contract as BoxBox.test / TriTri.test above).
-        const ctResult = ConvexTri.test(placedA, placedB, results, function () { return self._nextPooledContact(); });
-        if (ctResult !== null) return results;
+        // _ctHintNormal is set per pair by step() from the existing manifold, null on first contact.
+        const ctResult = ConvexTri.test(placedA, placedB, results, function () { return self._nextPooledContact(); }, this._ctHintNormal);
+        if (ctResult !== null) return results;                       // face contact
+        if (ConvexTri.lastVerdict === 'separated') return results;   // provably no contact - skip GJK/EPA
+        // 'maybe': non-face contact still possible (edge/vertex) - fall through to GJK/EPA.
+    } else if ((placedA.shape instanceof TriangleShape) !== (placedB.shape instanceof TriangleShape)) {
+        // Any other convex (box, hull) vs a mesh triangle: a cheap conservative separation test
+        // before GJK/EPA. A prop's broadphase AABB overlaps every tile it is near, but it only
+        // touches one - GJK would run full iterations just to report "separated" on the rest. The
+        // 0.5m bound comfortably exceeds any per-pair speculative margin at these speeds, so this
+        // only rejects pairs step() would discard anyway.
+        if (TriPlaneCull.separated(placedA, placedB)) return results;
     }
 
     const contact = this._nextPooledContact();
@@ -6458,14 +6654,47 @@ NarrowPhase._angularCornerSpeed = function (body) {
 // predicted transforms. Geometry only - never adds, removes, or re-matches points.
 var proto = NarrowPhase.prototype;
 
+// Speed-squared below which a body's mesh-face contact geometry is left at tick-start values for
+// the substeps (same as the non-mesh compound/mesh path already does). Deliberately looser than
+// the solver's rest thresholds: a nearly-settled curved prop jitters a few cm/s across a tile
+// seam every tick, and re-clipping it each substep - only to have the fast path bail to a full
+// re-expansion because its deepest point crossed an edge - is pure cost for geometry that is not
+// meaningfully moving. Within this band the tick-start clip is refreshed once per tick by
+// NarrowPhase.step() anyway.
+NarrowPhase.REFRESH_REST_LIN_SQ = 0.30 * 0.30;
+NarrowPhase.REFRESH_REST_ANG_SQ = 0.60 * 0.60;
+
 proto.refreshManifoldGeometry = function (manifolds) {
+    this._ctHintNormal = null; // stale from step()'s pair loop; each branch below sets it as needed
     for (const manifold of manifolds.values()) {
         const bodyA = manifold.bodyA, bodyB = manifold.bodyB;
 
-        // Mesh face manifold: re-clip it each substep, like the primitive path below, so its
-        // geometry tracks the body as it settles within the tick instead of staying frozen.
-        if (this._midphase && manifold.points.length > 0 && this._allMeshFace(manifold)) {
-            this._refreshMeshFaceManifold(manifold, bodyA, bodyB);
+        if (manifold.points.length > 0 && this._allMeshFace(manifold)) {
+            // At rest -> geometry isn't moving this tick; skip the re-clip entirely.
+            if (this._pairAtRest(bodyA, bodyB)) continue;
+            // Fast path: every point carries its source triangle (ConvexTri), so re-clip only
+            // those triangles against the current transform - no midphase re-expansion, no
+            // GJK/EPA fallback on non-contact triangles.
+            if (this._allMeshTriTagged(manifold)) {
+                // Fast re-clip of just the stored triangles. Returns false when a stored triangle
+                // stopped producing a contact (the body drifted toward an adjacent tile) - then
+                // fall back to the full re-expansion so the new supporting triangle is found.
+                if (this._refreshMeshFaceManifoldFast(manifold, bodyA, bodyB)) continue;
+                if (this._midphase) {
+                    this._ctHintNormal = manifold.points[0].fromMeshFace ? manifold.points[0].normal : null;
+                    this._refreshMeshFaceManifold(manifold, bodyA, bodyB);
+                    this._ctHintNormal = null;
+                }
+                continue;
+            }
+            // Slow path: mixed / TriTri mesh-face manifold - re-expand the pair. Hand any ConvexTri
+            // sub-pair the established normal too.
+            if (this._midphase) {
+                this._ctHintNormal = manifold.points[0].fromMeshFace ? manifold.points[0].normal : null;
+                this._refreshMeshFaceManifold(manifold, bodyA, bodyB);
+                this._ctHintNormal = null;
+                continue;
+            }
             continue;
         }
 
@@ -6499,9 +6728,99 @@ proto.refreshManifoldGeometry = function (manifolds) {
     }
 };
 
+proto._pairAtRest = function (bodyA, bodyB) {
+    const spd = this._tickStartSpeedSq;
+    if (!spd) return false;
+    const a = spd.get(bodyA.id), b = spd.get(bodyB.id);
+    // A body with no entry is static/kinematic (never moves) - treat as at rest.
+    if (a && (a.lin > NarrowPhase.REFRESH_REST_LIN_SQ || a.ang > NarrowPhase.REFRESH_REST_ANG_SQ)) return false;
+    if (b && (b.lin > NarrowPhase.REFRESH_REST_LIN_SQ || b.ang > NarrowPhase.REFRESH_REST_ANG_SQ)) return false;
+    return true;
+};
+
 proto._allMeshFace = function (manifold) {
     const pts = manifold.points;
     for (let i = 0; i < pts.length; i++) if (!pts[i].fromMeshFace) return false;
+    return true;
+};
+
+proto._allMeshTriTagged = function (manifold) {
+    const pts = manifold.points;
+    for (let i = 0; i < pts.length; i++) if (!pts[i].meshTriValid) return false;
+    return true;
+};
+
+// Re-clip only the distinct source triangles the manifold's points came from, against the current
+// body transforms. The mesh side is static ground, so its stored world verts are still valid; only
+// the convex has moved. One closed-form test per distinct triangle - no BVH query, no re-expansion,
+// no GJK/EPA fallback on non-contact triangles. Only ConvexTri tags points (meshTriValid), and it
+// only fires for exactly one TriangleShape vs one curved convex, so the non-triangle body IS the
+// convex.
+proto._refreshMeshFaceManifoldFast = function (manifold, bodyA, bodyB) {
+    const pts = manifold.points;
+    const acc = this._meshRefreshAcc || (this._meshRefreshAcc = []);
+    acc.length = 0;
+
+    const cvx = pts[0].meshTriIsSideA ? bodyB : bodyA;
+    const cvxSide = { shape: cvx.shape, position: cvx.position, rotation: cvx.rotation };
+    const triSide = this._meshRefreshTri || (this._meshRefreshTri = {
+        shape: new TriangleShape(new Vector3(), new Vector3(), new Vector3()),
+        position: new Vector3(0, 0, 0), rotation: new Quaternion(), bodyCenter: new Vector3()
+    });
+
+    for (let i = 0; i < pts.length; i++) {
+        const src = pts[i];
+        // Points usually share one triangle - skip a re-test for a triangle already done this call.
+        let seen = false;
+        for (let j = 0; j < i; j++) {
+            const o = pts[j];
+            if (_coincidentTri(src, o)) { seen = true; break; }
+        }
+        if (seen) continue;
+
+        triSide.shape.a.copy(src.meshTriA);
+        triSide.shape.b.copy(src.meshTriB);
+        triSide.shape.c.copy(src.meshTriC);
+        triSide.bodyCenter.copy(src.meshTriBodyCenter);
+
+        // Direct ConvexTri call (we know that's what tagged the point) with the established normal
+        // as the orientation hint - the convex-centre heuristic is unsafe for a nearly-settled
+        // body. It pushes pooled contacts into `fresh`; those stay valid for the rest of this tick
+        // (the pool isn't recycled until the next step()), so push them straight into `acc` - the
+        // one intervening ConvexTri.test call reuses `fresh` but not the contacts already in it.
+        const self = this;
+        const nc = function () { return self._nextPooledContact(); };
+        const fresh = this._meshRefreshFresh || (this._meshRefreshFresh = []);
+        fresh.length = 0;
+        const r = src.meshTriIsSideA
+            ? ConvexTri.test(triSide, cvxSide, fresh, nc, src.normal)
+            : ConvexTri.test(cvxSide, triSide, fresh, nc, src.normal);
+        // The stored triangle only stays trustworthy while the convex's true deepest point is
+        // still over it. Once it projects outside (body settling onto a neighbour tile), ConvexTri
+        // keeps only shallow edge-probe contacts - enough to look non-empty but missing the real
+        // depth, which starves then over-corrects the solver. Bail to the full re-expansion.
+        if (!r || !ConvexTri.lastDeepestInTriangle) return false;
+        for (let c = 0; c < r.length; c++) if (r[c].fromMeshFace) acc.push(r[c]);
+    }
+
+    if (acc.length === 0) return false; // lost contact this substep - re-expand to confirm
+
+    for (let i = 0; i < pts.length; i++) {
+        const p = pts[i];
+        let best = null, bestDistSq = Infinity;
+        for (let f = 0; f < acc.length; f++) {
+            const dx = p.point.x - acc[f].point.x, dy = p.point.y - acc[f].point.y, dz = p.point.z - acc[f].point.z;
+            const d = dx * dx + dy * dy + dz * dz;
+            if (d < bestDistSq) { bestDistSq = d; best = acc[f]; }
+        }
+        if (!best) continue;
+        p.point.copy(best.point);
+        p.pointOnA.copy(best.pointOnA);
+        p.pointOnB.copy(best.pointOnB);
+        p.signedDistance = best.signedDistance;
+        if (Math.abs(best.signedDistance) >= ContactManifold.EXACT_TOUCH_BAND) p.normal.copy(best.normal);
+        p.setLocalAnchors(bodyA, bodyB);
+    }
     return true;
 };
 
@@ -6539,6 +6858,15 @@ proto._refreshMeshFaceManifold = function (manifold, bodyA, bodyB) {
         p.setLocalAnchors(bodyA, bodyB);
     }
 };
+
+// Two mesh-face contacts sharing the same source triangle (vertex A coincident is enough - the
+// tiles are distinct and non-overlapping, so a shared A vertex means the same tile triangle).
+var _COINCIDENT_TRI_SQ = 1e-8;
+function _coincidentTri(p, q) {
+    if (!p.meshTriValid || !q.meshTriValid) return false;
+    const dx = p.meshTriA.x - q.meshTriA.x, dy = p.meshTriA.y - q.meshTriA.y, dz = p.meshTriA.z - q.meshTriA.z;
+    return dx * dx + dy * dy + dz * dz < _COINCIDENT_TRI_SQ;
+}
 
 
 // ==== src/solver/Solver.js ====

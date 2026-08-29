@@ -17,7 +17,19 @@ class ContactDetails {
         this.localAnchorB = new Vector3();
 
         this._preSolveNormalVel = 0; // for restitution, written each substep
-        this.fromMeshFace = false;   // set by TriTri; gates the mesh-face merge and patch solve
+        this.fromMeshFace = false;   // set by TriTri/ConvexTri; gates the mesh-face merge and patch solve
+
+        // Source triangle for a mesh-face contact, in world space (the mesh side is static ground,
+        // so these verts don't move within a tick). Lets GeometryRefresh re-clip only the triangle
+        // that produced this point each substep instead of re-running the whole midphase +
+        // narrowphase for the pair. Set by TriTri/ConvexTri alongside fromMeshFace; meshTriValid
+        // stays false when unset so the refresh can fall back.
+        this.meshTriValid = false;
+        this.meshTriA = new Vector3();
+        this.meshTriB = new Vector3();
+        this.meshTriC = new Vector3();
+        this.meshTriBodyCenter = new Vector3();
+        this.meshTriIsSideA = false; // was the triangle placedA (true) or placedB (false) in the pair
     }
 
     // Derives local anchors from the current witness points. Called once at creation, never on a
@@ -79,6 +91,25 @@ class ContactDetails {
         this.tangentLambda1 = other.tangentLambda1;
         this.tangentLambda2 = other.tangentLambda2;
         this.fromMeshFace = other.fromMeshFace;
+        this.meshTriValid = other.meshTriValid;
+        if (other.meshTriValid) {
+            this.meshTriA.copy(other.meshTriA);
+            this.meshTriB.copy(other.meshTriB);
+            this.meshTriC.copy(other.meshTriC);
+            this.meshTriBodyCenter.copy(other.meshTriBodyCenter);
+            this.meshTriIsSideA = other.meshTriIsSideA;
+        }
+        return this;
+    }
+
+    // Records the world-space source triangle for a mesh-face contact (see the field comments).
+    setMeshTriangle(a, b, c, bodyCenter, isSideA) {
+        this.meshTriValid = true;
+        this.meshTriA.copy(a);
+        this.meshTriB.copy(b);
+        this.meshTriC.copy(c);
+        if (bodyCenter) this.meshTriBodyCenter.copy(bodyCenter); else this.meshTriBodyCenter.set(0, 0, 0);
+        this.meshTriIsSideA = isSideA;
         return this;
     }
 

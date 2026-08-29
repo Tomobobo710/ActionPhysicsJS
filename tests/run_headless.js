@@ -35,8 +35,8 @@ console.log(stampLine.replace(/^\/\/\s*/, '=== ') + ' ===');
 // every run.
 //
 // perf-settle-scene-compound.js was skipped here for the same reason, but now carries a hard assert
-// (no prop tunnels through the compound ground, none slides off the map edge) — folded back in as a
-// scale correctness test for compound-vs-mesh contact, despite the ~7s wall-clock cost.
+// (no prop tunnels through the compound heightfield ground, none slides off the map edge) — folded
+// back in as a scale correctness test for compound-vs-mesh contact. ~6s wall-clock.
 //
 // pyramid.js (385-box pyramid, 1200 ticks) was skipped here too while box-box fell through to
 // GJK/EPA's single-point contacts and the perf was untenable for routine runs. Box-box now has its

@@ -93,6 +93,11 @@
 		var tileHeightAt = function (x, z) { return Math.sin(x * 0.05) * 0.6 + Math.cos(z * 0.05) * 0.6; };
 		var FLOOR_MARGIN = 2;
 		var LATERAL_LIMIT = halfExtent + 5;
+		// Props spawn at y = 2..8 and the tallest is ~1.1m; 260 ticks (4.3s) is far more than enough
+		// for every one to fall and settle near the ground. A body still above this at the end was
+		// launched by a bad contact (cone/curved-shape solver blow-ups fling props to y=20..120 with
+		// |v| in the tens) or is wedged upright on debris — either way, not "settled".
+		var CEILING = 5;
 
 		var worstY = Infinity;
 		var worstYBody = -1;
@@ -104,6 +109,12 @@
 		var worstLateral = 0;
 		var worstLateralBody = -1;
 		var worstLateralTick = -1;
+		// Highest final-tick Y and the fastest any body is moving on the final tick — an explosion
+		// leaves a body both high and fast.
+		var highestFinalY = -Infinity;
+		var highestFinalYBody = -1;
+		var fastestFinalSpeed = 0;
+		var fastestFinalSpeedBody = -1;
 
 		var lastStepMs = 0;
 		var now = function () { return (typeof performance !== 'undefined' ? performance.now() : Date.now()); };
@@ -127,6 +138,15 @@
 				if (below > worstBelowTile) { worstBelowTile = below; worstBelowTileBody = wi; worstBelowTileTick = tick; }
 				var lat = Math.max(Math.abs(p.x), Math.abs(p.z));
 				if (lat > worstLateral) { worstLateral = lat; worstLateralBody = wi; worstLateralTick = tick; }
+			}
+
+			if (tick === TOTAL_TICKS) {
+				for (var fi = 0; fi < bodies.length; fi++) {
+					var fp = bodies[fi].position;
+					if (fp.y > highestFinalY) { highestFinalY = fp.y; highestFinalYBody = fi; }
+					var sp = U.speed(bodies[fi]);
+					if (sp > fastestFinalSpeed) { fastestFinalSpeed = sp; fastestFinalSpeedBody = fi; }
+				}
 			}
 
 			var manifoldCount = world.narrowphase.manifolds.size;
@@ -163,6 +183,15 @@
 				'  max lateral=' + worstLateral.toFixed(2) + ' (body #' + worstLateralBody + ' @ tick ' + worstLateralTick + ', limit=' + LATERAL_LIMIT.toFixed(2) + ')';
 			if (worstBelowTile > FLOOR_MARGIN) return { ok: false, detail: 'FELL THROUGH FLOOR: ' + detail };
 			if (worstLateral > LATERAL_LIMIT) return { ok: false, detail: 'SLID OFF MAP: ' + detail };
+			return { ok: true, detail: detail };
+		});
+
+		t.expect('no prop was launched into the air (all settle near the ground)', function (world) {
+			if (lastTick < TOTAL_TICKS) return { ok: false, detail: 'still running (tick ' + lastTick + '/' + TOTAL_TICKS + ')' };
+			var detail = 'highest final Y=' + highestFinalY.toFixed(2) + ' (body #' + highestFinalYBody +
+				', ceiling=' + CEILING.toFixed(2) + ')  fastest final |v|=' + fastestFinalSpeed.toFixed(2) +
+				' (body #' + fastestFinalSpeedBody + ')';
+			if (highestFinalY > CEILING) return { ok: false, detail: 'LAUNCHED: ' + detail };
 			return { ok: true, detail: detail };
 		});
 

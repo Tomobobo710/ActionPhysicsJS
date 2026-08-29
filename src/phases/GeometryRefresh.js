@@ -2,14 +2,47 @@
 // predicted transforms. Geometry only - never adds, removes, or re-matches points.
 var proto = NarrowPhase.prototype;
 
+// Speed-squared below which a body's mesh-face contact geometry is left at tick-start values for
+// the substeps (same as the non-mesh compound/mesh path already does). Deliberately looser than
+// the solver's rest thresholds: a nearly-settled curved prop jitters a few cm/s across a tile
+// seam every tick, and re-clipping it each substep - only to have the fast path bail to a full
+// re-expansion because its deepest point crossed an edge - is pure cost for geometry that is not
+// meaningfully moving. Within this band the tick-start clip is refreshed once per tick by
+// NarrowPhase.step() anyway.
+NarrowPhase.REFRESH_REST_LIN_SQ = 0.30 * 0.30;
+NarrowPhase.REFRESH_REST_ANG_SQ = 0.60 * 0.60;
+
 proto.refreshManifoldGeometry = function (manifolds) {
+    this._ctHintNormal = null; // stale from step()'s pair loop; each branch below sets it as needed
     for (const manifold of manifolds.values()) {
         const bodyA = manifold.bodyA, bodyB = manifold.bodyB;
 
-        // Mesh face manifold: re-clip it each substep, like the primitive path below, so its
-        // geometry tracks the body as it settles within the tick instead of staying frozen.
-        if (this._midphase && manifold.points.length > 0 && this._allMeshFace(manifold)) {
-            this._refreshMeshFaceManifold(manifold, bodyA, bodyB);
+        if (manifold.points.length > 0 && this._allMeshFace(manifold)) {
+            // At rest -> geometry isn't moving this tick; skip the re-clip entirely.
+            if (this._pairAtRest(bodyA, bodyB)) continue;
+            // Fast path: every point carries its source triangle (ConvexTri), so re-clip only
+            // those triangles against the current transform - no midphase re-expansion, no
+            // GJK/EPA fallback on non-contact triangles.
+            if (this._allMeshTriTagged(manifold)) {
+                // Fast re-clip of just the stored triangles. Returns false when a stored triangle
+                // stopped producing a contact (the body drifted toward an adjacent tile) - then
+                // fall back to the full re-expansion so the new supporting triangle is found.
+                if (this._refreshMeshFaceManifoldFast(manifold, bodyA, bodyB)) continue;
+                if (this._midphase) {
+                    this._ctHintNormal = manifold.points[0].fromMeshFace ? manifold.points[0].normal : null;
+                    this._refreshMeshFaceManifold(manifold, bodyA, bodyB);
+                    this._ctHintNormal = null;
+                }
+                continue;
+            }
+            // Slow path: mixed / TriTri mesh-face manifold - re-expand the pair. Hand any ConvexTri
+            // sub-pair the established normal too.
+            if (this._midphase) {
+                this._ctHintNormal = manifold.points[0].fromMeshFace ? manifold.points[0].normal : null;
+                this._refreshMeshFaceManifold(manifold, bodyA, bodyB);
+                this._ctHintNormal = null;
+                continue;
+            }
             continue;
         }
 
@@ -43,9 +76,99 @@ proto.refreshManifoldGeometry = function (manifolds) {
     }
 };
 
+proto._pairAtRest = function (bodyA, bodyB) {
+    const spd = this._tickStartSpeedSq;
+    if (!spd) return false;
+    const a = spd.get(bodyA.id), b = spd.get(bodyB.id);
+    // A body with no entry is static/kinematic (never moves) - treat as at rest.
+    if (a && (a.lin > NarrowPhase.REFRESH_REST_LIN_SQ || a.ang > NarrowPhase.REFRESH_REST_ANG_SQ)) return false;
+    if (b && (b.lin > NarrowPhase.REFRESH_REST_LIN_SQ || b.ang > NarrowPhase.REFRESH_REST_ANG_SQ)) return false;
+    return true;
+};
+
 proto._allMeshFace = function (manifold) {
     const pts = manifold.points;
     for (let i = 0; i < pts.length; i++) if (!pts[i].fromMeshFace) return false;
+    return true;
+};
+
+proto._allMeshTriTagged = function (manifold) {
+    const pts = manifold.points;
+    for (let i = 0; i < pts.length; i++) if (!pts[i].meshTriValid) return false;
+    return true;
+};
+
+// Re-clip only the distinct source triangles the manifold's points came from, against the current
+// body transforms. The mesh side is static ground, so its stored world verts are still valid; only
+// the convex has moved. One closed-form test per distinct triangle - no BVH query, no re-expansion,
+// no GJK/EPA fallback on non-contact triangles. Only ConvexTri tags points (meshTriValid), and it
+// only fires for exactly one TriangleShape vs one curved convex, so the non-triangle body IS the
+// convex.
+proto._refreshMeshFaceManifoldFast = function (manifold, bodyA, bodyB) {
+    const pts = manifold.points;
+    const acc = this._meshRefreshAcc || (this._meshRefreshAcc = []);
+    acc.length = 0;
+
+    const cvx = pts[0].meshTriIsSideA ? bodyB : bodyA;
+    const cvxSide = { shape: cvx.shape, position: cvx.position, rotation: cvx.rotation };
+    const triSide = this._meshRefreshTri || (this._meshRefreshTri = {
+        shape: new TriangleShape(new Vector3(), new Vector3(), new Vector3()),
+        position: new Vector3(0, 0, 0), rotation: new Quaternion(), bodyCenter: new Vector3()
+    });
+
+    for (let i = 0; i < pts.length; i++) {
+        const src = pts[i];
+        // Points usually share one triangle - skip a re-test for a triangle already done this call.
+        let seen = false;
+        for (let j = 0; j < i; j++) {
+            const o = pts[j];
+            if (_coincidentTri(src, o)) { seen = true; break; }
+        }
+        if (seen) continue;
+
+        triSide.shape.a.copy(src.meshTriA);
+        triSide.shape.b.copy(src.meshTriB);
+        triSide.shape.c.copy(src.meshTriC);
+        triSide.bodyCenter.copy(src.meshTriBodyCenter);
+
+        // Direct ConvexTri call (we know that's what tagged the point) with the established normal
+        // as the orientation hint - the convex-centre heuristic is unsafe for a nearly-settled
+        // body. It pushes pooled contacts into `fresh`; those stay valid for the rest of this tick
+        // (the pool isn't recycled until the next step()), so push them straight into `acc` - the
+        // one intervening ConvexTri.test call reuses `fresh` but not the contacts already in it.
+        const self = this;
+        const nc = function () { return self._nextPooledContact(); };
+        const fresh = this._meshRefreshFresh || (this._meshRefreshFresh = []);
+        fresh.length = 0;
+        const r = src.meshTriIsSideA
+            ? ConvexTri.test(triSide, cvxSide, fresh, nc, src.normal)
+            : ConvexTri.test(cvxSide, triSide, fresh, nc, src.normal);
+        // The stored triangle only stays trustworthy while the convex's true deepest point is
+        // still over it. Once it projects outside (body settling onto a neighbour tile), ConvexTri
+        // keeps only shallow edge-probe contacts - enough to look non-empty but missing the real
+        // depth, which starves then over-corrects the solver. Bail to the full re-expansion.
+        if (!r || !ConvexTri.lastDeepestInTriangle) return false;
+        for (let c = 0; c < r.length; c++) if (r[c].fromMeshFace) acc.push(r[c]);
+    }
+
+    if (acc.length === 0) return false; // lost contact this substep - re-expand to confirm
+
+    for (let i = 0; i < pts.length; i++) {
+        const p = pts[i];
+        let best = null, bestDistSq = Infinity;
+        for (let f = 0; f < acc.length; f++) {
+            const dx = p.point.x - acc[f].point.x, dy = p.point.y - acc[f].point.y, dz = p.point.z - acc[f].point.z;
+            const d = dx * dx + dy * dy + dz * dz;
+            if (d < bestDistSq) { bestDistSq = d; best = acc[f]; }
+        }
+        if (!best) continue;
+        p.point.copy(best.point);
+        p.pointOnA.copy(best.pointOnA);
+        p.pointOnB.copy(best.pointOnB);
+        p.signedDistance = best.signedDistance;
+        if (Math.abs(best.signedDistance) >= ContactManifold.EXACT_TOUCH_BAND) p.normal.copy(best.normal);
+        p.setLocalAnchors(bodyA, bodyB);
+    }
     return true;
 };
 
@@ -83,3 +206,12 @@ proto._refreshMeshFaceManifold = function (manifold, bodyA, bodyB) {
         p.setLocalAnchors(bodyA, bodyB);
     }
 };
+
+// Two mesh-face contacts sharing the same source triangle (vertex A coincident is enough - the
+// tiles are distinct and non-overlapping, so a shared A vertex means the same tile triangle).
+var _COINCIDENT_TRI_SQ = 1e-8;
+function _coincidentTri(p, q) {
+    if (!p.meshTriValid || !q.meshTriValid) return false;
+    const dx = p.meshTriA.x - q.meshTriA.x, dy = p.meshTriA.y - q.meshTriA.y, dz = p.meshTriA.z - q.meshTriA.z;
+    return dx * dx + dy * dy + dz * dz < _COINCIDENT_TRI_SQ;
+}
