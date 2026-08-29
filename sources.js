@@ -96,6 +96,9 @@ module.exports = [
     'src/solver/Integrate.js',
     'src/solver/PositionSolve.js',
     'src/solver/VelocitySolve.js',
+    // Island-based sleeping. WIP: the module is complete but not yet called from the world step,
+    // so tom/sleep.js fails until a call site lands. Listed here so the build doesn't reject it.
+    'src/solver/IslandManager.js',
 
     // Constraints (joints) - position-level XPBD constraints, built on the solver's own
     // Solver._integrateRotation and each body's mass/inertia fields. Loaded after Solver.

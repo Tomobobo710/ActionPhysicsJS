@@ -11,7 +11,7 @@ class Solver {
     constructor(opts) {
         opts = opts || {};
         this.substeps = opts.substeps || 4;
-        this.iterations = opts.iterations || 1; // position-solve passes per substep
+        this.iterations = opts.iterations || 4; // position-solve passes per substep
 
         this._rA = new Vector3(); this._rB = new Vector3();
         this._deltaPos = new Vector3();
@@ -23,7 +23,7 @@ class Solver {
         this._prevRot = new Map();
         this._preGravityVel = new Map();
         this._biasDelta = new Map(); // per-body bias-only correction this substep; excluded from derived velocity
-        this._deferredRotation = new Map(); // per-body accumulated small-angle rotation for a multi-point manifold pass
+        this._restRing = new Map(); // per-body ring buffer of recent transforms for rest-velocity reconciliation
     }
 
     // Margin widening what counts as "explainable by the body's own velocity" in _solvePoint's
@@ -40,6 +40,39 @@ class Solver {
         const h = dt / this.substeps;
         for (let s = 0; s < this.substeps; s++) {
             this._substep(bodies, manifolds, gravity, h, refresh, constraints);
+        }
+        this._reconcileRestVelocity(bodies, dt);
+    }
+
+    // Zeroes the velocity of a body whose sustained motion over the last REST_WINDOW ticks is below
+    // the rest thresholds, from a per-body ring buffer of recent transforms. See NOTES.md.
+    _reconcileRestVelocity(bodies, dt) {
+        const win = REST_WINDOW;
+        for (let i = 0; i < bodies.length; i++) {
+            const b = bodies[i];
+            if (b.bodyType !== RigidBody.DYNAMIC) continue;
+            let r = this._restRing.get(b.id);
+            if (!r) {
+                r = { pos: [], rot: [], head: 0, count: 0 };
+                for (let k = 0; k < win; k++) { r.pos.push(new Vector3()); r.rot.push(new Quaternion()); }
+                this._restRing.set(b.id, r);
+            }
+
+            if (r.count === win) {
+                // Oldest sample is the one about to be overwritten at head.
+                const oldPos = r.pos[r.head], oldRot = r.rot[r.head];
+                const span = win * dt;
+                const ndx = b.position.x - oldPos.x, ndy = b.position.y - oldPos.y, ndz = b.position.z - oldPos.z;
+                const windowedLinSpeed = Math.sqrt(ndx * ndx + ndy * ndy + ndz * ndz) / span;
+                if (windowedLinSpeed < REST_LINEAR_SPEED) b.linear_velocity.set(0, 0, 0);
+                Solver._deriveAngularVelocity(this._tmpDispA, oldRot, b.rotation, span);
+                if (this._tmpDispA.length() < REST_ANGULAR_SPEED) b.angular_velocity.set(0, 0, 0);
+            } else {
+                r.count++;
+            }
+            r.pos[r.head].copy(b.position);
+            r.rot[r.head].copy(b.rotation);
+            r.head = (r.head + 1) % win;
         }
     }
 
@@ -85,15 +118,20 @@ class Solver {
             return;
         }
         for (let i = 0; i < n; i++) {
-            this._solvePoint(manifold.points[i], bodyA, bodyB, h, null, true);
+            this._solvePoint(manifold.points[i], bodyA, bodyB, h, true);
         }
     }
 
     _solveContactVelocities(manifolds, gravity, h) {
         for (const manifold of manifolds.values()) {
             const bodyA = manifold.bodyA, bodyB = manifold.bodyB;
-            for (let i = 0; i < manifold.points.length; i++) {
-                this._solveContactVelocity(manifold.points[i], bodyA, bodyB, gravity, h);
+            // A flat box-on-box face patch is resolved once at its centroid (order-independent, no
+            // fabricated drift); every other manifold keeps the per-point solve. See
+            // VelocitySolve.js._boxFacePatchVelocity.
+            if (!this._boxFacePatchVelocity(manifold, bodyA, bodyB, gravity, h)) {
+                for (let i = 0; i < manifold.points.length; i++) {
+                    this._solveContactVelocity(manifold.points[i], bodyA, bodyB, gravity, h);
+                }
             }
             if (manifold.points.length > 0) {
                 // Reference point for angular friction: the most-engaged one (largest |normalLambda|),
@@ -121,5 +159,10 @@ Solver.RESTITUTION_SLOP_FACTOR = 8;
 // remainder is real, live-measured penetration, picked up on the next substep instead of all at
 // once - keeps one point's correction from moving the body before its manifold siblings are read.
 Solver.MAX_PENETRATION_PER_SUBSTEP = 0.005;
+
+// Rest-velocity reconciliation thresholds (see Solver._reconcileRestVelocity, NOTES.md).
+var REST_WINDOW = 8;              // ticks in the trailing velocity window
+var REST_LINEAR_SPEED = 0.02;     // units/s windowed speed below which a settled body is zeroed
+var REST_ANGULAR_SPEED = 0.05;    // rad/s windowed speed below which a settled body is zeroed
 
 ActionPhysics.Solver = Solver;

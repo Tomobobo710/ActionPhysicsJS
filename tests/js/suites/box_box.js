@@ -179,7 +179,11 @@
 		t.box(w, 20, 0.5, 20, 0, { pos: [0, -0.5, 0], restitution: 0, color: '#243B2A' });
 
 		var boxes = [];
-		var LAYERS = 4, GAP = 2.2, INSET = 0.3;
+		// GAP = 2.0 == box height (half-extent 1): each layer spawns already resting on the one below,
+		// inset horizontally on both axes. A larger gap would drop each box 0.2 onto its neighbour, and
+		// the "stayed within 0.05 of its spawn height" checks below (which measure against the SPAWN y)
+		// could never pass - the boxes would settle 0.2/0.4/0.6 below where they started, by design.
+		var LAYERS = 4, GAP = 2.0, INSET = 0.3;
 		for (var i = 0; i < LAYERS; i++) {
 			var x = i * INSET, z = i * INSET * 0.6, y = i * GAP + 1;
 			var b = t.box(w, 1, 1, 1, 1, { pos: [x, y, z], color: '#B08968' });

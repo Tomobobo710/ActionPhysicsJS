@@ -304,7 +304,9 @@
 	}
 
 	// Run all (or a filtered subset), in suite order. onResult(result) called per test. Returns summary.
-	function run(filter, onResult) {
+	// opts.bail — stop the whole run at the first failing test (summary still reflects what ran).
+	function run(filter, onResult, opts) {
+		opts = opts || {};
 		var results = [], pass = 0, fail = 0, ordered = orderedTests(), i;
 		for (i = 0; i < ordered.length; i++) {
 			if (filter && !filter(ordered[i])) continue;
@@ -312,8 +314,39 @@
 			r.ok ? pass++ : fail++;
 			results.push(r);
 			if (onResult) onResult(r);
+			if (!r.ok && opts.bail) break;
 		}
 		return { results: results, pass: pass, fail: fail, total: pass + fail };
+	}
+
+	// Run the whole suite for one key, sequentially, in registration order. This is the "run a category
+	// as a unit" primitive: same as run() with a suite filter, but returns a per-suite summary and (when
+	// onSuiteDone is given) reports it as a block. opts.bail stops at the first failing test in the suite.
+	function runSuite(suiteKey, onResult, opts) {
+		var s = run(function (t) { return t.suite === suiteKey; }, onResult, opts);
+		s.suite = suiteKey;
+		s.name = SUITE_NAMES[suiteKey] || suiteKey;
+		return s;
+	}
+
+	// Run every suite in turn, each as its own block. onSuiteStart(key,name)/onResult(r)/onSuiteDone(sum)
+	// fire around each suite. Returns { suites:[perSuiteSummary...], pass, fail, total }. opts.bail stops
+	// the current suite at its first failure AND stops starting further suites.
+	function runBySuite(onSuiteStart, onResult, onSuiteDone, opts) {
+		opts = opts || {};
+		var keys = [], seen = {}, ordered = orderedTests(), i;
+		for (i = 0; i < ordered.length; i++) {
+			if (!seen[ordered[i].suite]) { seen[ordered[i].suite] = 1; keys.push(ordered[i].suite); }
+		}
+		var out = { suites: [], pass: 0, fail: 0, total: 0 };
+		for (i = 0; i < keys.length; i++) {
+			if (onSuiteStart) onSuiteStart(keys[i], SUITE_NAMES[keys[i]] || keys[i]);
+			var s = runSuite(keys[i], onResult, opts);
+			out.suites.push(s); out.pass += s.pass; out.fail += s.fail; out.total += s.total;
+			if (onSuiteDone) onSuiteDone(s);
+			if (opts.bail && s.fail > 0) break;
+		}
+		return out;
 	}
 
 	// Find one test by identity (suite/group/name) and run it fresh — used by the viewer's watch button.
@@ -334,19 +367,26 @@
 		return out;
 	}
 
+	// Every suite that has at least one registered test, in run order: SUITE_ORDER first, then any
+	// unlisted key in first-seen order (matching orderedTests). Unlisted keys used to be invisible here.
 	function suites() {
+		var counts = {}, order = [], i;
+		for (i = 0; i < SUITE_ORDER.length; i++) { counts[SUITE_ORDER[i]] = 0; order.push(SUITE_ORDER[i]); }
+		for (i = 0; i < tests.length; i++) {
+			var k = tests[i].suite;
+			if (!(k in counts)) { counts[k] = 0; order.push(k); }
+			counts[k]++;
+		}
 		var out = [];
-		for (var s = 0; s < SUITE_ORDER.length; s++) {
-			var key = SUITE_ORDER[s], count = 0;
-			for (var i = 0; i < tests.length; i++) if (tests[i].suite === key) count++;
-			if (count > 0) out.push({ key: key, name: SUITE_NAMES[key] || key, count: count });
+		for (i = 0; i < order.length; i++) {
+			if (counts[order[i]] > 0) out.push({ key: order[i], name: SUITE_NAMES[order[i]] || order[i], count: counts[order[i]] });
 		}
 		return out;
 	}
 
 	return {
 		suite: suite, test: test,
-		run: run, runOne: runOne, runByName: runByName,
+		run: run, runSuite: runSuite, runBySuite: runBySuite, runOne: runOne, runByName: runByName,
 		groups: groups, suites: suites, orderedTests: orderedTests, tests: tests
 	};
 });

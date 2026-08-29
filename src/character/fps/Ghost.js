@@ -138,7 +138,7 @@ proto._readGhostKnockback = function() {
     if (!world || !world.narrowphase) { return; }
     var ghostBody = this._ghost;
     var pb = this.body.linear_velocity;
-    var mP = this.mass;
+    // var mP = this.mass; // only fed the disabled mass-ratio scale below
 
     var manifolds = world.narrowphase.manifolds.values();
     for (var manifold = manifolds.next(); !manifold.done; manifold = manifolds.next()) {
@@ -148,7 +148,7 @@ proto._readGhostKnockback = function() {
             m.bodyB === ghostBody ? m.bodyA : null;
         // A player is a wall, not a pushable object — no knockback from another player's ghost.
         if (other && other.bodyType === RigidBody.DYNAMIC && other._mass > 0 && !other.isKinematicCharacter) {
-            var mB = other._mass;
+            // var mB = other._mass; // only fed the disabled mass-ratio scale below
             var ov = other.linear_velocity;
             var nx = this._ghost.position.x - other.position.x;
             var nz = this._ghost.position.z - other.position.z;
@@ -166,8 +166,13 @@ proto._readGhostKnockback = function() {
                 (ov.x - pb.x) * nx + (ov.z - pb.z) * nz :   // legacy: relative closing (self-push included)
                 ov.x * nx + ov.z * nz;                      // box's own inbound speed only
             if (closing > FPSC.KB_CLOSING_MIN) {
-                var massRatio = mB / (mB + mP);
-                var kbv = massRatio * closing;
+                // `closing` is the object's velocity AFTER the solver already resolved its collision
+                // with the ghost — the mass exchange is already baked in. Scaling it again by the
+                // mass ratio below double-counted the mass penalty, cutting knockback to a fraction
+                // of what a free body of the character's mass actually keeps (~0.46 vs ~4 in K1).
+                // var massRatio = mB / (mB + mP);
+                // var kbv = massRatio * closing;
+                var kbv = closing;
                 if (kbv > this._receiveMaxSpeed) { kbv = this._receiveMaxSpeed; }
                 kbv *= this._receiveKnockbackFraction;
                 // Cap the RESULTING along-n speed, not just this tick's increment: clamping only kb

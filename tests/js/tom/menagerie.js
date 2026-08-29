@@ -5,8 +5,17 @@
 // Deliberately NOT pinned to one expected trajectory/orientation (see git history: an earlier test
 // in this style asserted one exact final resting face and had to be pulled — it passed while
 // looking visibly wrong, and failed the moment a shape's tumble path changed for an unrelated
-// reason). This file is a visual/data-gathering rig: watch it, then look at the real per-shape
-// numbers together and decide what's actually worth asserting.
+// reason).
+//
+// What IS asserted is contact, not pose: every shape must make a real engine contact (a
+// ContactManifold with live points, read off the World's per-tick 'contacts' event — never a
+// geometric distance guess) with each of the three surfaces it travels across — the ramp, the raised
+// debug bar mid-ramp, and the floor. One criterion per shape per surface, so a regression names the
+// exact culprit ("sphere ✗ ramp"), and each flips green live as the shape arrives. This survives any
+// change to HOW a shape tumbles while still catching a shape that misses a surface entirely — e.g.
+// the box-box flat-contact behaviour this rig helped shake out (before that fix a box on this ramp
+// could drift/skew off its expected path; the contact asserts guard that the shapes still travel the
+// whole ramp→bar→floor journey they're meant to).
 (function (Runner, U, AP) {
 	Runner.suite('tom');
 
@@ -48,7 +57,7 @@
 		var w = t.makeWorld({ gravity: -9.8 });
 
 		// Floor.
-		U.ground(t, w);
+		var floor = U.ground(t, w);
 
 		// Camera-framing anchors only (see render.js's frameCamera: it centers the initial view on the
 		// AVERAGE position of every registered body, unweighted - one floor counts the same as one tiny
@@ -66,14 +75,14 @@
 		// U.axisAngle returns a plain [x,y,z,w] array (see _util.js), not a Quaternion instance -
 		// used directly as t.box's `rot` array.
 		var rampRot = U.axisAngle(t, 1, 0, 0, RAMP_ANGLE);
-		t.box(w, RAMP_HALF.x, RAMP_HALF.y, RAMP_HALF.z, 0, {
+		var ramp = t.box(w, RAMP_HALF.x, RAMP_HALF.y, RAMP_HALF.z, 0, {
 			pos: [rampCenter.x, rampCenter.y, rampCenter.z], rot: rampRot,
 			friction: 0.5, restitution: 0.1, color: '#6a5a4a'
 		});
 
 		// DEBUG marker: RAMP_WIDTHx1x1 box (long on X) at the ramp's own halfway point, same rotation
 		// as the ramp, for manual positioning. RAMP_HALF.x*2 is the ramp's full width.
-		t.box(w, RAMP_HALF.x, 0.25, 0.25, 0, {
+		var debugBar = t.box(w, RAMP_HALF.x, 0.25, 0.25, 0, {
 			pos: [rampCenter.x, rampCenter.y, rampCenter.z], rot: rampRot,
 			color: '#ff00ff'
 		});
@@ -87,7 +96,10 @@
 		var shapes = [];
 		function track(body, name, color) {
 			body._color = color;
-			shapes.push({ name: name, body: body, x0: body.position.x, y0: body.position.y, z0: body.position.z });
+			// rollX: total ABSOLUTE rotation about the world X axis (the ramp's roll axis), integrated
+			// as sum(|angular_velocity.x| * dt) each tick - see the tumble criteria below for why
+			// absolute, not net.
+			shapes.push({ name: name, body: body, x0: body.position.x, y0: body.position.y, z0: body.position.z, rollX: 0 });
 			return body;
 		}
 
@@ -126,7 +138,91 @@
 			} else {
 				pusher.linear_velocity.set(0, 0, 0);
 			}
+			// Integrate each shape's ABSOLUTE roll about the world X axis (see the tumble criteria).
+			// Absolute (|w.x|), not net: a shape that rocks forward then back nets ~zero X rotation
+			// while genuinely having tumbled - a box on this ramp does exactly that (net ~0.1 turns,
+			// absolute ~1.2). Summing |w.x|*dt measures how much X-axis rolling actually happened,
+			// which is the physical "ass over end" claim.
+			for (var i = 0; i < shapes.length; i++) {
+				shapes[i].rollX += Math.abs(shapes[i].body.angular_velocity.x) * t.DT;
+			}
 		});
+
+		// ---- Real-contact tracking ----------------------------------------------------------------
+		// "Touch" is a genuine engine contact, not a geometric proximity guess: the World emits its
+		// per-tick ContactManifoldList (the very manifolds the solver just resolved) as a 'contacts'
+		// event. A shape has touched a surface once a manifold exists for that exact body pair with at
+		// least one surviving contact point. This is robust to HOW each shape tumbles (the whole point
+		// of this rig - see file header): we assert that contact happened, never where or in what pose.
+		// Each shape gets a per-surface latch that, once set, stays set - so a momentary touch counts
+		// even after the shape has moved on.
+		var touched = {}; // name -> { ramp, bar, floor }
+		for (var si = 0; si < shapes.length; si++) touched[shapes[si].name] = { ramp: false, bar: false, floor: false };
+
+		w.addListener('contacts', function (manifolds) {
+			for (var mi = manifolds.values(), m = mi.next(); !m.done; m = mi.next()) {
+				var man = m.value;
+				if (man.points.length === 0) continue;
+				for (var i = 0; i < shapes.length; i++) {
+					var body = shapes[i].body, rec = touched[shapes[i].name];
+					var other = man.bodyA === body ? man.bodyB : (man.bodyB === body ? man.bodyA : null);
+					if (other === null) continue;
+					if (other === ramp) rec.ramp = true;
+					else if (other === debugBar) rec.bar = true;
+					else if (other === floor) rec.floor = true;
+				}
+			}
+		});
+
+		// One criterion PER SHAPE PER SURFACE (5 shapes x 3 surfaces = 15), each going green the tick
+		// that specific shape first contacts that specific surface. Deliberately granular: a future
+		// regression reads as exactly "sphere ✗ ramp" or "box ✗ bar" - you see which shape missed which
+		// part, not just that "something" didn't touch. Each fires independently and in real time as the
+		// run plays, so the viewer shows them flipping to green in the order the shapes actually arrive.
+		function touches(shapeName, surface) {
+			return function () {
+				if (touched[shapeName][surface]) return { ok: true, detail: shapeName + ' contacted the ' + surface };
+				return { ok: false, detail: shapeName + ' has not contacted the ' + surface + ' yet' };
+			};
+		}
+		var SURFACES = ['ramp', 'bar', 'floor'];
+		for (var ci = 0; ci < shapes.length; ci++) {
+			for (var cs = 0; cs < SURFACES.length; cs++) {
+				var nm = shapes[ci].name, sf = SURFACES[cs];
+				t.expect(nm + ' makes real contact with the ' + sf, touches(nm, sf));
+			}
+		}
+
+		// ---- Tumbling (rotation about X) -----------------------------------------------------------
+		// A steep drop-off + ramp should make things TUMBLE, not slide down rigid. We assert the total
+		// absolute rotation each shape accumulates about the world X axis (the ramp's roll axis) - see
+		// rollX in track()/onTick for why absolute, not net (a rocking box nets ~0, but genuinely rolls).
+		// TWO tiers, measured from the real per-shape numbers, not guessed:
+		//   - EVERY shape must clear 1 full turn (2*PI rad) - the floor for "it actually tumbled, it
+		//     didn't just skid down frozen." The laggards are the box (~1.2, it rocks corner to corner)
+		//     and the cone (~1.65, it pivots on its point/base rather than cartwheeling).
+		//   - The ROUND rollers (sphere, capsule, cylinder) must clear 3 full turns - round things on a
+		//     70-degree ramp roll freely and rack up far more (sphere ~5.4, capsule ~4.0, cylinder ~3.2).
+		//     The box and cone are deliberately NOT held to this - they physically can't roll like that,
+		//     and pinning them to 3 would be asserting a fiction.
+		var TURN = 2 * Math.PI;
+		var ROLLERS = { sphere: true, capsule: true, cylinder: true };
+		function rolls(shapeRec, minTurns) {
+			return function () {
+				var turns = shapeRec.rollX / TURN;
+				return {
+					ok: turns >= minTurns,
+					detail: shapeRec.name + ' rolled ' + turns.toFixed(2) + ' turns about X (need >= ' + minTurns + ')'
+				};
+			};
+		}
+		for (var ti = 0; ti < shapes.length; ti++) {
+			var rec = shapes[ti];
+			t.expect(rec.name + ' tumbles at least 1 full turn about X (did not slide down rigid)', rolls(rec, 1));
+			if (ROLLERS[rec.name]) {
+				t.expect(rec.name + ' (a roller) tumbles at least 3 full turns about X', rolls(rec, 3));
+			}
+		}
 
 		// Minimal sanity gate only (no pinned trajectory/pose - see file header) - just enough of a
 		// real t.expect() for the viewer to treat this as a live/steppable scene instead of a frozen
@@ -149,10 +245,14 @@
 	}, {
 		visual: true, steps: TOTAL, page: 'menagerie',
 		description:
-			"Coin-pusher rig: five shapes (box, sphere, capsule, cone, cylinder) lined up on a high " +
-			"platform get slowly shoved off the edge by a moving pusher box, fall onto a steep ramp, " +
-			"and tumble down onto the floor. No pinned pass/fail criteria yet — watch it, then look " +
-			"at the real per-shape numbers together before deciding what's worth asserting."
+			"Coin-pusher rig: five shapes (box, sphere, capsule, cone, cylinder) are slowly shoved off " +
+			"a high platform, fall onto a steep ramp, and tumble down to the floor. Measures physical " +
+			"correctness, per shape, without pinning any exact path or pose: (1) real engine contact — " +
+			"every shape must actually touch the ramp, the raised bar, and the floor (read from the " +
+			"world's contact events, not guessed from distance); and (2) tumbling — every shape must " +
+			"roll at least a full turn about the ramp's axis, and the round shapes at least three. Each " +
+			"criterion flips green live as it's met, so a regression names the exact shape and what it " +
+			"failed to do — 'sphere never touched the ramp', 'cylinder only rolled twice'."
 	});
 })(
 	typeof module !== 'undefined' && module.exports ? require('../runner.js') : window.APRunner,

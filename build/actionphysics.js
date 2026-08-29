@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-28T10:52:24.178Z
+// ActionPhysics 0.1.0 — built 2026-08-29T02:15:38.628Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine.
@@ -6340,7 +6340,7 @@ class Solver {
     constructor(opts) {
         opts = opts || {};
         this.substeps = opts.substeps || 4;
-        this.iterations = opts.iterations || 1; // position-solve passes per substep
+        this.iterations = opts.iterations || 4; // position-solve passes per substep
 
         this._rA = new Vector3(); this._rB = new Vector3();
         this._deltaPos = new Vector3();
@@ -6352,7 +6352,7 @@ class Solver {
         this._prevRot = new Map();
         this._preGravityVel = new Map();
         this._biasDelta = new Map(); // per-body bias-only correction this substep; excluded from derived velocity
-        this._deferredRotation = new Map(); // per-body accumulated small-angle rotation for a multi-point manifold pass
+        this._restRing = new Map(); // per-body ring buffer of recent transforms for rest-velocity reconciliation
     }
 
     // Margin widening what counts as "explainable by the body's own velocity" in _solvePoint's
@@ -6369,6 +6369,39 @@ class Solver {
         const h = dt / this.substeps;
         for (let s = 0; s < this.substeps; s++) {
             this._substep(bodies, manifolds, gravity, h, refresh, constraints);
+        }
+        this._reconcileRestVelocity(bodies, dt);
+    }
+
+    // Zeroes the velocity of a body whose sustained motion over the last REST_WINDOW ticks is below
+    // the rest thresholds, from a per-body ring buffer of recent transforms. See NOTES.md.
+    _reconcileRestVelocity(bodies, dt) {
+        const win = REST_WINDOW;
+        for (let i = 0; i < bodies.length; i++) {
+            const b = bodies[i];
+            if (b.bodyType !== RigidBody.DYNAMIC) continue;
+            let r = this._restRing.get(b.id);
+            if (!r) {
+                r = { pos: [], rot: [], head: 0, count: 0 };
+                for (let k = 0; k < win; k++) { r.pos.push(new Vector3()); r.rot.push(new Quaternion()); }
+                this._restRing.set(b.id, r);
+            }
+
+            if (r.count === win) {
+                // Oldest sample is the one about to be overwritten at head.
+                const oldPos = r.pos[r.head], oldRot = r.rot[r.head];
+                const span = win * dt;
+                const ndx = b.position.x - oldPos.x, ndy = b.position.y - oldPos.y, ndz = b.position.z - oldPos.z;
+                const windowedLinSpeed = Math.sqrt(ndx * ndx + ndy * ndy + ndz * ndz) / span;
+                if (windowedLinSpeed < REST_LINEAR_SPEED) b.linear_velocity.set(0, 0, 0);
+                Solver._deriveAngularVelocity(this._tmpDispA, oldRot, b.rotation, span);
+                if (this._tmpDispA.length() < REST_ANGULAR_SPEED) b.angular_velocity.set(0, 0, 0);
+            } else {
+                r.count++;
+            }
+            r.pos[r.head].copy(b.position);
+            r.rot[r.head].copy(b.rotation);
+            r.head = (r.head + 1) % win;
         }
     }
 
@@ -6414,15 +6447,20 @@ class Solver {
             return;
         }
         for (let i = 0; i < n; i++) {
-            this._solvePoint(manifold.points[i], bodyA, bodyB, h, null, true);
+            this._solvePoint(manifold.points[i], bodyA, bodyB, h, true);
         }
     }
 
     _solveContactVelocities(manifolds, gravity, h) {
         for (const manifold of manifolds.values()) {
             const bodyA = manifold.bodyA, bodyB = manifold.bodyB;
-            for (let i = 0; i < manifold.points.length; i++) {
-                this._solveContactVelocity(manifold.points[i], bodyA, bodyB, gravity, h);
+            // A flat box-on-box face patch is resolved once at its centroid (order-independent, no
+            // fabricated drift); every other manifold keeps the per-point solve. See
+            // VelocitySolve.js._boxFacePatchVelocity.
+            if (!this._boxFacePatchVelocity(manifold, bodyA, bodyB, gravity, h)) {
+                for (let i = 0; i < manifold.points.length; i++) {
+                    this._solveContactVelocity(manifold.points[i], bodyA, bodyB, gravity, h);
+                }
             }
             if (manifold.points.length > 0) {
                 // Reference point for angular friction: the most-engaged one (largest |normalLambda|),
@@ -6451,6 +6489,11 @@ Solver.RESTITUTION_SLOP_FACTOR = 8;
 // once - keeps one point's correction from moving the body before its manifold siblings are read.
 Solver.MAX_PENETRATION_PER_SUBSTEP = 0.005;
 
+// Rest-velocity reconciliation thresholds (see Solver._reconcileRestVelocity, NOTES.md).
+var REST_WINDOW = 8;              // ticks in the trailing velocity window
+var REST_LINEAR_SPEED = 0.02;     // units/s windowed speed below which a settled body is zeroed
+var REST_ANGULAR_SPEED = 0.05;    // rad/s windowed speed below which a settled body is zeroed
+
 ActionPhysics.Solver = Solver;
 
 
@@ -6469,9 +6512,6 @@ proto._integrate = function (bodies, gravity, h) {
         const bias = this._biasDelta.get(b.id) || new Vector3();
         bias.set(0, 0, 0);
         this._biasDelta.set(b.id, bias);
-        const deferred = this._deferredRotation.get(b.id) || new Vector3();
-        deferred.set(0, 0, 0);
-        this._deferredRotation.set(b.id, deferred);
         // Snapshot before gravity/damping touch it - restitution's pre-solve velocity reads this,
         // not the post-gravity value (see PositionSolve.js's restitution capture).
         this._preGravityVel.set(b.id, new Vector3().copy(b.linear_velocity));
@@ -6561,7 +6601,7 @@ Solver._deriveAngularVelocity = function (out, prevRot, rotation, h) {
 // and positional-correction helpers it uses.
 var proto = Solver.prototype;
 
-proto._solvePoint = function (point, bodyA, bodyB, h, deferRotation, capPenetration) {
+proto._solvePoint = function (point, bodyA, bodyB, h, capPenetration) {
     point.currentAnchorAInto(this._rA, bodyA);
     point.currentAnchorBInto(this._rB, bodyB);
     const nx = point.normal.x, ny = point.normal.y, nz = point.normal.z;
@@ -6607,8 +6647,8 @@ proto._solvePoint = function (point, bodyA, bodyB, h, deferRotation, capPenetrat
     if (velocityC > explainableBySubstep) velocityC = explainableBySubstep;
     const velocityDelta = -velocityC / wSum;
     const biasDelta = deltaLambda - velocityDelta;
-    this._applyPositionalCorrection(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, velocityDelta, false, deferRotation);
-    this._applyPositionalCorrection(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, biasDelta, true, deferRotation);
+    this._applyPositionalCorrection(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, velocityDelta, false);
+    this._applyPositionalCorrection(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, biasDelta, true);
 };
 
 // Generalized inverse mass along direction (dx,dy,dz): linear + angular contribution from both bodies.
@@ -6640,9 +6680,7 @@ proto._effectiveMass = function (bodyA, bodyB, rA, rB, dx, dy, dz) {
 // `bias`: true for the non-explainable share of a split correction - the body still moves (so the
 // next substep measures a smaller overlap), but the movement is also recorded into this._biasDelta
 // for step 4 to subtract back out.
-// `deferRotation` (optional): accumulates the angular delta instead of composing it into
-// body.rotation immediately - see _applyAngularCorrection / _flushDeferredRotation.
-proto._applyPositionalCorrection = function (bodyA, bodyB, rA, rB, nx, ny, nz, dLambda, bias, deferRotation) {
+proto._applyPositionalCorrection = function (bodyA, bodyB, rA, rB, nx, ny, nz, dLambda, bias) {
     const px = nx * dLambda, py = ny * dLambda, pz = nz * dLambda;
 
     if (bodyA._massInverted > 0) {
@@ -6654,7 +6692,7 @@ proto._applyPositionalCorrection = function (bodyA, bodyB, rA, rB, nx, ny, nz, d
             const b = this._biasDelta.get(bodyA.id);
             if (b) { b.x += dx; b.y += dy; b.z += dz; }
         }
-        this._applyAngularCorrection(bodyA, rA, -px, -py, -pz, deferRotation);
+        this._applyAngularCorrection(bodyA, rA, -px, -py, -pz);
     }
     if (bodyB._massInverted > 0) {
         const dx = px * bodyB._massInverted * bodyB.linear_factor.x;
@@ -6665,36 +6703,20 @@ proto._applyPositionalCorrection = function (bodyA, bodyB, rA, rB, nx, ny, nz, d
             const b = this._biasDelta.get(bodyB.id);
             if (b) { b.x += dx; b.y += dy; b.z += dz; }
         }
-        this._applyAngularCorrection(bodyB, rB, px, py, pz, deferRotation);
+        this._applyAngularCorrection(bodyB, rB, px, py, pz);
     }
 };
 
 // Small-angle PBD angular update from a linear positional impulse p at offset r: I^-1*(r x p)*0.5.
-// With `deferRotation` supplied, adds the small-angle delta into its per-body accumulator instead
-// of composing it into body.rotation immediately - see _applyPositionalCorrection / _flushDeferredRotation.
-proto._applyAngularCorrection = function (body, r, px, py, pz, deferRotation) {
+proto._applyAngularCorrection = function (body, r, px, py, pz) {
     const torqueX = r.y * pz - r.z * py, torqueY = r.z * px - r.x * pz, torqueZ = r.x * py - r.y * px;
     const I = body._worldInverseInertiaTensor;
     const wx = I.e00 * torqueX + I.e01 * torqueY + I.e02 * torqueZ;
     const wy = I.e10 * torqueX + I.e11 * torqueY + I.e12 * torqueZ;
     const wz = I.e20 * torqueX + I.e21 * torqueY + I.e22 * torqueZ;
     const ax = wx * body.angular_factor.x, ay = wy * body.angular_factor.y, az = wz * body.angular_factor.z;
-    if (deferRotation) {
-        const acc = deferRotation.get(body.id);
-        if (acc) { acc.x += ax; acc.y += ay; acc.z += az; return; }
-    }
     this._angularCorrA.set(ax, ay, az);
     Solver._integrateRotation(body.rotation, this._angularCorrA, 1); // h=1: this IS the delta, not a rate
-};
-
-// Applies one body's accumulated deferred small-angle rotation (summed across every point in the
-// manifold's pass) as a single quaternion update, then clears the accumulator.
-proto._flushDeferredRotation = function (body, deferRotation) {
-    const acc = deferRotation.get(body.id);
-    if (!acc || (acc.x === 0 && acc.y === 0 && acc.z === 0)) return;
-    this._angularCorrA.set(acc.x, acc.y, acc.z);
-    Solver._integrateRotation(body.rotation, this._angularCorrA, 1);
-    acc.x = 0; acc.y = 0; acc.z = 0;
 };
 
 
@@ -6702,6 +6724,99 @@ proto._flushDeferredRotation = function (body, deferRotation) {
 // Phase 3: velocity-pass contact solve (restitution + Coulomb friction + rolling resistance),
 // applied after positions are solved, plus the velocity-space helpers they share.
 var proto = Solver.prototype;
+
+// A box-on-box flat face contact reports up to 4 coplanar points sharing one normal. Solving
+// restitution and friction point-by-point (Gauss-Seidel) over that patch is what fabricates lateral
+// drift on a perfectly symmetric drop (box-box/single): each point's off-centre normal impulse spins
+// the body a hair, the next point reads the spun state, and the four impulses no longer cancel - the
+// residual spin then couples through friction into a net sideways velocity. For that ONE case - both
+// shapes actual BoxShapes, every engaged point sharing a single normal (a genuine face patch) - the
+// physically correct model is a single contact patch, not four independent points: restitution and
+// friction are resolved once at the patch centroid, which is exactly symmetric and leaves no residual
+// spin or drift. Everything else (edge/corner box contacts, meshes, spheres, compounds, non-coplanar
+// manifolds) keeps the per-point solve, so the exact per-point restitution/friction contracts other
+// tests pin down are untouched.
+proto.COPLANAR_NORMAL_DOT = 0.9999;
+
+proto._boxFacePatchVelocity = function (manifold, bodyA, bodyB, gravity, h) {
+    const pts = manifold.points, n = pts.length;
+    if (n < 2) return false;
+    if (!(bodyA.shape instanceof BoxShape) || !(bodyB.shape instanceof BoxShape)) return false;
+
+    // Aggregate engaged points; require a single shared normal (a real face patch, not an edge/corner).
+    let cAx = 0, cAy = 0, cAz = 0, cBx = 0, cBy = 0, cBz = 0;
+    let nx = 0, ny = 0, nz = 0, cnt = 0, maxPre = 0, totLam = 0;
+    for (let i = 0; i < n; i++) {
+        const p = pts[i];
+        if (p.normalLambda >= 0) continue;
+        p.currentAnchorAInto(this._rA, bodyA);
+        p.currentAnchorBInto(this._rB, bodyB);
+        cAx += this._rA.x; cAy += this._rA.y; cAz += this._rA.z;
+        cBx += this._rB.x; cBy += this._rB.y; cBz += this._rB.z;
+        nx += p.normal.x; ny += p.normal.y; nz += p.normal.z;
+        if (p._preSolveNormalVel > maxPre) maxPre = p._preSolveNormalVel;
+        totLam += Math.abs(p.normalLambda);
+        cnt++;
+    }
+    if (cnt < 2) return false;
+    const nl = Math.sqrt(nx * nx + ny * ny + nz * nz);
+    if (nl < 1e-9) return false;
+    nx /= nl; ny /= nl; nz /= nl;
+    for (let i = 0; i < n; i++) {
+        const p = pts[i];
+        if (p.normalLambda >= 0) continue;
+        if (p.normal.x * nx + p.normal.y * ny + p.normal.z * nz < this.COPLANAR_NORMAL_DOT) return false; // not coplanar
+    }
+
+    const inv = 1 / cnt;
+    cAx *= inv; cAy *= inv; cAz *= inv; cBx *= inv; cBy *= inv; cBz *= inv;
+    this._rA.set(cAx - bodyA.position.x, cAy - bodyA.position.y, cAz - bodyA.position.z);
+    this._rB.set(cBx - bodyB.position.x, cBy - bodyB.position.y, cBz - bodyB.position.z);
+
+    // --- Restitution at the centroid ---
+    const restitution = Math.max(bodyA.restitution, bodyB.restitution);
+    if (restitution > 0) {
+        const g = bodyA.gravity || bodyB.gravity || gravity;
+        const gravityMag = Math.sqrt(g.x * g.x + g.y * g.y + g.z * g.z);
+        const restitutionThreshold = gravityMag * h * Solver.RESTITUTION_SLOP_FACTOR;
+        if (maxPre > restitutionThreshold) {
+            const va = this._pointVelocity(bodyA, this._rA, this._tmpDispB);
+            const vax = va.x, vay = va.y, vaz = va.z;
+            const vb = this._pointVelocity(bodyB, this._rB, this._tmpDispB);
+            const relN = (vb.x - vax) * nx + (vb.y - vay) * ny + (vb.z - vaz) * nz;
+            const targetN = -restitution * maxPre;
+            if (targetN < relN) {
+                const wN = this._effectiveMass(bodyA, bodyB, this._rA, this._rB, nx, ny, nz);
+                if (wN >= 1e-12) this._applyVelocityImpulse(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, (targetN - relN) / wN);
+            }
+        }
+    }
+
+    // --- Friction at the centroid (Coulomb cap = friction * total engaged normal impulse) ---
+    const friction = Math.sqrt(bodyA.friction * bodyB.friction);
+    if (friction > 0) {
+        const maxImpulse = friction * totLam / h;
+        if (maxImpulse > 0) {
+            const va = this._pointVelocity(bodyA, this._rA, this._tmpDispB);
+            const vax = va.x, vay = va.y, vaz = va.z;
+            const vb = this._pointVelocity(bodyB, this._rB, this._tmpDispB);
+            const rvx = vb.x - vax, rvy = vb.y - vay, rvz = vb.z - vaz;
+            const vn = rvx * nx + rvy * ny + rvz * nz;
+            const vtx = rvx - vn * nx, vty = rvy - vn * ny, vtz = rvz - vn * nz;
+            const vtMag = Math.sqrt(vtx * vtx + vty * vty + vtz * vtz);
+            if (vtMag >= 1e-12) {
+                const tx = vtx / vtMag, ty = vty / vtMag, tz = vtz / vtMag;
+                const wT = this._effectiveMass(bodyA, bodyB, this._rA, this._rB, tx, ty, tz);
+                if (wT >= 1e-12) {
+                    let jt = vtMag / wT;
+                    if (jt > maxImpulse) jt = maxImpulse;
+                    this._applyVelocityImpulse(bodyA, bodyB, this._rA, this._rB, -tx, -ty, -tz, jt);
+                }
+            }
+        }
+    }
+    return true;
+};
 
 proto._solveContactVelocity = function (point, bodyA, bodyB, gravity, h) {
     if (point.normalLambda >= 0) return; // never engaged this substep - nothing to correct
@@ -6880,6 +6995,211 @@ Solver._tangentBasis = function (normal, outT1, outT2) {
     outT1.findOrthogonal(normal);
     Vector3.crossInto(outT2, normal, outT1);
 };
+
+
+// ==== src/solver/IslandManager.js ====
+/**
+ * IslandManager: decides which bodies are ASLEEP each tick, as coupled groups (islands), and parks
+ * or wakes whole islands together.
+ *
+ * WHY ISLANDS, NOT PER-BODY SLEEP: the real target is a game - stacks, piles, ragdolls, debris -
+ * where resting bodies rest ON each other. Per-body sleep is not a smaller-but-correct version there,
+ * it is WRONG: the bottom crate of a stack reaches rest and sleeps a moment before the crate on top
+ * has finished micro-settling; the sleeping bottom body stops being integrated and stops resolving
+ * its contact, and the still-awake top body sags into (or through) it. The fix is that a body may
+ * sleep only as part of a group where EVERY member is ready to sleep, and the whole group wakes the
+ * instant any member is disturbed. Building that grouping IS the island manager.
+ *
+ * WHAT COUPLES TWO BODIES INTO ONE ISLAND: a contact manifold with at least one point, or an enabled
+ * constraint, BETWEEN TWO DYNAMIC BODIES. Static and kinematic bodies deliberately do NOT propagate
+ * membership - the floor (static) touches every resting body in a scene, and chaining all of them
+ * into one island through the floor would mean no pile could ever sleep unless the entire world did.
+ * A static/kinematic body is a boundary, not a link. (A dynamic body resting on a MOVING kinematic
+ * platform is kept awake separately - see step() - since the ground under it is itself in motion.)
+ *
+ * ORDER IN THE PIPELINE: runs in World.step AFTER narrowphase (so it has this tick's manifolds to
+ * build connectivity from) and BEFORE the solver (so the solver can skip sleeping islands entirely).
+ * The manifolds it reads are the same ContactManifoldList the solver then reads - zero-point
+ * manifolds are already pruned by ContactManifoldList.refresh, so every manifold here is a genuine
+ * touch.
+ */
+class IslandManager {
+    // Sleep thresholds. A body is "quiet" this tick when BOTH its linear and angular speed are below
+    // these. Set from direct measurement of this engine's own resting bodies, not pasted from a
+    // reference - a sphere and a box settle to EXACTLY zero here, while a cylinder resting on its side
+    // never fully settles: it oscillates forever in a band, angular speed bouncing between ~0.05 and
+    // ~0.071 rad/s, linear between ~0.008 and ~0.013 m/s (traced 600 ticks, no decay). The angular
+    // threshold MUST sit comfortably above that ~0.071 ceiling, or a settling cylinder would cross the
+    // line back and forth and sleep/wake/sleep/wake right at the boundary - a body balanced on the
+    // threshold itself, exactly the knife-edge this engine exists to avoid. 0.12 gives ~1.7x headroom
+    // over the observed ceiling while staying far below any real motion (a rolling/tumbling body is
+    // >1 rad/s, orders of magnitude clear). The linear threshold has enormous margin over the observed
+    // ~0.013 and is the conventional value.
+    static LINEAR_SLEEP_THRESHOLD = 0.05;        // m/s
+    static ANGULAR_SLEEP_THRESHOLD = 0.12;       // rad/s
+
+    // How long (seconds) an entire island must stay quiet before it is parked. Standard ~0.5s: long
+    // enough that a body momentarily still for a real reason (the apex of a bounce, a brief pin
+    // between two others mid-collapse) does not false-sleep, short enough that a settled pile parks
+    // promptly. Tracked per body as sleepTimer (seconds), advanced only while the body is quiet AND
+    // every other body in its island is quiet too - a single restless member holds the whole island
+    // awake by resetting the island's readiness, see step().
+    static TIME_TO_SLEEP = 0.5;                  // seconds
+
+    constructor() {
+        // Union-find parent map, rebuilt each tick: bodyId -> bodyId. Kept as a Map (not an array)
+        // because body ids are monotonic and sparse over a session as bodies are added/removed.
+        this._parent = new Map();
+        // Scratch: island id (a representative body id) -> { members: [], quiet: bool }, rebuilt each
+        // tick. Not retained across ticks - island membership is recomputed from live connectivity
+        // every tick, since a contact appearing or breaking changes the graph.
+        this._islands = new Map();
+    }
+
+    _find(id) {
+        let root = id;
+        while (this._parent.get(root) !== root) root = this._parent.get(root);
+        // Path compression: point every node on the path straight at the root, so repeated finds
+        // this tick are flat. Safe because the forest is rebuilt from scratch next tick.
+        let cur = id;
+        while (this._parent.get(cur) !== root) {
+            const next = this._parent.get(cur);
+            this._parent.set(cur, root);
+            cur = next;
+        }
+        return root;
+    }
+
+    _union(a, b) {
+        const ra = this._find(a), rb = this._find(b);
+        if (ra !== rb) this._parent.set(ra, rb);
+    }
+
+    _ensure(id) {
+        if (!this._parent.has(id)) this._parent.set(id, id);
+    }
+
+    /**
+     * Updates the sleep state of every dynamic body in `bodies`, using this tick's `manifolds`
+     * (a ContactManifoldList) and `constraints` (the world's joint list) for connectivity, advancing
+     * timers by `dt`. Parks islands that have been quiet long enough; wakes any body that a moving
+     * static/kinematic neighbour or an already-awake dynamic neighbour keeps in motion.
+     *
+     * After this runs, a body with isAwake === false is one the solver may skip entirely this tick.
+     */
+    update(bodies, manifolds, constraints, dt) {
+        this._parent.clear();
+        this._islands.clear();
+
+        // 1. Seed the forest with every DYNAMIC body as its own singleton. Static/kinematic bodies
+        //    are intentionally never seeded - they cannot sleep and must not link their neighbours.
+        for (let i = 0; i < bodies.length; i++) {
+            const b = bodies[i];
+            if (b.bodyType === RigidBody.DYNAMIC) this._ensure(b.id);
+        }
+
+        // 2. Union dynamic bodies coupled by a real contact. A manifold touching a static/kinematic
+        //    body does NOT union (that body is not in the forest) - but it is remembered as an
+        //    external contact, handled in step 4, because a dynamic body touching a MOVING
+        //    kinematic/awake body must be forced awake regardless of its own quietness.
+        for (const manifold of manifolds.values()) {
+            const a = manifold.bodyA, b = manifold.bodyB;
+            const aDyn = a.bodyType === RigidBody.DYNAMIC, bDyn = b.bodyType === RigidBody.DYNAMIC;
+            if (aDyn && bDyn) this._union(a.id, b.id);
+        }
+
+        // 3. Union dynamic bodies coupled by an enabled constraint. A constraint's bodyB may be null
+        //    (anchored to the world) - that is a boundary like a static body, no union.
+        if (constraints) {
+            for (let i = 0; i < constraints.length; i++) {
+                const c = constraints[i];
+                if (!c.enabled || !c.bodyB) continue;
+                const aDyn = c.bodyA.bodyType === RigidBody.DYNAMIC, bDyn = c.bodyB.bodyType === RigidBody.DYNAMIC;
+                if (aDyn && bDyn) this._union(c.bodyA.id, c.bodyB.id);
+            }
+        }
+
+        // 4. Determine which dynamic bodies are FORCED awake by an external influence this tick,
+        //    independent of their own speed: a dynamic body in contact with a still-moving kinematic
+        //    body (a rising platform, a swinging door) cannot be allowed to sleep even if it is
+        //    momentarily quiet, because the thing it rests on is about to move it. A contact with a
+        //    STATIC body is not a forcing influence - static ground is exactly what a body sleeps on.
+        const forcedAwake = new Set();
+        for (const manifold of manifolds.values()) {
+            const a = manifold.bodyA, b = manifold.bodyB;
+            IslandManager._maybeForceAwakeFromNeighbour(a, b, forcedAwake);
+            IslandManager._maybeForceAwakeFromNeighbour(b, a, forcedAwake);
+        }
+
+        // 5. Group dynamic bodies by island root, and record each body's own quietness (below BOTH
+        //    thresholds this tick). A forced-awake body counts as not quiet.
+        const bodyById = IslandManager._indexById(bodies);
+        for (const [id, ] of this._parent) {
+            const root = this._find(id);
+            let island = this._islands.get(root);
+            if (!island) { island = { members: [], allQuiet: true }; this._islands.set(root, island); }
+            const body = bodyById.get(id);
+            island.members.push(body);
+            const quiet = !forcedAwake.has(id) && IslandManager._isQuiet(body);
+            if (!quiet) island.allQuiet = false;
+        }
+
+        // 6. Per island: if every member is quiet, advance the whole island's sleep timer by dt (each
+        //    body carries its own sleepTimer, but they move in lockstep because the gate is the
+        //    island's shared allQuiet). Once the island has been quiet past TIME_TO_SLEEP, park every
+        //    member together. If ANY member is not quiet, wake the whole island - one restless body
+        //    keeps its entire pile simulating, which is the correctness guarantee islands exist for.
+        for (const island of this._islands.values()) {
+            if (island.allQuiet) {
+                let minTimer = Infinity;
+                for (const body of island.members) {
+                    body.sleepTimer += dt;
+                    if (body.sleepTimer < minTimer) minTimer = body.sleepTimer;
+                }
+                // Park only when the SLOWEST-to-qualify member has also crossed the line, so a body
+                // that only just went quiet does not drag the rest to sleep prematurely.
+                if (minTimer >= IslandManager.TIME_TO_SLEEP) {
+                    for (const body of island.members) body.sleep();
+                }
+            } else {
+                for (const body of island.members) {
+                    if (!body.isAwake) body.isAwake = true;
+                    body.sleepTimer = 0;
+                }
+            }
+        }
+    }
+
+    // A dynamic `body` in contact with `other` must be forced awake if `other` is a KINEMATIC body
+    // that is itself moving, or a DYNAMIC body that is currently awake - either way the neighbour is
+    // about to impart motion this body cannot anticipate while asleep. A static neighbour, or a
+    // sleeping dynamic one, is not a forcing influence (that is the whole point of a body being able
+    // to rest on top of another sleeping body).
+    static _maybeForceAwakeFromNeighbour(body, other, forcedAwake) {
+        if (body.bodyType !== RigidBody.DYNAMIC) return;
+        if (other.bodyType === RigidBody.KINEMATIC) {
+            if (!IslandManager._isQuiet(other)) forcedAwake.add(body.id);
+        } else if (other.bodyType === RigidBody.DYNAMIC) {
+            if (other.isAwake && !IslandManager._isQuiet(other)) forcedAwake.add(body.id);
+        }
+    }
+
+    static _isQuiet(body) {
+        const lv = body.linear_velocity, av = body.angular_velocity;
+        const linSq = lv.x * lv.x + lv.y * lv.y + lv.z * lv.z;
+        const angSq = av.x * av.x + av.y * av.y + av.z * av.z;
+        return linSq <= IslandManager.LINEAR_SLEEP_THRESHOLD * IslandManager.LINEAR_SLEEP_THRESHOLD &&
+            angSq <= IslandManager.ANGULAR_SLEEP_THRESHOLD * IslandManager.ANGULAR_SLEEP_THRESHOLD;
+    }
+
+    static _indexById(bodies) {
+        const map = new Map();
+        for (let i = 0; i < bodies.length; i++) map.set(bodies[i].id, bodies[i]);
+        return map;
+    }
+}
+
+ActionPhysics.IslandManager = IslandManager;
 
 
 // ==== src/constraints/Constraint.js ====
@@ -8030,6 +8350,12 @@ class World {
             const b = this.bodies[i];
             if (b.bodyType === RigidBody.DYNAMIC) b.clearForces();
         }
+
+        // This tick's real contacts (the same ContactManifoldList the solver just resolved), for any
+        // listener that wants to observe genuine touches - each manifold carries bodyA/bodyB and its
+        // surviving contact points. Emitted after the solve so positions/points reflect the resolved
+        // state. A pair with no manifold (or a pruned, zero-point one) simply isn't present.
+        this.emit('contacts', manifolds);
 
         this.emit('stepEnd', dt);
     }
@@ -9259,7 +9585,7 @@ proto._readGhostKnockback = function() {
     if (!world || !world.narrowphase) { return; }
     var ghostBody = this._ghost;
     var pb = this.body.linear_velocity;
-    var mP = this.mass;
+    // var mP = this.mass; // only fed the disabled mass-ratio scale below
 
     var manifolds = world.narrowphase.manifolds.values();
     for (var manifold = manifolds.next(); !manifold.done; manifold = manifolds.next()) {
@@ -9269,7 +9595,7 @@ proto._readGhostKnockback = function() {
             m.bodyB === ghostBody ? m.bodyA : null;
         // A player is a wall, not a pushable object — no knockback from another player's ghost.
         if (other && other.bodyType === RigidBody.DYNAMIC && other._mass > 0 && !other.isKinematicCharacter) {
-            var mB = other._mass;
+            // var mB = other._mass; // only fed the disabled mass-ratio scale below
             var ov = other.linear_velocity;
             var nx = this._ghost.position.x - other.position.x;
             var nz = this._ghost.position.z - other.position.z;
@@ -9287,8 +9613,13 @@ proto._readGhostKnockback = function() {
                 (ov.x - pb.x) * nx + (ov.z - pb.z) * nz :   // legacy: relative closing (self-push included)
                 ov.x * nx + ov.z * nz;                      // box's own inbound speed only
             if (closing > FPSC.KB_CLOSING_MIN) {
-                var massRatio = mB / (mB + mP);
-                var kbv = massRatio * closing;
+                // `closing` is the object's velocity AFTER the solver already resolved its collision
+                // with the ghost — the mass exchange is already baked in. Scaling it again by the
+                // mass ratio below double-counted the mass penalty, cutting knockback to a fraction
+                // of what a free body of the character's mass actually keeps (~0.46 vs ~4 in K1).
+                // var massRatio = mB / (mB + mP);
+                // var kbv = massRatio * closing;
+                var kbv = closing;
                 if (kbv > this._receiveMaxSpeed) { kbv = this._receiveMaxSpeed; }
                 kbv *= this._receiveKnockbackFraction;
                 // Cap the RESULTING along-n speed, not just this tick's increment: clamping only kb

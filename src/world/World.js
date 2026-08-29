@@ -69,6 +69,12 @@ class World {
             if (b.bodyType === RigidBody.DYNAMIC) b.clearForces();
         }
 
+        // This tick's real contacts (the same ContactManifoldList the solver just resolved), for any
+        // listener that wants to observe genuine touches - each manifold carries bodyA/bodyB and its
+        // surviving contact points. Emitted after the solve so positions/points reflect the resolved
+        // state. A pair with no manifold (or a pruned, zero-point one) simply isn't present.
+        this.emit('contacts', manifolds);
+
         this.emit('stepEnd', dt);
     }
 
