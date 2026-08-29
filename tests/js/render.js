@@ -197,17 +197,21 @@
 				done = anim.ctx.evalTick(anim.world, anim.tick);
 			}
 			anim.reflect();
-			// Reconcile the DRAWN set with what's actually in play THIS frame. Bodies can be created mid-sim
-			// (a test drops a crate in from an onTick hook, straight via world.addRigidBody rather than a
-			// t.box()/t.sphere() helper), so each frame we compute the live set — everything actually in the
-			// world's own body list, plus anything ctx tracked directly — then ADD drawables for newcomers,
-			// SYNC all, and REMOVE drawables for anything that left. Diffing against world membership (not
-			// just ctx.bodies) is what keeps the picture true for a body added the raw way.
+			// Reconcile the DRAWN set with what's actually in play THIS frame. Bodies can be created and
+			// destroyed mid-sim: a test drops a crate in from an onTick hook (straight via
+			// world.addRigidBody), or a controller collapses its boxes on crouch/scale by removing the old
+			// kinematic+ghost and adding fresh ones. Each frame we compute the live set as the WORLD's own
+			// body list (the only authoritative membership), then ADD drawables for newcomers, SYNC all, and
+			// REMOVE drawables for anything that left. We deliberately do NOT union in ctx.bodies here:
+			// ctx.bodies is the one-shot snapshot captured at setup, and a body that was removed from the
+			// world (a swapped crouch box) is still in that snapshot — pinning it in live would keep its
+			// drawable alive forever, frozen at its last position, i.e. the "lingering character box." The
+			// standalone geometry bodies that ctx.bodies exists to carry (loneBody, in the non-live static
+			// graph path) are drawn by run()'s non-live branch, not stepped through this loop.
 			var live = [];
 			var w = anim.world;
 			// ActionPhysics's World keeps its body list on `bodies` (see World.js) - read THAT.
 			if (w && w.bodies && typeof w.bodies.forEach === 'function') w.bodies.forEach(function (o) { if (live.indexOf(o) === -1) live.push(o); });
-			(anim.ctx.bodies || []).forEach(function (o) { if (o && live.indexOf(o) === -1) live.push(o); });
 			// remove drawables whose body is no longer live
 			anim._drawn = anim._drawn || [];
 			for (var di = anim._drawn.length - 1; di >= 0; di--) {
