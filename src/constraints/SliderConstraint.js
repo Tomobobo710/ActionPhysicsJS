@@ -93,7 +93,10 @@ class SliderConstraint extends Constraint {
         }
         if (wSum < 1e-12) return;
 
-        const deltaLambda = -C / wSum;
+        // Soft correction: only resolve a fraction per iteration to prevent overshooting
+        // Multiple solver iterations per substep will gradually converge
+        const correctionFraction = 0.1;
+        const deltaLambda = -C * correctionFraction / wSum;
         const px = dx * deltaLambda, py = dy * deltaLambda, pz = dz * deltaLambda;
 
         if (bodyA._massInverted > 0) {
