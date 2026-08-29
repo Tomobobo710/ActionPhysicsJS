@@ -2,7 +2,8 @@
  * Sweep-and-prune broadphase over AABBs, sorted along a single axis.
  *
  * Produces: candidate body pairs, no false negatives (plan.md, Broadphase). May assume AABBs are
- * current - it never recomputes one, only reads body.getAABB(). Must never test actual shapes;
+ * current - it never recomputes one, only reads body.getBroadphaseAABB() (the fattened, speculative-
+ * margin variant, so a pair surfaces the tick before overlap). Must never test actual shapes;
  * the only thing this file knows about a body is its AABB.
  *
  * ONE axis, not three. The classic SAP maintains sorted lists on all three axes and intersects
@@ -23,7 +24,7 @@ class SAPBroadphase {
 
     // Body lifecycle - the World is the only expected caller.
     add(body) {
-        this._entries.push({ body: body, aabb: body.getAABB() });
+        this._entries.push({ body: body, aabb: body.getBroadphaseAABB() });
     }
 
     remove(body) {

@@ -28,7 +28,8 @@ class RigidBody {
         // ---- Transform ----
         this.position = new Vector3(0, 0, 0);
         this.rotation = new Quaternion(0, 0, 0, 1);
-        this._aabb = new AABB();
+        this._aabb = new AABB();            // tight geometric bound (getAABB)
+        this._broadphaseAABB = new AABB();  // fattened for speculative contacts (getBroadphaseAABB)
         this._aabbDirty = true;
 
         // ---- Mass ----
@@ -98,15 +99,23 @@ class RigidBody {
         return this;
     }
 
-    // Refresh everything derived from position/rotation: the world AABB and the world-space
-    // inverse inertia tensor. Called once per body per tick by whichever stage owns "current" -
-    // narrowphase and the solver assume it has already run (Rule 1: stage contracts are absolute).
-    updateDerived() {
+    // Refresh everything derived from position/rotation: the world AABB (tight and broadphase
+    // variants) and the world-space inverse inertia tensor. Called once per body per tick by
+    // whichever stage owns "current" - narrowphase and the solver assume it has already run (Rule
+    // 1: stage contracts are absolute).
+    //
+    // `dt` (optional) is this tick's timestep, used only to size the broadphase AABB's velocity
+    // sweep (see _recomputeBroadphaseAABB). The tight AABB (getAABB) never depends on dt.
+    updateDerived(dt) {
         this._recomputeAABB();
+        this._recomputeBroadphaseAABB(dt || 0);
         this._recomputeWorldInverseInertia();
         return this;
     }
 
+    // The TIGHT world AABB: the exact rotated bound of the shape at the current transform, no
+    // margin. This is the body's geometric truth - what a raycast/query wants, and what getAABB()
+    // returns. Broadphase uses the fattened variant below instead (getBroadphaseAABB).
     _recomputeAABB() {
         const local = RigidBody._scratchLocalAABB;
         this.shape.localAABBInto(local);
@@ -132,6 +141,31 @@ class RigidBody {
         this._aabbDirty = false;
     }
 
+    // The BROADPHASE world AABB: the tight AABB fattened for speculative contacts by a fixed margin
+    // plus this tick's velocity sweep on each axis, so a fast approach is caught a full tick BEFORE
+    // the shapes actually overlap. That lookahead is what makes speculative contacts possible at
+    // all: narrowphase can only create a pre-overlap (still-separated) contact point for a pair
+    // broadphase actually reports, and a raw tight AABB doesn't overlap until the shapes already do
+    // (by which time the body has fallen straight through the speculative window). Fattening only
+    // ever ADDS candidate pairs, never removes one (Rule: broadphase no-false-negatives) -
+    // narrowphase then culls precisely with its own per-pair margin. Kept SEPARATE from the tight
+    // AABB so the body's geometric bound stays truthful for queries/rendering.
+    //
+    // Sweep is directional (grow the box only on the side the body is moving toward on each axis),
+    // keeping the fattened box tight rather than symmetric - a body moving down grows its box
+    // downward, not upward. SPECULATIVE_MARGIN is the absolute floor for the resting/slow case
+    // where velocity*dt alone is ~0.
+    _recomputeBroadphaseAABB(dt) {
+        const m = RigidBody.SPECULATIVE_MARGIN;
+        const sx = this.linear_velocity.x * dt, sy = this.linear_velocity.y * dt, sz = this.linear_velocity.z * dt;
+        this._broadphaseAABB.min.x = this._aabb.min.x - m - (sx < 0 ? -sx : 0);
+        this._broadphaseAABB.max.x = this._aabb.max.x + m + (sx > 0 ? sx : 0);
+        this._broadphaseAABB.min.y = this._aabb.min.y - m - (sy < 0 ? -sy : 0);
+        this._broadphaseAABB.max.y = this._aabb.max.y + m + (sy > 0 ? sy : 0);
+        this._broadphaseAABB.min.z = this._aabb.min.z - m - (sz < 0 ? -sz : 0);
+        this._broadphaseAABB.max.z = this._aabb.max.z + m + (sz > 0 ? sz : 0);
+    }
+
     _recomputeWorldInverseInertia() {
         if (this._massInverted === 0) { this._worldInverseInertiaTensor.zero(); return; }
         const rotMat = RigidBody._scratchMat3;
@@ -147,6 +181,14 @@ class RigidBody {
     // caller bug surfaced as a stale box, not silently patched over here.
     getAABB() {
         return this._aabb;
+    }
+
+    // The fattened broadphase-query AABB (tight bound + speculative margin + velocity sweep).
+    // Broadphase and midphase read THIS, not getAABB(), so a pair surfaces the tick before overlap
+    // (see _recomputeBroadphaseAABB). Same staleness assumption as getAABB(): updateDerived() owns
+    // recomputing it once per tick.
+    getBroadphaseAABB() {
+        return this._broadphaseAABB;
     }
 
     addListener(event, fn) {
@@ -172,5 +214,12 @@ RigidBody._scratchVec = new Vector3();
 RigidBody.STATIC = BODY_STATIC;
 RigidBody.KINEMATIC = BODY_KINEMATIC;
 RigidBody.DYNAMIC = BODY_DYNAMIC;
+
+// Fixed broadphase-AABB fattening for speculative contacts (metres). Matches the narrowphase
+// speculative base so the two stages agree on "how early is a contact worth seeing": broadphase
+// surfaces the pair at least this far before overlap, and narrowphase then creates the actual
+// pre-overlap point within its own (equal-or-larger, velocity-widened) margin. Kept as an
+// absolute floor here; the velocity sweep in _recomputeAABB handles fast approaches on top of it.
+RigidBody.SPECULATIVE_MARGIN = 0.02;
 
 ActionPhysics.RigidBody = RigidBody;

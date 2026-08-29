@@ -12,8 +12,20 @@
  * ContactManifoldList.refresh().
  */
 class NarrowPhase {
+    // Base speculative margin (metres): a contact is reported once its signed distance is within
+    // this of touching, even while still SEPARATED, so a manifold point exists BEFORE overlap
+    // occurs. This is the whole mechanism of speculative contacts (plan.md, "Continuous collision /
+    // speculative contacts" and the derived-velocity fix): the solver's non-penetration constraint,
+    // evaluated every substep against the body's PREDICTED position, needs a point already present
+    // to stop the body AT touch instead of first letting it dig in and then digging it back out
+    // (the deep-correction -> large derived velocity failure the base margin prevents). Per-pair,
+    // the base is widened by how far the pair can actually close in one tick (|v_rel| * dt) so a
+    // fast body's contact is still caught a full tick ahead - see step().
+    static SPECULATIVE_BASE = 0.02;
+
     constructor() {
         this.manifolds = new ContactManifoldList();
+        this._dt = 1 / 60; // set each tick by step(); the fallback only matters if step() is never called
         // Scratch GJK/EPA instances, reused across every pair tested this tick. Safe because
         // narrowphase runs pairs one at a time (never two GJK.run() calls interleaved) - see
         // plan.md's scratch-memory rule: per-stage arena, not a global shared across unrelated
@@ -32,7 +44,10 @@ class NarrowPhase {
     // Runs narrowphase for one tick: broadphase pairs in, manifolds refreshed out.
     //   broadphasePairs: [[bodyA, bodyB], ...] from SAPBroadphase.computePairs()
     //   midphase: a Midphase instance (expands compound/mesh pairs to primitives)
-    step(broadphasePairs, midphase) {
+    //   dt: this tick's timestep, used to size the per-pair speculative margin (how far the pair
+    //       can close in one tick). Optional; falls back to the last value / 1/60 if omitted.
+    step(broadphasePairs, midphase, dt) {
+        if (dt) this._dt = dt;
         this._poolIndex = 0;
         const contactsByPair = new Map(); // canonical "idA:idB" key -> ContactDetails[]
 
@@ -40,10 +55,19 @@ class NarrowPhase {
             const bodyA = broadphasePairs[p][0], bodyB = broadphasePairs[p][1];
             const primitivePairs = midphase.expandPair(bodyA, bodyB);
             const key = bodyA.id < bodyB.id ? bodyA.id + ':' + bodyB.id : bodyB.id + ':' + bodyA.id;
+            const margin = this._speculativeMargin(bodyA, bodyB);
 
             for (let i = 0; i < primitivePairs.length; i++) {
                 const contact = this._testPrimitivePair(primitivePairs[i].a, primitivePairs[i].b);
-                if (!contact) continue; // e.g. far separated - not every primitive pair needs a manifold entry
+                // signedDistance: positive = overlapping, negative = separated by that gap (plan.md
+                // convention). Report the contact while overlapping OR within the speculative
+                // margin of touching; drop it only once the gap exceeds the margin - too far this
+                // tick for the pair to reach, so no manifold point is warranted. This is the ONE
+                // place narrowphase decides a pair is "not worth a manifold entry" (see
+                // _testPrimitivePair) and it is a distance-vs-margin test, never a staleness or
+                // depth-quality judgement (Rule 1: narrowphase reports geometry, it does not
+                // second-guess the solver's use of it).
+                if (contact.signedDistance < -margin) continue;
                 let list = contactsByPair.get(key);
                 if (!list) { list = []; contactsByPair.set(key, list); }
                 list.push(contact);
@@ -60,12 +84,27 @@ class NarrowPhase {
         return this.manifolds;
     }
 
+    // Per-pair speculative margin: the base margin widened by how far the two bodies can close
+    // along their relative velocity in one tick (|v_rel| * dt). A slow/resting pair uses ~the base;
+    // a fast approach gets a proportionally larger lookahead so the contact is still reported a full
+    // tick before overlap - which is exactly what lets the solver stop the body at touch rather
+    // than after it has tunnelled partway in. Uses the full relative speed (not the normal
+    // component - narrowphase has no single contact normal yet at this point, and the closing speed
+    // is an upper bound on approach along any normal, so it never UNDER-estimates the needed
+    // lookahead, matching broadphase's own no-false-negatives discipline).
+    _speculativeMargin(bodyA, bodyB) {
+        const dvx = bodyA.linear_velocity.x - bodyB.linear_velocity.x;
+        const dvy = bodyA.linear_velocity.y - bodyB.linear_velocity.y;
+        const dvz = bodyA.linear_velocity.z - bodyB.linear_velocity.z;
+        const relSpeed = Math.sqrt(dvx * dvx + dvy * dvy + dvz * dvz);
+        return NarrowPhase.SPECULATIVE_BASE + relSpeed * this._dt;
+    }
+
     // Runs GJK (and EPA if overlapping) for one primitive-shape pair, returning a pooled
-    // ContactDetails or null. Only returns null for pairs too far apart to be worth a manifold
-    // entry at all (a speculative-contact margin, once the solver drives that decision) - for now,
-    // every GJK result (separated or overlapping) becomes a contact, since it is the manifold's
-    // and eventually the solver's job to decide what to do with a large positive separation, not
-    // narrowphase's job to silently drop it (Rule 1: no stage defends against another's decisions).
+    // ContactDetails. Always returns a filled contact carrying its signed distance (positive =
+    // overlapping, negative = separated gap); the caller (step) decides whether that distance is
+    // within the speculative margin and thus worth a manifold entry. This function itself never
+    // culls - it only measures (Rule 1).
     _testPrimitivePair(placedA, placedB) {
         const support = new MinkowskiSupport(placedA, placedB);
         const gjkResult = this._gjk.run(support);

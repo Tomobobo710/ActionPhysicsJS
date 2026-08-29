@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-24T04:04:35.447Z
+// ActionPhysics 0.1.0 — built 2026-08-24T04:26:53.474Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine.
@@ -3362,7 +3362,8 @@ class RigidBody {
         // ---- Transform ----
         this.position = new Vector3(0, 0, 0);
         this.rotation = new Quaternion(0, 0, 0, 1);
-        this._aabb = new AABB();
+        this._aabb = new AABB();            // tight geometric bound (getAABB)
+        this._broadphaseAABB = new AABB();  // fattened for speculative contacts (getBroadphaseAABB)
         this._aabbDirty = true;
 
         // ---- Mass ----
@@ -3432,15 +3433,23 @@ class RigidBody {
         return this;
     }
 
-    // Refresh everything derived from position/rotation: the world AABB and the world-space
-    // inverse inertia tensor. Called once per body per tick by whichever stage owns "current" -
-    // narrowphase and the solver assume it has already run (Rule 1: stage contracts are absolute).
-    updateDerived() {
+    // Refresh everything derived from position/rotation: the world AABB (tight and broadphase
+    // variants) and the world-space inverse inertia tensor. Called once per body per tick by
+    // whichever stage owns "current" - narrowphase and the solver assume it has already run (Rule
+    // 1: stage contracts are absolute).
+    //
+    // `dt` (optional) is this tick's timestep, used only to size the broadphase AABB's velocity
+    // sweep (see _recomputeBroadphaseAABB). The tight AABB (getAABB) never depends on dt.
+    updateDerived(dt) {
         this._recomputeAABB();
+        this._recomputeBroadphaseAABB(dt || 0);
         this._recomputeWorldInverseInertia();
         return this;
     }
 
+    // The TIGHT world AABB: the exact rotated bound of the shape at the current transform, no
+    // margin. This is the body's geometric truth - what a raycast/query wants, and what getAABB()
+    // returns. Broadphase uses the fattened variant below instead (getBroadphaseAABB).
     _recomputeAABB() {
         const local = RigidBody._scratchLocalAABB;
         this.shape.localAABBInto(local);
@@ -3466,6 +3475,31 @@ class RigidBody {
         this._aabbDirty = false;
     }
 
+    // The BROADPHASE world AABB: the tight AABB fattened for speculative contacts by a fixed margin
+    // plus this tick's velocity sweep on each axis, so a fast approach is caught a full tick BEFORE
+    // the shapes actually overlap. That lookahead is what makes speculative contacts possible at
+    // all: narrowphase can only create a pre-overlap (still-separated) contact point for a pair
+    // broadphase actually reports, and a raw tight AABB doesn't overlap until the shapes already do
+    // (by which time the body has fallen straight through the speculative window). Fattening only
+    // ever ADDS candidate pairs, never removes one (Rule: broadphase no-false-negatives) -
+    // narrowphase then culls precisely with its own per-pair margin. Kept SEPARATE from the tight
+    // AABB so the body's geometric bound stays truthful for queries/rendering.
+    //
+    // Sweep is directional (grow the box only on the side the body is moving toward on each axis),
+    // keeping the fattened box tight rather than symmetric - a body moving down grows its box
+    // downward, not upward. SPECULATIVE_MARGIN is the absolute floor for the resting/slow case
+    // where velocity*dt alone is ~0.
+    _recomputeBroadphaseAABB(dt) {
+        const m = RigidBody.SPECULATIVE_MARGIN;
+        const sx = this.linear_velocity.x * dt, sy = this.linear_velocity.y * dt, sz = this.linear_velocity.z * dt;
+        this._broadphaseAABB.min.x = this._aabb.min.x - m - (sx < 0 ? -sx : 0);
+        this._broadphaseAABB.max.x = this._aabb.max.x + m + (sx > 0 ? sx : 0);
+        this._broadphaseAABB.min.y = this._aabb.min.y - m - (sy < 0 ? -sy : 0);
+        this._broadphaseAABB.max.y = this._aabb.max.y + m + (sy > 0 ? sy : 0);
+        this._broadphaseAABB.min.z = this._aabb.min.z - m - (sz < 0 ? -sz : 0);
+        this._broadphaseAABB.max.z = this._aabb.max.z + m + (sz > 0 ? sz : 0);
+    }
+
     _recomputeWorldInverseInertia() {
         if (this._massInverted === 0) { this._worldInverseInertiaTensor.zero(); return; }
         const rotMat = RigidBody._scratchMat3;
@@ -3481,6 +3515,14 @@ class RigidBody {
     // caller bug surfaced as a stale box, not silently patched over here.
     getAABB() {
         return this._aabb;
+    }
+
+    // The fattened broadphase-query AABB (tight bound + speculative margin + velocity sweep).
+    // Broadphase and midphase read THIS, not getAABB(), so a pair surfaces the tick before overlap
+    // (see _recomputeBroadphaseAABB). Same staleness assumption as getAABB(): updateDerived() owns
+    // recomputing it once per tick.
+    getBroadphaseAABB() {
+        return this._broadphaseAABB;
     }
 
     addListener(event, fn) {
@@ -3506,6 +3548,13 @@ RigidBody._scratchVec = new Vector3();
 RigidBody.STATIC = BODY_STATIC;
 RigidBody.KINEMATIC = BODY_KINEMATIC;
 RigidBody.DYNAMIC = BODY_DYNAMIC;
+
+// Fixed broadphase-AABB fattening for speculative contacts (metres). Matches the narrowphase
+// speculative base so the two stages agree on "how early is a contact worth seeing": broadphase
+// surfaces the pair at least this far before overlap, and narrowphase then creates the actual
+// pre-overlap point within its own (equal-or-larger, velocity-widened) margin. Kept as an
+// absolute floor here; the velocity sweep in _recomputeAABB handles fast approaches on top of it.
+RigidBody.SPECULATIVE_MARGIN = 0.02;
 
 ActionPhysics.RigidBody = RigidBody;
 
@@ -3650,7 +3699,8 @@ ActionPhysics.BVH = BVH;
  * Sweep-and-prune broadphase over AABBs, sorted along a single axis.
  *
  * Produces: candidate body pairs, no false negatives (plan.md, Broadphase). May assume AABBs are
- * current - it never recomputes one, only reads body.getAABB(). Must never test actual shapes;
+ * current - it never recomputes one, only reads body.getBroadphaseAABB() (the fattened, speculative-
+ * margin variant, so a pair surfaces the tick before overlap). Must never test actual shapes;
  * the only thing this file knows about a body is its AABB.
  *
  * ONE axis, not three. The classic SAP maintains sorted lists on all three axes and intersects
@@ -3671,7 +3721,7 @@ class SAPBroadphase {
 
     // Body lifecycle - the World is the only expected caller.
     add(body) {
-        this._entries.push({ body: body, aabb: body.getAABB() });
+        this._entries.push({ body: body, aabb: body.getBroadphaseAABB() });
     }
 
     remove(body) {
@@ -3897,8 +3947,12 @@ class Midphase {
     // [{ a: {shape,position,rotation}, b: {shape,position,rotation} }, ...]
     // Never computes contact data (Rule 1) - purely a cross-product of the two expansions.
     expandPair(bodyA, bodyB) {
-        const sidesA = this._expandSide(bodyA, bodyB.getAABB(), bodyB.id);
-        const sidesB = this._expandSide(bodyB, bodyA.getAABB(), bodyA.id);
+        // The fattened broadphase AABB (speculative margin included) is used for child/triangle
+        // culling too, so a compound child or mesh triangle that a body is about to reach is
+        // surfaced the same tick early as the body pair itself - conservative (over-includes, never
+        // under-includes), matching broadphase's own no-false-negatives contract one level down.
+        const sidesA = this._expandSide(bodyA, bodyB.getBroadphaseAABB(), bodyB.id);
+        const sidesB = this._expandSide(bodyB, bodyA.getBroadphaseAABB(), bodyA.id);
         const out = [];
         for (let i = 0; i < sidesA.length; i++) {
             for (let j = 0; j < sidesB.length; j++) {
@@ -4997,6 +5051,12 @@ class ContactManifold {
     // fraction of a typical contact's own scale rather than an absolute constant - see update()'s
     // matching call for how this get scaled by the manifold's own point spread.
     static MATCH_DISTANCE = 0.05;
+    // Signed-distance half-width of the exact-touch band where GJK/EPA's normal is treated as
+    // ambiguous and a warm-matched point keeps its established normal instead (see update()). Sized
+    // a little above the numerical noise of a flush contact, well below any real overlap depth the
+    // solver needs to resolve - inside this band the shapes are touching to within a fraction of a
+    // millimetre and the normal genuinely cannot be recovered reliably from a single query.
+    static EXACT_TOUCH_BAND = 0.001;
 
     constructor(bodyA, bodyB) {
         this.bodyA = bodyA;
@@ -5054,10 +5114,27 @@ class ContactManifold {
             const keepNormalLambda = existing.normalLambda;
             const keepTangentLambda1 = existing.tangentLambda1;
             const keepTangentLambda2 = existing.tangentLambda2;
+            // Preserve the ESTABLISHED contact normal across an exact-touch refresh. At a signed
+            // distance within EXACT_TOUCH_BAND of zero (shapes touching flush, neither clearly
+            // separated nor clearly overlapping), GJK/EPA's normal is genuinely ambiguous - the
+            // origin sits ON the Minkowski-difference boundary, so the recovered direction can flip
+            // to a diagonal face normal (a box resting flush reports (0.707,0,0.707) instead of the
+            // true (0,1,0) for one tick). A persistent contact's normal does NOT actually change
+            // tick to tick, so trusting a single ambiguous tick's normal over the one this point
+            // has carried while it was unambiguously resolving is the wrong call: it makes the
+            // constraint briefly point sideways, the body sinks through, and the next (recovered)
+            // tick ejects it back out - a permanent penetrate-then-launch limit cycle. This is the
+            // manifold owning contact identity across ticks (its documented job), not a solver-side
+            // governor. Outside the band (a real gap or a real overlap), the fresh normal is
+            // trustworthy and is taken as-is.
+            const keepNormal = Math.abs(newContacts[bestJ].signedDistance) < ContactManifold.EXACT_TOUCH_BAND
+                ? ContactManifold._scratchNormal.copy(existing.normal)
+                : null;
             existing.copy(newContacts[bestJ]); // geometry refreshed
             existing.normalLambda = keepNormalLambda; // warm start restored
             existing.tangentLambda1 = keepTangentLambda1;
             existing.tangentLambda2 = keepTangentLambda2;
+            if (keepNormal) existing.normal.copy(keepNormal); // established normal kept through the ambiguous band
             this._localAnchors[i] = ContactManifold._toLocal(this.bodyA, existing.pointOnA);
         }
 
@@ -5156,6 +5233,8 @@ class ContactManifold {
     }
 }
 
+ContactManifold._scratchNormal = new Vector3();
+
 ActionPhysics.ContactManifold = ContactManifold;
 
 
@@ -5243,8 +5322,20 @@ ActionPhysics.ContactManifoldList = ContactManifoldList;
  * ContactManifoldList.refresh().
  */
 class NarrowPhase {
+    // Base speculative margin (metres): a contact is reported once its signed distance is within
+    // this of touching, even while still SEPARATED, so a manifold point exists BEFORE overlap
+    // occurs. This is the whole mechanism of speculative contacts (plan.md, "Continuous collision /
+    // speculative contacts" and the derived-velocity fix): the solver's non-penetration constraint,
+    // evaluated every substep against the body's PREDICTED position, needs a point already present
+    // to stop the body AT touch instead of first letting it dig in and then digging it back out
+    // (the deep-correction -> large derived velocity failure the base margin prevents). Per-pair,
+    // the base is widened by how far the pair can actually close in one tick (|v_rel| * dt) so a
+    // fast body's contact is still caught a full tick ahead - see step().
+    static SPECULATIVE_BASE = 0.02;
+
     constructor() {
         this.manifolds = new ContactManifoldList();
+        this._dt = 1 / 60; // set each tick by step(); the fallback only matters if step() is never called
         // Scratch GJK/EPA instances, reused across every pair tested this tick. Safe because
         // narrowphase runs pairs one at a time (never two GJK.run() calls interleaved) - see
         // plan.md's scratch-memory rule: per-stage arena, not a global shared across unrelated
@@ -5263,7 +5354,10 @@ class NarrowPhase {
     // Runs narrowphase for one tick: broadphase pairs in, manifolds refreshed out.
     //   broadphasePairs: [[bodyA, bodyB], ...] from SAPBroadphase.computePairs()
     //   midphase: a Midphase instance (expands compound/mesh pairs to primitives)
-    step(broadphasePairs, midphase) {
+    //   dt: this tick's timestep, used to size the per-pair speculative margin (how far the pair
+    //       can close in one tick). Optional; falls back to the last value / 1/60 if omitted.
+    step(broadphasePairs, midphase, dt) {
+        if (dt) this._dt = dt;
         this._poolIndex = 0;
         const contactsByPair = new Map(); // canonical "idA:idB" key -> ContactDetails[]
 
@@ -5271,10 +5365,19 @@ class NarrowPhase {
             const bodyA = broadphasePairs[p][0], bodyB = broadphasePairs[p][1];
             const primitivePairs = midphase.expandPair(bodyA, bodyB);
             const key = bodyA.id < bodyB.id ? bodyA.id + ':' + bodyB.id : bodyB.id + ':' + bodyA.id;
+            const margin = this._speculativeMargin(bodyA, bodyB);
 
             for (let i = 0; i < primitivePairs.length; i++) {
                 const contact = this._testPrimitivePair(primitivePairs[i].a, primitivePairs[i].b);
-                if (!contact) continue; // e.g. far separated - not every primitive pair needs a manifold entry
+                // signedDistance: positive = overlapping, negative = separated by that gap (plan.md
+                // convention). Report the contact while overlapping OR within the speculative
+                // margin of touching; drop it only once the gap exceeds the margin - too far this
+                // tick for the pair to reach, so no manifold point is warranted. This is the ONE
+                // place narrowphase decides a pair is "not worth a manifold entry" (see
+                // _testPrimitivePair) and it is a distance-vs-margin test, never a staleness or
+                // depth-quality judgement (Rule 1: narrowphase reports geometry, it does not
+                // second-guess the solver's use of it).
+                if (contact.signedDistance < -margin) continue;
                 let list = contactsByPair.get(key);
                 if (!list) { list = []; contactsByPair.set(key, list); }
                 list.push(contact);
@@ -5291,12 +5394,27 @@ class NarrowPhase {
         return this.manifolds;
     }
 
+    // Per-pair speculative margin: the base margin widened by how far the two bodies can close
+    // along their relative velocity in one tick (|v_rel| * dt). A slow/resting pair uses ~the base;
+    // a fast approach gets a proportionally larger lookahead so the contact is still reported a full
+    // tick before overlap - which is exactly what lets the solver stop the body at touch rather
+    // than after it has tunnelled partway in. Uses the full relative speed (not the normal
+    // component - narrowphase has no single contact normal yet at this point, and the closing speed
+    // is an upper bound on approach along any normal, so it never UNDER-estimates the needed
+    // lookahead, matching broadphase's own no-false-negatives discipline).
+    _speculativeMargin(bodyA, bodyB) {
+        const dvx = bodyA.linear_velocity.x - bodyB.linear_velocity.x;
+        const dvy = bodyA.linear_velocity.y - bodyB.linear_velocity.y;
+        const dvz = bodyA.linear_velocity.z - bodyB.linear_velocity.z;
+        const relSpeed = Math.sqrt(dvx * dvx + dvy * dvy + dvz * dvz);
+        return NarrowPhase.SPECULATIVE_BASE + relSpeed * this._dt;
+    }
+
     // Runs GJK (and EPA if overlapping) for one primitive-shape pair, returning a pooled
-    // ContactDetails or null. Only returns null for pairs too far apart to be worth a manifold
-    // entry at all (a speculative-contact margin, once the solver drives that decision) - for now,
-    // every GJK result (separated or overlapping) becomes a contact, since it is the manifold's
-    // and eventually the solver's job to decide what to do with a large positive separation, not
-    // narrowphase's job to silently drop it (Rule 1: no stage defends against another's decisions).
+    // ContactDetails. Always returns a filled contact carrying its signed distance (positive =
+    // overlapping, negative = separated gap); the caller (step) decides whether that distance is
+    // within the speculative margin and thus worth a manifold entry. This function itself never
+    // culls - it only measures (Rule 1).
     _testPrimitivePair(placedA, placedB) {
         const support = new MinkowskiSupport(placedA, placedB);
         const gjkResult = this._gjk.run(support);
@@ -5485,11 +5603,20 @@ class Solver {
         // own output, see EPA.js). C = (anchorB - anchorA) . normal is positive exactly when B's
         // anchor has moved PAST A's anchor in the normal's own direction - i.e. penetrating.
         const C = (this._rB.x - this._rA.x) * nx + (this._rB.y - this._rA.y) * ny + (this._rB.z - this._rA.z) * nz;
-        if (C <= 0) return; // not overlapping (right now, per the live anchors): nothing to correct.
-        // Speculative (negative C, still approaching) contacts are handled by the SAME non-
-        // penetration constraint once detection itself runs against a predicted position (open
-        // item - see plan.md, speculative contacts); this solver does not special-case C's sign
-        // beyond "nothing to do while already separated".
+        // SPECULATIVE CONTACT (plan.md, "Continuous collision / speculative contacts"): this guard,
+        // combined with the point being detected BEFORE overlap (narrowphase's speculative margin),
+        // IS the speculative mechanism - no separate code path. The point is created while still
+        // separated (negative signedDistance), so it already exists in the manifold. Then every
+        // substep the position predict (Solver._substep step 1) moves the body forward FIRST, and C
+        // is re-measured HERE against that predicted position. If the predicted motion overshot the
+        // touching plane, C > 0 and the constraint pulls the body back to exactly touch (C = 0) -
+        // never deeper, because C is the live overshoot, not a whole tick's accumulated penetration.
+        // If the predicted motion did NOT reach touch (C <= 0, still a real gap), there is nothing
+        // to correct this substep: a non-penetration contact only ever PUSHES APART, it never pulls
+        // a separated pair together across a gap. That is the entire fix for the derived-velocity
+        // problem: Δx per substep is now just the small overshoot beyond touch, so derived velocity
+        // v = Δx/h stays small, with no clamp anywhere (the central design rule holds).
+        if (C <= 0) return;
 
         // rA/rB for the effective-mass and angular-correction math are offsets from each body's
         // CENTER (not the anchor's world position itself) - overwrite _rA/_rB in place now that C
@@ -5505,8 +5632,20 @@ class Solver {
 
         // XPBD Lagrange multiplier update, rigid (compliance-free) contact: deltaLambda =
         // -C / wSum (alpha/h^2 term drops out entirely when compliance is 0 - Muller et al. eq 4).
-        const deltaLambda = -C / wSum;
-        point.normalLambda += deltaLambda;
+        // Sign note for this file's convention: C > 0 means penetrating (guarded above), so
+        // deltaLambda < 0, and _applyPositionalCorrection's verified pairing turns a NEGATIVE
+        // deltaLambda into a push-apart correction. A pushing contact therefore accumulates a
+        // NEGATIVE normalLambda here - the opposite sign from the textbook's non-negative
+        // convention, purely because the normal points B->A rather than A->B. The physical
+        // constraint "a contact can push apart but never pull together" is therefore normalLambda
+        // <= 0: clamp the accumulated value at 0 from above and feed back only the change actually
+        // applied, so an over-correction on a later iteration/substep can relax the push but can
+        // never invert it into an attractive pull across the contact.
+        const oldLambda = point.normalLambda;
+        let newLambda = oldLambda - C / wSum;
+        if (newLambda > 0) newLambda = 0; // contact cannot pull; clamp to no-push
+        const deltaLambda = newLambda - oldLambda;
+        point.normalLambda = newLambda;
 
         this._applyPositionalCorrection(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, deltaLambda);
 
@@ -5594,7 +5733,11 @@ class Solver {
     _solveFriction(point, bodyA, bodyB, h) {
         const friction = Math.sqrt(bodyA.friction * bodyB.friction); // combined friction, geometric mean (standard convention)
         if (friction <= 0) return;
-        const maxFriction = friction * point.normalLambda;
+        // normalLambda is <= 0 in this file's sign convention (see _solvePoint) - the Coulomb cap is
+        // a magnitude, so take |normalLambda|. Skipping this abs was a latent bug: with a negative
+        // normalLambda the cap came out negative, the early-return below always fired, and friction
+        // silently never ran at all.
+        const maxFriction = friction * Math.abs(point.normalLambda);
         if (maxFriction <= 0) return;
 
         Solver._tangentBasis(point.normal, this._tangent1, this._tangent2);
@@ -5685,10 +5828,10 @@ class World {
     // broadphase runs, so broadphase's own "AABBs are current" assumption (Rule 1) holds for
     // this tick's bodies, including ones the solver moved last tick.
     step(dt) {
-        for (let i = 0; i < this.bodies.length; i++) this.bodies[i].updateDerived();
+        for (let i = 0; i < this.bodies.length; i++) this.bodies[i].updateDerived(dt);
 
         const pairs = this.broadphase.computePairs();
-        const manifolds = this.narrowphase.step(pairs, this.midphase);
+        const manifolds = this.narrowphase.step(pairs, this.midphase, dt);
 
         this.solver.step(this.bodies, manifolds, this.gravity, dt);
 

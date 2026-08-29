@@ -144,14 +144,15 @@
 
 	// ---- the known, expected instability without speculative contacts ----
 
-	test('solver/core', 'a real (non-speculative) overlap produces a large, undamped derived velocity - documented, not hidden', function (t) {
-		// This is the exact mechanism plan.md's "derived-velocity problem" describes: with no
-		// clamp anywhere (the central design rule), resolving a real position error in a single
-		// short substep produces velocity = Δx / h, which grows without bound as h shrinks. This
-		// is EXPECTED behavior for XPBD without speculative contacts (predicting the end-of-
-		// substep position before detection runs) - not something this test pretends is fine, but
-		// something it measures honestly so a future speculative-contacts change has a concrete
-		// before/after to check against.
+	test('solver/core', 'a body SPAWNED already deep in overlap gets the full undamped one-shot correction', function (t) {
+		// The box here STARTS overlapping by 0.1 - it did not approach and get caught by speculative
+		// detection, it was placed inside the ground. Speculative contacts (now built) prevent a
+		// body from ARRIVING deep by detecting the contact before overlap; they do not retroactively
+		// soften an overlap a body was spawned into. So this pre-embedded case still resolves in a
+		// single undamped correction, velocity = Δx/h, exactly per the central no-clamp rule. This
+		// is correct and documented: the derived-velocity fix is about the approach, not about
+		// rescuing a body teleported into solid geometry. (Contrast the speculative suite, where a
+		// box that FALLS onto the ground settles with no such kick.)
 		var world = mkWorld({ substeps: 1, iterations: 1 });
 		world.gravity.set(0, 0, 0);
 		var ground = new AP.RigidBody(new AP.BoxShape(10, 0.5, 10), 0);

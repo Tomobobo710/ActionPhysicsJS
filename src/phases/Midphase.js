@@ -162,8 +162,12 @@ class Midphase {
     // [{ a: {shape,position,rotation}, b: {shape,position,rotation} }, ...]
     // Never computes contact data (Rule 1) - purely a cross-product of the two expansions.
     expandPair(bodyA, bodyB) {
-        const sidesA = this._expandSide(bodyA, bodyB.getAABB(), bodyB.id);
-        const sidesB = this._expandSide(bodyB, bodyA.getAABB(), bodyA.id);
+        // The fattened broadphase AABB (speculative margin included) is used for child/triangle
+        // culling too, so a compound child or mesh triangle that a body is about to reach is
+        // surfaced the same tick early as the body pair itself - conservative (over-includes, never
+        // under-includes), matching broadphase's own no-false-negatives contract one level down.
+        const sidesA = this._expandSide(bodyA, bodyB.getBroadphaseAABB(), bodyB.id);
+        const sidesB = this._expandSide(bodyB, bodyA.getBroadphaseAABB(), bodyA.id);
         const out = [];
         for (let i = 0; i < sidesA.length; i++) {
             for (let j = 0; j < sidesB.length; j++) {

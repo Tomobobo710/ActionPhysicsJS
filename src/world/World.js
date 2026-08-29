@@ -39,10 +39,10 @@ class World {
     // broadphase runs, so broadphase's own "AABBs are current" assumption (Rule 1) holds for
     // this tick's bodies, including ones the solver moved last tick.
     step(dt) {
-        for (let i = 0; i < this.bodies.length; i++) this.bodies[i].updateDerived();
+        for (let i = 0; i < this.bodies.length; i++) this.bodies[i].updateDerived(dt);
 
         const pairs = this.broadphase.computePairs();
-        const manifolds = this.narrowphase.step(pairs, this.midphase);
+        const manifolds = this.narrowphase.step(pairs, this.midphase, dt);
 
         this.solver.step(this.bodies, manifolds, this.gravity, dt);
 

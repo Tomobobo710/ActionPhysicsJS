@@ -30,6 +30,12 @@ class ContactManifold {
     // fraction of a typical contact's own scale rather than an absolute constant - see update()'s
     // matching call for how this get scaled by the manifold's own point spread.
     static MATCH_DISTANCE = 0.05;
+    // Signed-distance half-width of the exact-touch band where GJK/EPA's normal is treated as
+    // ambiguous and a warm-matched point keeps its established normal instead (see update()). Sized
+    // a little above the numerical noise of a flush contact, well below any real overlap depth the
+    // solver needs to resolve - inside this band the shapes are touching to within a fraction of a
+    // millimetre and the normal genuinely cannot be recovered reliably from a single query.
+    static EXACT_TOUCH_BAND = 0.001;
 
     constructor(bodyA, bodyB) {
         this.bodyA = bodyA;
@@ -87,10 +93,27 @@ class ContactManifold {
             const keepNormalLambda = existing.normalLambda;
             const keepTangentLambda1 = existing.tangentLambda1;
             const keepTangentLambda2 = existing.tangentLambda2;
+            // Preserve the ESTABLISHED contact normal across an exact-touch refresh. At a signed
+            // distance within EXACT_TOUCH_BAND of zero (shapes touching flush, neither clearly
+            // separated nor clearly overlapping), GJK/EPA's normal is genuinely ambiguous - the
+            // origin sits ON the Minkowski-difference boundary, so the recovered direction can flip
+            // to a diagonal face normal (a box resting flush reports (0.707,0,0.707) instead of the
+            // true (0,1,0) for one tick). A persistent contact's normal does NOT actually change
+            // tick to tick, so trusting a single ambiguous tick's normal over the one this point
+            // has carried while it was unambiguously resolving is the wrong call: it makes the
+            // constraint briefly point sideways, the body sinks through, and the next (recovered)
+            // tick ejects it back out - a permanent penetrate-then-launch limit cycle. This is the
+            // manifold owning contact identity across ticks (its documented job), not a solver-side
+            // governor. Outside the band (a real gap or a real overlap), the fresh normal is
+            // trustworthy and is taken as-is.
+            const keepNormal = Math.abs(newContacts[bestJ].signedDistance) < ContactManifold.EXACT_TOUCH_BAND
+                ? ContactManifold._scratchNormal.copy(existing.normal)
+                : null;
             existing.copy(newContacts[bestJ]); // geometry refreshed
             existing.normalLambda = keepNormalLambda; // warm start restored
             existing.tangentLambda1 = keepTangentLambda1;
             existing.tangentLambda2 = keepTangentLambda2;
+            if (keepNormal) existing.normal.copy(keepNormal); // established normal kept through the ambiguous band
             this._localAnchors[i] = ContactManifold._toLocal(this.bodyA, existing.pointOnA);
         }
 
@@ -188,5 +211,7 @@ class ContactManifold {
         return rel;
     }
 }
+
+ContactManifold._scratchNormal = new Vector3();
 
 ActionPhysics.ContactManifold = ContactManifold;

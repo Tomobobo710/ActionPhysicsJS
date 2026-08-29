@@ -168,11 +168,20 @@ class Solver {
         // own output, see EPA.js). C = (anchorB - anchorA) . normal is positive exactly when B's
         // anchor has moved PAST A's anchor in the normal's own direction - i.e. penetrating.
         const C = (this._rB.x - this._rA.x) * nx + (this._rB.y - this._rA.y) * ny + (this._rB.z - this._rA.z) * nz;
-        if (C <= 0) return; // not overlapping (right now, per the live anchors): nothing to correct.
-        // Speculative (negative C, still approaching) contacts are handled by the SAME non-
-        // penetration constraint once detection itself runs against a predicted position (open
-        // item - see plan.md, speculative contacts); this solver does not special-case C's sign
-        // beyond "nothing to do while already separated".
+        // SPECULATIVE CONTACT (plan.md, "Continuous collision / speculative contacts"): this guard,
+        // combined with the point being detected BEFORE overlap (narrowphase's speculative margin),
+        // IS the speculative mechanism - no separate code path. The point is created while still
+        // separated (negative signedDistance), so it already exists in the manifold. Then every
+        // substep the position predict (Solver._substep step 1) moves the body forward FIRST, and C
+        // is re-measured HERE against that predicted position. If the predicted motion overshot the
+        // touching plane, C > 0 and the constraint pulls the body back to exactly touch (C = 0) -
+        // never deeper, because C is the live overshoot, not a whole tick's accumulated penetration.
+        // If the predicted motion did NOT reach touch (C <= 0, still a real gap), there is nothing
+        // to correct this substep: a non-penetration contact only ever PUSHES APART, it never pulls
+        // a separated pair together across a gap. That is the entire fix for the derived-velocity
+        // problem: Δx per substep is now just the small overshoot beyond touch, so derived velocity
+        // v = Δx/h stays small, with no clamp anywhere (the central design rule holds).
+        if (C <= 0) return;
 
         // rA/rB for the effective-mass and angular-correction math are offsets from each body's
         // CENTER (not the anchor's world position itself) - overwrite _rA/_rB in place now that C
@@ -188,8 +197,20 @@ class Solver {
 
         // XPBD Lagrange multiplier update, rigid (compliance-free) contact: deltaLambda =
         // -C / wSum (alpha/h^2 term drops out entirely when compliance is 0 - Muller et al. eq 4).
-        const deltaLambda = -C / wSum;
-        point.normalLambda += deltaLambda;
+        // Sign note for this file's convention: C > 0 means penetrating (guarded above), so
+        // deltaLambda < 0, and _applyPositionalCorrection's verified pairing turns a NEGATIVE
+        // deltaLambda into a push-apart correction. A pushing contact therefore accumulates a
+        // NEGATIVE normalLambda here - the opposite sign from the textbook's non-negative
+        // convention, purely because the normal points B->A rather than A->B. The physical
+        // constraint "a contact can push apart but never pull together" is therefore normalLambda
+        // <= 0: clamp the accumulated value at 0 from above and feed back only the change actually
+        // applied, so an over-correction on a later iteration/substep can relax the push but can
+        // never invert it into an attractive pull across the contact.
+        const oldLambda = point.normalLambda;
+        let newLambda = oldLambda - C / wSum;
+        if (newLambda > 0) newLambda = 0; // contact cannot pull; clamp to no-push
+        const deltaLambda = newLambda - oldLambda;
+        point.normalLambda = newLambda;
 
         this._applyPositionalCorrection(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, deltaLambda);
 
@@ -277,7 +298,11 @@ class Solver {
     _solveFriction(point, bodyA, bodyB, h) {
         const friction = Math.sqrt(bodyA.friction * bodyB.friction); // combined friction, geometric mean (standard convention)
         if (friction <= 0) return;
-        const maxFriction = friction * point.normalLambda;
+        // normalLambda is <= 0 in this file's sign convention (see _solvePoint) - the Coulomb cap is
+        // a magnitude, so take |normalLambda|. Skipping this abs was a latent bug: with a negative
+        // normalLambda the cap came out negative, the early-return below always fired, and friction
+        // silently never ran at all.
+        const maxFriction = friction * Math.abs(point.normalLambda);
         if (maxFriction <= 0) return;
 
         Solver._tangentBasis(point.normal, this._tangent1, this._tangent2);
