@@ -26,6 +26,50 @@ class ContactDetails {
         this.normalLambda = 0;
         this.tangentLambda1 = 0;
         this.tangentLambda2 = 0;
+
+        // Body-LOCAL anchor offsets for pointOnA/pointOnB, set once by the manifold when this
+        // point is created (ContactManifold._addPoint / update()'s new-point path) - NOT
+        // recomputed by copy()/setFromGJKSeparated/setFromEPA, which only carry the world-space
+        // geometry a fresh narrowphase result reports. The solver reads these every SUBSTEP to
+        // recompute the contact's CURRENT gap from the bodies' current positions (see Solver.js's
+        // class header and _solvePoint) - using the world-space pointOnA/pointOnB directly would
+        // read a value frozen at the tick's single narrowphase pass, stale by the time later
+        // substeps have already moved the bodies. This is the mechanism, not signedDistance, that
+        // the solver actually corrects against.
+        this.localAnchorA = new Vector3();
+        this.localAnchorB = new Vector3();
+    }
+
+    // Derives localAnchorA/localAnchorB from the CURRENT pointOnA/pointOnB and the given bodies'
+    // CURRENT transforms. Called once, at the moment this point is created in a manifold (never
+    // on a re-matched/refreshed point, which keeps its ORIGINAL anchors - that persistence across
+    // ticks is what lets the solver see a growing gap as a body drifts, rather than the anchor
+    // re-snapping to zero gap every tick).
+    setLocalAnchors(bodyA, bodyB) {
+        const invRotA = ContactDetails._scratchQuat.copy(bodyA.rotation).invert();
+        Vector3.subInto(this.localAnchorA, this.pointOnA, bodyA.position);
+        invRotA.transformVectorInPlace(this.localAnchorA);
+
+        const invRotB = ContactDetails._scratchQuat.copy(bodyB.rotation).invert();
+        Vector3.subInto(this.localAnchorB, this.pointOnB, bodyB.position);
+        invRotB.transformVectorInPlace(this.localAnchorB);
+        return this;
+    }
+
+    // Current world position of localAnchorA/B, written into out. Used by the solver every
+    // substep to find each anchor's LIVE position without re-running narrowphase.
+    currentAnchorAInto(out, bodyA) {
+        out.copy(this.localAnchorA);
+        bodyA.rotation.transformVectorInPlace(out);
+        out.addInPlace(bodyA.position);
+        return out;
+    }
+
+    currentAnchorBInto(out, bodyB) {
+        out.copy(this.localAnchorB);
+        bodyB.rotation.transformVectorInPlace(out);
+        out.addInPlace(bodyB.position);
+        return out;
     }
 
     // Fills this from a GJK separated result (`{distance, normal, pointA, pointB}`, distance is a
@@ -66,5 +110,7 @@ class ContactDetails {
         return new ContactDetails().copy(this);
     }
 }
+
+ContactDetails._scratchQuat = new Quaternion();
 
 ActionPhysics.ContactDetails = ContactDetails;

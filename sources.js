@@ -63,5 +63,14 @@ module.exports = [
     'src/collision/ContactManifold.js',
     'src/collision/ContactManifoldList.js',
 
+    // Narrowphase dispatch - ties Midphase + GJK/EPA + ContactManifoldList together.
+    'src/phases/NarrowPhase.js',
+
+    // Solver - XPBD.
+    'src/solver/Solver.js',
+
+    // World - pipeline glue.
+    'src/world/World.js',
+
     'src/outro.js'
 ];

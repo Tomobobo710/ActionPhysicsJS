@@ -104,6 +104,11 @@ class ContactManifold {
     _addPoint(contact) {
         const point = contact.clone();
         point.normalLambda = 0; point.tangentLambda1 = 0; point.tangentLambda2 = 0; // fresh point: no warm-start data yet
+        // Local anchors are set ONCE here, at creation - see ContactDetails.setLocalAnchors and
+        // Solver.js's class header for why the solver needs these (recomputing the contact's
+        // CURRENT gap every substep) rather than reusing the single signedDistance this tick's
+        // narrowphase pass measured before any substep moved the bodies.
+        point.setLocalAnchors(this.bodyA, this.bodyB);
         const local = ContactManifold._toLocal(this.bodyA, point.pointOnA);
 
         if (this.points.length < ContactManifold.MAX_POINTS) {

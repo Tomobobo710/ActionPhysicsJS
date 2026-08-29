@@ -296,9 +296,15 @@ class EPA {
             u * this._bz[ia] + v * this._bz[ib] + w * this._bz[ic]
         );
 
+        // The face's own "outward from the polytope's interior" normal points from A's side
+        // toward B's side of the Minkowski difference A-B (verified against GJK's own separated-
+        // result convention, which points from B to A - a real, sign-only bug caught by comparing
+        // the two detectors' normals directly on identical geometry, not by any test that only
+        // checked axis alignment). Negated here so EPA's returned normal matches GJK's: B to A,
+        // the direction the solver actually pushes body A along.
         return {
             distance: Math.max(0, dist), // clamp: a face passing fractionally behind the origin from float noise still reports a valid non-negative depth
-            normal: new Vector3(nx, ny, nz),
+            normal: new Vector3(-nx, -ny, -nz),
             pointA: pointA,
             pointB: pointB
         };
