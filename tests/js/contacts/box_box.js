@@ -84,7 +84,7 @@
 			if (tick0 < TICKS) return false;
 			return { ok: spin(box) < 1e-3, detail: '|w|=' + spin(box).toFixed(6) };
 		});
-		t.expect('x/z drift never exceeded a millimetre (perfectly flat drop, nothing should push it sideways)', function () {
+		t.expect('x/z drift never exceeded a millimeter (perfectly flat drop, nothing should push it sideways)', function () {
 			if (tick0 < TICKS) return false;
 			var worst = tracker.worst();
 			var lat = Math.sqrt(worst.x * worst.x + worst.z * worst.z);
@@ -179,7 +179,7 @@
 
 		var boxes = [];
 		// GAP = 2.0 == box height (half-extent 1): each layer spawns already resting on the one below,
-		// inset horizontally on both axes. A larger gap would drop each box 0.2 onto its neighbour, and
+		// inset horizontally on both axes. A larger gap would drop each box 0.2 onto its neighbor, and
 		// the "stayed within 0.05 of its spawn height" checks below (which measure against the SPAWN y)
 		// could never pass - the boxes would settle 0.2/0.4/0.6 below where they started, by design.
 		var LAYERS = 4, GAP = 2.0, INSET = 0.3;

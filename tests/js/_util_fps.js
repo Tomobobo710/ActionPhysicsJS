@@ -285,7 +285,7 @@
 				return ladder(w, wd, h / 2, wd, { x: 0, y: h / 2, z: 0 }, color);
 			},
 			// scale-proportional platform mover: a square-footprint box (side baseSide, thickness
-			// baseThick, both scale-1, FULL size not half-extent) travelling between two SCALED points
+			// baseThick, both scale-1, FULL size not half-extent) traveling between two SCALED points
 			// at a scaled speed. pointA/pointB are given in BASE (scale-1) world units.
 			splatform: function (w, baseSide, baseThick, pointA, pointB, baseSpeed, color, options) {
 				var side = baseSide * SC, thick = baseThick * SC;

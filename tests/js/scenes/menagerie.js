@@ -13,7 +13,7 @@
 // debug bar mid-ramp, and the floor. One criterion per shape per surface, so a regression names the
 // exact culprit ("sphere ✗ ramp"), and each flips green live as the shape arrives. This survives any
 // change to HOW a shape tumbles while still catching a shape that misses a surface entirely — e.g.
-// the box-box flat-contact behaviour this rig helped shake out (before that fix a box on this ramp
+// the box-box flat-contact behavior this rig helped shake out (before that fix a box on this ramp
 // could drift/skew off its expected path; the contact asserts guard that the shapes still travel the
 // whole ramp→bar→floor journey they're meant to).
 (function (Runner, U, AP) {

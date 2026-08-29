@@ -44,7 +44,7 @@
 		.page-hdr .pn { flex: 1; color: #e6edf3; }
 		.page-hdr .cnt { font-size: 11px; color: #8b949e; }
 		.page-hdr .pdot { width: 9px; height: 9px; border-radius: 50%; background: #3fb950; flex: none; }
-		.page-hdr .pdot.untested { background: #484f58; }   /* grey until every test in the page has run */
+		.page-hdr .pdot.untested { background: #484f58; }   /* gray until every test in the page has run */
 		.page-hdr .pdot.hasfail { background: #f85149; }
 		.page-hdr .runpage { background: none; border: 1px solid #30363d; color: #58a6ff; font-size: 10px; padding: 1px 8px; border-radius: 3px; cursor: pointer; font-family: monospace; flex: none; }
 		.page-hdr .runpage:hover { border-color: #58a6ff; }
@@ -59,7 +59,7 @@
 		.test .dot { width: 8px; height: 8px; border-radius: 50%; background: #484f58; flex: none; }
 		.test.pass .dot { background: #3fb950; }
 		.test.fail .dot { background: #f85149; }
-		.test.running .dot { background: #484f58; }   /* reset to grey while (re)running, before result lands */
+		.test.running .dot { background: #484f58; }   /* reset to gray while (re)running, before result lands */
 		.test .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 		.test.fail .name { color: #f85149; }
 		.test .run { background: none; border: 1px solid #30363d; color: #58a6ff; font-size: 10px; padding: 1px 8px; border-radius: 3px; cursor: pointer; font-family: monospace; }
@@ -175,8 +175,8 @@
 		var suiteEls = {};           // suiteKey -> { tests, dot } for live suite-dot recoloring ("All" view)
 		var activeSuite = 'all';
 
-		// NO auto-run on load — every dot stays grey until you hit Quick Test (or a row's "run"). A
-		// never-run page must look UNTESTED (grey), not silently pass by having no failing result yet.
+		// NO auto-run on load — every dot stays gray until you hit Quick Test (or a row's "run"). A
+		// never-run page must look UNTESTED (gray), not silently pass by having no failing result yet.
 
 		var suiteName = {}; Runner.suites().forEach(function (s) { suiteName[s.key] = s.name; });
 
@@ -232,7 +232,7 @@
 				var allRun = pg.tests.every(function (t) { return results[key(t)]; });
 				// only count tests that actually ran; untested stays neutral
 				pg.tests.forEach(function (t) { var r = results[key(t)]; if (r) { r.ok ? pass++ : fail++; } });
-				// page dot: grey until every test in it has run, then green/red
+				// page dot: gray until every test in it has run, then green/red
 				var pdotCls = !allRun ? ' untested' : (anyFail ? ' hasfail' : '');
 
 				var hdr = document.createElement('div'); hdr.className = 'page-hdr';
@@ -288,7 +288,7 @@
 			updatePageDot(t.suite + '::' + t.page);
 			updateSuiteDot(t.suite);
 		}
-		// Recolor a suite's header dot ("All" view) from live results: grey until every test in the
+		// Recolor a suite's header dot ("All" view) from live results: gray until every test in the
 		// suite has run, then red if any failed, else green.
 		function updateSuiteDot(suiteKey) {
 			var sg = suiteEls[suiteKey]; if (!sg) return;
@@ -296,7 +296,7 @@
 			var allRun = sg.tests.every(function (t) { return results[key(t)]; });
 			sg.dot.className = 'sdot' + (!allRun ? ' untested' : (anyFail ? ' hasfail' : ''));
 		}
-		// Recolor a page's dot from live results, in real time: grey until every test in it has run,
+		// Recolor a page's dot from live results, in real time: gray until every test in it has run,
 		// then red if any failed, else green.
 		function updatePageDot(pk) {
 			var pg = pageEls[pk]; if (!pg) return;
@@ -335,7 +335,7 @@
 		}
 
 		// ---- run one test live ----
-		// Reset the dot to grey immediately, then flip to pass/fail only once the checklist has fully
+		// Reset the dot to gray immediately, then flip to pass/fail only once the checklist has fully
 		// revealed (onComplete), so you see it re-evaluate from scratch.
 		function runOne(t) {
 			setDot(t, 'running');
@@ -347,7 +347,7 @@
 		testNow.onclick = function () {
 			var list = visibleTests().slice(); var i = 0;
 			testNow.disabled = true; testNow.textContent = 'running…';
-			// reset all selected dots to grey up front so the whole run visibly re-evaluates
+			// reset all selected dots to gray up front so the whole run visibly re-evaluates
 			list.forEach(function (t) { setDot(t, 'running'); });
 			(function next() {
 				if (i >= list.length) { testNow.disabled = false; testNow.textContent = 'Test Now'; return; }
@@ -366,7 +366,7 @@
 		quickTest.onclick = function () {
 			var list = visibleTests().slice(); var i = 0;
 			quickTest.disabled = true; testNow.disabled = true; quickTest.textContent = 'running…';
-			list.forEach(function (t) { setDot(t, 'running'); });   // grey them up front
+			list.forEach(function (t) { setDot(t, 'running'); });   // gray them up front
 			var pass = 0, fail = 0;
 			(function next() {
 				if (i >= list.length) {

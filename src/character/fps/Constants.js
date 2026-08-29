@@ -11,15 +11,15 @@
 // FPS_CONTROLLER_DEFAULTS); they are implementation tolerances kept named here so nothing is a bare literal
 // at a use site. Changing them changes solver behavior — treat as internals, not tuning.
 FPSCharacterController.FPSC = {
-    // Contact tolerances (metres, multiplied by the character scale where used).
+    // Contact tolerances (meters, multiplied by the character scale where used).
     SKIN: 0.01,               // sweep/contact skin width
     GROUND_TOL: 0.1,          // how close the feet must be to a surface to count as grounded
     GHOST_GROUND_INSET: 0.25, // fraction of height the ghost's bottom is lifted above the feet
 
     // "Effectively zero" epsilons — vector/speed magnitudes below which we treat a quantity as null.
     EPS_LEN: 1e-4,            // general length/normal guard
-    EPS_DIR: 1e-5,            // direction-normalisation guard
-    EPS_SPD: 1e-6,            // speed-normalisation guard
+    EPS_DIR: 1e-5,            // direction-normalization guard
+    EPS_SPD: 1e-6,            // speed-normalization guard
     EPS_INPUT2: 1e-10,        // squared move-input threshold (has-input test)
     EPS_SPEED_MARGIN: 1e-3,   // speed must exceed a target by this to count as "above" it
 
@@ -67,7 +67,7 @@ FPSCharacterController.FPSC = {
 
     // Sweep sub-stepping + wall interaction.
     SUBSTEP_FRAC: 0.5,        // sub-step length as a fraction of the smallest half-extent
-    NEAR_CENTER_FRAC: 0.4,    // "hit near my centre" band as a fraction of width
+    NEAR_CENTER_FRAC: 0.4,    // "hit near my center" band as a fraction of width
     PUSH_INTO_MIN: 0.5,       // dot(vel, toHit) above this = actively moving into a contact
 
     // Wall clip / step-up / depenetration.

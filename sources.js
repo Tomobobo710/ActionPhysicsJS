@@ -86,6 +86,7 @@ module.exports = [
     'src/phases/SphereSphere.js',
     'src/phases/SphereBox.js',
     'src/phases/BoxBox.js',
+    'src/phases/TriTri.js',
     'src/phases/PairTest.js',
     'src/phases/SpeculativeMargin.js',
     'src/phases/GeometryRefresh.js',

@@ -77,7 +77,12 @@ proto._expandSide = function (body, otherAABB, otherBodyId, isNestedChild) {
             body.rotation.transformVectorInto(b, slot.b); slot.b.addInPlace(body.position);
             body.rotation.transformVectorInto(c, slot.c); slot.c.addInPlace(body.position);
             slot.shape.a = slot.a; slot.shape.b = slot.b; slot.shape.c = slot.c;
-            out.push({ shape: slot.shape, position: slot.position, rotation: slot.rotation });
+            // slot.position stays at origin (the triangle's verts are already world-space and the
+            // narrowphase support adds slot.position). bodyCenter is a separate hint - the owning
+            // body's world center - which TriTri.js uses to orient a mesh face-contact normal
+            // reliably even when the two faces are exactly flush.
+            slot.bodyCenter.copy(body.position);
+            out.push({ shape: slot.shape, position: slot.position, rotation: slot.rotation, bodyCenter: slot.bodyCenter });
         }
     }
     return out;
@@ -92,7 +97,7 @@ proto._nextTriSlot = function () {
         this._triSlots.push({
             a: new Vector3(), b: new Vector3(), c: new Vector3(),
             position: new Vector3(0, 0, 0), rotation: new Quaternion(),
-            shape: null
+            bodyCenter: new Vector3(), shape: null
         });
         const slot = this._triSlots[this._triSlots.length - 1];
         slot.shape = new TriangleShape(slot.a, slot.b, slot.c);

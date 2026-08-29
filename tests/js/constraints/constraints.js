@@ -203,7 +203,7 @@
 		t.expect('the shared pivot never separates - opposite spins do not tear the weld apart (gap < 1e-5)', function () {
 			return { ok: maxPivotGap < 1e-5, detail: 'max pivot gap=' + maxPivotGap.toExponential(3) };
 		});
-		t.expect('the pair settles to a shared rotation rate (opposite spins cancelled by the rigid fuse), not still fighting each other', function () {
+		t.expect('the pair settles to a shared rotation rate (opposite spins canceled by the rigid fuse), not still fighting each other', function () {
 			var relSpin = Math.hypot(a.angular_velocity.x - b.angular_velocity.x, a.angular_velocity.y - b.angular_velocity.y, a.angular_velocity.z - b.angular_velocity.z);
 			return { ok: relSpin < 0.5, detail: 'relative spin=' + relSpin.toFixed(4) + ' rad/s (they started 6 rad/s apart)' };
 		});

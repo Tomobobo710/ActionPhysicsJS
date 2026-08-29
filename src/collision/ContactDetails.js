@@ -21,6 +21,10 @@ class ContactDetails {
         // Contact-relative normal velocity just before this substep's position solve, for
         // restitution. Written each substep by the solver.
         this._preSolveNormalVel = 0;
+
+        // True when this point came from TriTri's mesh face-clip (see TriTri.js). Lets the manifold
+        // apply a coincidence merge that only makes sense for the many-triangle mesh case.
+        this.fromMeshFace = false;
     }
 
     // Derives local anchors from current pointOnA/pointOnB + body transforms. Called once, at
@@ -52,6 +56,7 @@ class ContactDetails {
 
     // GJK separated result (distance = non-negative gap) -> negative signedDistance.
     setFromGJKSeparated(gjkResult) {
+        this.fromMeshFace = false;
         this.pointOnA.copy(gjkResult.pointA);
         this.pointOnB.copy(gjkResult.pointB);
         this.normal.copy(gjkResult.normal);
@@ -62,6 +67,7 @@ class ContactDetails {
 
     // EPA result (distance = non-negative depth) -> positive signedDistance.
     setFromEPA(epaResult) {
+        this.fromMeshFace = false;
         this.pointOnA.copy(epaResult.pointA);
         this.pointOnB.copy(epaResult.pointB);
         this.normal.copy(epaResult.normal);
@@ -79,6 +85,7 @@ class ContactDetails {
         this.normalLambda = other.normalLambda;
         this.tangentLambda1 = other.tangentLambda1;
         this.tangentLambda2 = other.tangentLambda2;
+        this.fromMeshFace = other.fromMeshFace;
         return this;
     }
 

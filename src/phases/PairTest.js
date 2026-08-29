@@ -3,7 +3,9 @@ var proto = NarrowPhase.prototype;
 
 proto._nextPooledContact = function () {
     if (this._poolIndex >= this._contactPool.length) this._contactPool.push(new ContactDetails());
-    return this._contactPool[this._poolIndex++];
+    const c = this._contactPool[this._poolIndex++];
+    c.fromMeshFace = false; // opt-in flag; only TriTri sets it (see Reduction.js's coincidence merge)
+    return c;
 };
 
 // broadphasePairs: [[bodyA, bodyB], ...]. midphase expands compound/mesh pairs to primitives.
@@ -64,6 +66,14 @@ proto._testPrimitivePair = function (placedA, placedB) {
         // closed-form test.
         const boxResult = BoxBox.test(placedA, placedB, results, function () { return self._nextPooledContact(); });
         if (boxResult !== null) return results;
+    }
+
+    if (TriTri.applies(placedA, placedB)) {
+        const self = this;
+        // null = not a face pair (edge/point feature, or too far apart) - fall through to GJK/EPA,
+        // same contract as BoxBox.test's null return above.
+        const triResult = TriTri.test(placedA, placedB, results, function () { return self._nextPooledContact(); });
+        if (triResult !== null) return results;
     }
 
     const contact = this._nextPooledContact();

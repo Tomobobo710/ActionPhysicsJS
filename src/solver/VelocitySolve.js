@@ -4,7 +4,7 @@ var proto = Solver.prototype;
 
 // A box-on-box flat face contact reports up to 4 coplanar points sharing one normal. Solving
 // restitution and friction point-by-point (Gauss-Seidel) over that patch is what fabricates lateral
-// drift on a perfectly symmetric drop (box-box/single): each point's off-centre normal impulse spins
+// drift on a perfectly symmetric drop (box-box/single): each point's off-center normal impulse spins
 // the body a hair, the next point reads the spun state, and the four impulses no longer cancel - the
 // residual spin then couples through friction into a net sideways velocity. For that ONE case - both
 // shapes actual BoxShapes, every engaged point sharing a single normal (a genuine face patch) - the

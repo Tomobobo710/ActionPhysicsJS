@@ -28,7 +28,7 @@
 		t.check(new Q().setAxisAngle(new V(0, 1, 0), 1.234).length(), 1, 1e-15, 'unit length');
 	});
 
-	test('math/quaternion', 'setAxisAngle normalises a non-unit axis', function (t) {
+	test('math/quaternion', 'setAxisAngle normalizes a non-unit axis', function (t) {
 		var a = new Q().setAxisAngle(new V(0, 5, 0), 0.7);
 		var b = new Q().setAxisAngle(new V(0, 1, 0), 0.7);
 		t.check(a.x, b.x, 1e-15, 'x'); t.check(a.y, b.y, 1e-15, 'y');
@@ -98,13 +98,13 @@
 		t.check(new Q(0.6, 0.8, 0, 0).normalize().length(), 1, 1e-15, 'unit');
 	});
 
-	test('math/quaternion', 'a zero quaternion normalises to identity, not NaN', function (t) {
+	test('math/quaternion', 'a zero quaternion normalizes to identity, not NaN', function (t) {
 		var q = new Q(0, 0, 0, 0).normalize();
 		t.checkTrue(q.isFinite(), 'finite');
 		t.checkEqual(q.w, 1, 'identity');
 	});
 
-	test('math/quaternion', 'length drifts without normalisation and holds with it', function (t) {
+	test('math/quaternion', 'length drifts without normalization and holds with it', function (t) {
 		var step = new Q().setAxisAngle(new V(0.267, 0.535, 0.802), 0.01);
 		var i;
 
@@ -116,8 +116,8 @@
 		for (i = 0; i < 10000; i++) kept.multiplyInPlace(step).normalize();
 		var keptErr = Math.abs(kept.length() - 1);
 
-		t.checkTrue(keptErr < 1e-14, 'normalised stays unit (err ' + keptErr.toExponential(2) + ')');
-		t.checkTrue(keptErr <= driftErr, 'normalising is never worse (drift err ' + driftErr.toExponential(2) + ')');
+		t.checkTrue(keptErr < 1e-14, 'normalized stays unit (err ' + keptErr.toExponential(2) + ')');
+		t.checkTrue(keptErr <= driftErr, 'normalizing is never worse (drift err ' + driftErr.toExponential(2) + ')');
 	});
 
 	test('math/quaternion', 'a non-unit quaternion scales the vectors it rotates', function (t) {

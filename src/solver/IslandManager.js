@@ -83,7 +83,7 @@ class IslandManager {
      * Updates the sleep state of every dynamic body in `bodies`, using this tick's `manifolds`
      * (a ContactManifoldList) and `constraints` (the world's joint list) for connectivity, advancing
      * timers by `dt`. Parks islands that have been quiet long enough; wakes any body that a moving
-     * static/kinematic neighbour or an already-awake dynamic neighbour keeps in motion.
+     * static/kinematic neighbor or an already-awake dynamic neighbor keeps in motion.
      *
      * After this runs, a body with isAwake === false is one the solver may skip entirely this tick.
      */
@@ -92,7 +92,7 @@ class IslandManager {
         this._islands.clear();
 
         // 1. Seed the forest with every DYNAMIC body as its own singleton. Static/kinematic bodies
-        //    are intentionally never seeded - they cannot sleep and must not link their neighbours.
+        //    are intentionally never seeded - they cannot sleep and must not link their neighbors.
         for (let i = 0; i < bodies.length; i++) {
             const b = bodies[i];
             if (b.bodyType === RigidBody.DYNAMIC) this._ensure(b.id);
@@ -127,8 +127,8 @@ class IslandManager {
         const forcedAwake = new Set();
         for (const manifold of manifolds.values()) {
             const a = manifold.bodyA, b = manifold.bodyB;
-            IslandManager._maybeForceAwakeFromNeighbour(a, b, forcedAwake);
-            IslandManager._maybeForceAwakeFromNeighbour(b, a, forcedAwake);
+            IslandManager._maybeForceAwakeFromNeighbor(a, b, forcedAwake);
+            IslandManager._maybeForceAwakeFromNeighbor(b, a, forcedAwake);
         }
 
         // 5. Group dynamic bodies by island root, and record each body's own quietness (below BOTH
@@ -171,11 +171,11 @@ class IslandManager {
     }
 
     // A dynamic `body` in contact with `other` must be forced awake if `other` is a KINEMATIC body
-    // that is itself moving, or a DYNAMIC body that is currently awake - either way the neighbour is
-    // about to impart motion this body cannot anticipate while asleep. A static neighbour, or a
+    // that is itself moving, or a DYNAMIC body that is currently awake - either way the neighbor is
+    // about to impart motion this body cannot anticipate while asleep. A static neighbor, or a
     // sleeping dynamic one, is not a forcing influence (that is the whole point of a body being able
     // to rest on top of another sleeping body).
-    static _maybeForceAwakeFromNeighbour(body, other, forcedAwake) {
+    static _maybeForceAwakeFromNeighbor(body, other, forcedAwake) {
         if (body.bodyType !== RigidBody.DYNAMIC) return;
         if (other.bodyType === RigidBody.KINEMATIC) {
             if (!IslandManager._isQuiet(other)) forcedAwake.add(body.id);

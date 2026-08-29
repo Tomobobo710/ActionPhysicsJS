@@ -164,7 +164,7 @@
 			};
 		});
 
-		t.expect('no box slides off a supporting neighbour (drift < ' + SUPPORT_LOSS + ')', function () {
+		t.expect('no box slides off a supporting neighbor (drift < ' + SUPPORT_LOSS + ')', function () {
 			if (ticks < TICKS) return false;
 			var worst = 0, which = null, lost = 0;
 			for (var n = 0; n < boxes.length; n++) {

@@ -24,6 +24,13 @@
 		return new MeshShape(v, faces);
 	}
 
+	// Total rotation angle (rad) of a body away from identity, any axis, from the quaternion w term.
+	function totalRot(body) {
+		var wq = Math.abs(body.rotation.w);
+		if (wq > 1) wq = 1;
+		return 2 * Math.acos(wq);
+	}
+
 	function boxMesh(hx, hy, hz) {
 		var xs = [-1, 1], ys = [-1, 1], zs = [-1, 1], v = [];
 		for (var yi = 0; yi < 2; yi++) for (var zi = 0; zi < 2; zi++) for (var xi = 0; xi < 2; xi++)
@@ -159,11 +166,14 @@
 
 		var TAIL = 40;
 		var tailYs = [], maxTailSpeed = 0, maxTailAngSpeed = 0;
+		var maxRot = 0;   // largest total rotation (rad, any axis) either box reaches — a flat drop must not tip
 		t.onTick(function (world, tick) {
 			ticks = tick;
 			var gap = (dropped.position.y - half) - (rest.position.y + half);
 			if (gap < minGap) minGap = gap;
 			if (gap <= 0.02) touched = true;
+
+			maxRot = Math.max(maxRot, totalRot(dropped), totalRot(rest));
 
 			if (tick > 200 - TAIL) {
 				tailYs.push(dropped.position.y);
@@ -175,7 +185,7 @@
 			}
 		});
 
-		t.log('Drop an inverted box onto an inverted box on a floor. It must land and stack on top — it must not sink through to the floor, and it must actually STOP (no persistent jitter/oscillation in the tail).');
+		t.log('Drop an inverted box onto an inverted box on a floor. Perfectly axis-aligned and centered — it must land and stack, must not sink through, must actually STOP, and NEITHER box may rotate on any axis (a flat face-on-face drop imparts zero torque).');
 
 		t.expect('dropped box must stack on the resting one and settle (final dropped.y ~ 3, minGap >= -0.5, no tail jitter)', function (world) {
 			if (ticks < 200) return false;
@@ -188,9 +198,14 @@
 			};
 		});
 
+		t.expect('neither box rotated on any axis (flat face-on-face drop = zero torque)', function (world) {
+			if (ticks < 200) return false;
+			return { ok: maxRot < 0.01, detail: 'max total rotation = ' + maxRot.toFixed(4) + ' rad (' + (maxRot * 180 / Math.PI).toFixed(2) + ' deg)' };
+		});
+
 		U.syncBodies(t, w);
 		t.simulate(w, 200);
-	}, { visual: true, page: 'mesh', steps: 200, description: 'An inverted (reversed-winding) box dropped onto a resting inverted box. It must land and stack; sinking through to the floor is a failure.' });
+	}, { visual: true, page: 'mesh', steps: 200, description: 'An inverted (reversed-winding) box dropped onto a resting inverted box, axis-aligned and centered. It must land and stack (no sink-through), and neither box may rotate on any axis — a flat face-on-face drop imparts zero torque, so any spin is a bad contact manifold.' });
 
 	Runner.test('mesh collision', 'normal box stacked on normal box', function (t) {
 
@@ -216,11 +231,14 @@
 		var minGap = Infinity, touched = false, ticks = 0;
 		var TAIL = 40;
 		var tailYs = [], maxTailSpeed = 0, maxTailAngSpeed = 0;
+		var maxRot = 0;
 		t.onTick(function (world, tick) {
 			ticks = tick;
 			var gap = (dropped.position.y - half) - (rest.position.y + half);
 			if (gap < minGap) minGap = gap;
 			if (gap <= 0.02) touched = true;
+
+			maxRot = Math.max(maxRot, totalRot(dropped), totalRot(rest));
 
 			if (tick > 200 - TAIL) {
 				tailYs.push(dropped.position.y);
@@ -232,7 +250,7 @@
 			}
 		});
 
-		t.log('Control: drop a NORMAL box onto a NORMAL box. If it also sinks through, the stacking failure is winding-independent (a parallel-face mesh-mesh bug), not caused by inverted winding. Must also actually STOP, not just numerically land near the target.');
+		t.log('Control: drop a NORMAL box onto a NORMAL box, axis-aligned and centered. If it also sinks through, the stacking failure is winding-independent (a parallel-face mesh-mesh bug). Must actually STOP, and NEITHER box may rotate on any axis (flat face-on-face drop = zero torque).');
 
 		t.expect('normal box must stack on the resting one and settle (final dropped.y ~ 3, minGap >= -0.5, no tail jitter)', function (world) {
 			if (ticks < 200) return false;
@@ -243,6 +261,11 @@
 				detail: 'dropped.y=' + dropped.position.y.toFixed(3) + ' minGap=' + (minGap === Infinity ? 'n/a' : minGap.toFixed(3)) + ' touched=' + touched +
 					' tailYSpread=' + ySpread.toFixed(4) + ' maxTailSpeed=' + maxTailSpeed.toFixed(4) + ' maxTailAngSpeed=' + maxTailAngSpeed.toFixed(4)
 			};
+		});
+
+		t.expect('neither box rotated on any axis (flat face-on-face drop = zero torque)', function (world) {
+			if (ticks < 200) return false;
+			return { ok: maxRot < 0.01, detail: 'max total rotation = ' + maxRot.toFixed(4) + ' rad (' + (maxRot * 180 / Math.PI).toFixed(2) + ' deg)' };
 		});
 
 		U.syncBodies(t, w);

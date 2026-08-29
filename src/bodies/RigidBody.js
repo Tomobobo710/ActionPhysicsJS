@@ -60,7 +60,7 @@ class RigidBody {
         this.restitution = 0.33;
         this.linear_damping = 0.1;
         this.angular_damping = 0.9;
-        // Contact-tangent-plane angular damping (metres): caps relative angular velocity ABOUT the
+        // Contact-tangent-plane angular damping (meters): caps relative angular velocity ABOUT the
         // contact's tangent plane (any axis lying in the contact surface), the same way Coulomb
         // friction caps tangential linear slip. Shape-agnostic - it happens to be what real rolling
         // resistance looks like on a round shape, but it also damps an ordinary box's pivot/topple
@@ -121,7 +121,7 @@ RigidBody.STATIC = BODY_STATIC;
 RigidBody.KINEMATIC = BODY_KINEMATIC;
 RigidBody.DYNAMIC = BODY_DYNAMIC;
 
-// Fixed broadphase-AABB fattening for speculative contacts (metres). Matches the narrowphase
+// Fixed broadphase-AABB fattening for speculative contacts (meters). Matches the narrowphase
 // speculative base so both stages agree on how early a contact is worth seeing.
 RigidBody.SPECULATIVE_MARGIN = 0.02;
 

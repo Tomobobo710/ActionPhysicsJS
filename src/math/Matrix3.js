@@ -50,7 +50,7 @@ class Matrix3 {
     }
 
     /**
-     * Rotation matrix equivalent to a unit quaternion. Assumes q is normalised; a non-unit
+     * Rotation matrix equivalent to a unit quaternion. Assumes q is normalized; a non-unit
      * quaternion produces a matrix that also scales.
      */
     fromQuaternion(q) {

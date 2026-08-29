@@ -34,6 +34,12 @@ ContactManifold.MATCH_DISTANCE = 0.05;
 // Signed-distance half-width of the exact-touch band where GJK/EPA's normal is ambiguous and a
 // warm-matched point keeps its established normal instead (see Update.js).
 ContactManifold.EXACT_TOUCH_BAND = 0.001;
+// Two same-tick MESH-face contact points (fromMeshFace) closer than this (meters) with essentially
+// the same normal are the same feature reported by two adjacent triangles that share that vertex
+// (see TriTri.js / Reduction.js) - merged on add. Only applies to mesh-face contacts, so a
+// primitive manifold's load-bearing point spread is never touched; 5 cm comfortably catches a unit
+// box face's shared corners while staying well inside its 2 m corner spacing.
+ContactManifold.COINCIDENCE_DIST = 0.05;
 
 ContactManifold._scratchNormal = new Vector3();
 ContactManifold._scratchRA = new Vector3();

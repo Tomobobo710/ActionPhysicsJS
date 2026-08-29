@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-29T06:07:26.026Z
+// ActionPhysics 0.1.0 — built 2026-08-29T09:24:39.074Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine.
@@ -937,7 +937,7 @@ if (host.Vector3) {
         }
 
         // A unit vector perpendicular to v. Crosses with the cardinal axis v is LEAST aligned to - a
-        // nearly-parallel axis gives a near-zero vector that normalises into noise.
+        // nearly-parallel axis gives a near-zero vector that normalizes into noise.
         findOrthogonal(v) {
             const ax = Math.abs(v.x), ay = Math.abs(v.y), az = Math.abs(v.z);
             if (ax <= ay && ax <= az) { this.x = 0; this.y = -v.z; this.z = v.y; }
@@ -1041,7 +1041,7 @@ if (host.Matrix3) {
         }
 
         /**
-         * Rotation matrix equivalent to a unit quaternion. Assumes q is normalised; a non-unit
+         * Rotation matrix equivalent to a unit quaternion. Assumes q is normalized; a non-unit
          * quaternion produces a matrix that also scales.
          */
         fromQuaternion(q) {
@@ -2098,7 +2098,7 @@ if (host.Quaternion) {
             );
         }
 
-        // The axis is normalised here, so a non-unit axis still yields a unit quaternion. Skipping that
+        // The axis is normalized here, so a non-unit axis still yields a unit quaternion. Skipping that
         // scales the whole quaternion by |axis|, and a non-unit quaternion silently scales every vector it
         // rotates. A zero axis gives identity rather than NaN.
         setAxisAngle(axis, angle) {
@@ -3610,7 +3610,7 @@ class RigidBody {
         this.restitution = 0.33;
         this.linear_damping = 0.1;
         this.angular_damping = 0.9;
-        // Contact-tangent-plane angular damping (metres): caps relative angular velocity ABOUT the
+        // Contact-tangent-plane angular damping (meters): caps relative angular velocity ABOUT the
         // contact's tangent plane (any axis lying in the contact surface), the same way Coulomb
         // friction caps tangential linear slip. Shape-agnostic - it happens to be what real rolling
         // resistance looks like on a round shape, but it also damps an ordinary box's pivot/topple
@@ -3671,7 +3671,7 @@ RigidBody.STATIC = BODY_STATIC;
 RigidBody.KINEMATIC = BODY_KINEMATIC;
 RigidBody.DYNAMIC = BODY_DYNAMIC;
 
-// Fixed broadphase-AABB fattening for speculative contacts (metres). Matches the narrowphase
+// Fixed broadphase-AABB fattening for speculative contacts (meters). Matches the narrowphase
 // speculative base so both stages agree on how early a contact is worth seeing.
 RigidBody.SPECULATIVE_MARGIN = 0.02;
 
@@ -4263,7 +4263,12 @@ proto._expandSide = function (body, otherAABB, otherBodyId, isNestedChild) {
             body.rotation.transformVectorInto(b, slot.b); slot.b.addInPlace(body.position);
             body.rotation.transformVectorInto(c, slot.c); slot.c.addInPlace(body.position);
             slot.shape.a = slot.a; slot.shape.b = slot.b; slot.shape.c = slot.c;
-            out.push({ shape: slot.shape, position: slot.position, rotation: slot.rotation });
+            // slot.position stays at origin (the triangle's verts are already world-space and the
+            // narrowphase support adds slot.position). bodyCenter is a separate hint - the owning
+            // body's world center - which TriTri.js uses to orient a mesh face-contact normal
+            // reliably even when the two faces are exactly flush.
+            slot.bodyCenter.copy(body.position);
+            out.push({ shape: slot.shape, position: slot.position, rotation: slot.rotation, bodyCenter: slot.bodyCenter });
         }
     }
     return out;
@@ -4278,7 +4283,7 @@ proto._nextTriSlot = function () {
         this._triSlots.push({
             a: new Vector3(), b: new Vector3(), c: new Vector3(),
             position: new Vector3(0, 0, 0), rotation: new Quaternion(),
-            shape: null
+            bodyCenter: new Vector3(), shape: null
         });
         const slot = this._triSlots[this._triSlots.length - 1];
         slot.shape = new TriangleShape(slot.a, slot.b, slot.c);
@@ -5230,6 +5235,10 @@ class ContactDetails {
         // Contact-relative normal velocity just before this substep's position solve, for
         // restitution. Written each substep by the solver.
         this._preSolveNormalVel = 0;
+
+        // True when this point came from TriTri's mesh face-clip (see TriTri.js). Lets the manifold
+        // apply a coincidence merge that only makes sense for the many-triangle mesh case.
+        this.fromMeshFace = false;
     }
 
     // Derives local anchors from current pointOnA/pointOnB + body transforms. Called once, at
@@ -5261,6 +5270,7 @@ class ContactDetails {
 
     // GJK separated result (distance = non-negative gap) -> negative signedDistance.
     setFromGJKSeparated(gjkResult) {
+        this.fromMeshFace = false;
         this.pointOnA.copy(gjkResult.pointA);
         this.pointOnB.copy(gjkResult.pointB);
         this.normal.copy(gjkResult.normal);
@@ -5271,6 +5281,7 @@ class ContactDetails {
 
     // EPA result (distance = non-negative depth) -> positive signedDistance.
     setFromEPA(epaResult) {
+        this.fromMeshFace = false;
         this.pointOnA.copy(epaResult.pointA);
         this.pointOnB.copy(epaResult.pointB);
         this.normal.copy(epaResult.normal);
@@ -5288,6 +5299,7 @@ class ContactDetails {
         this.normalLambda = other.normalLambda;
         this.tangentLambda1 = other.tangentLambda1;
         this.tangentLambda2 = other.tangentLambda2;
+        this.fromMeshFace = other.fromMeshFace;
         return this;
     }
 
@@ -5338,6 +5350,12 @@ ContactManifold.MATCH_DISTANCE = 0.05;
 // Signed-distance half-width of the exact-touch band where GJK/EPA's normal is ambiguous and a
 // warm-matched point keeps its established normal instead (see Update.js).
 ContactManifold.EXACT_TOUCH_BAND = 0.001;
+// Two same-tick MESH-face contact points (fromMeshFace) closer than this (meters) with essentially
+// the same normal are the same feature reported by two adjacent triangles that share that vertex
+// (see TriTri.js / Reduction.js) - merged on add. Only applies to mesh-face contacts, so a
+// primitive manifold's load-bearing point spread is never touched; 5 cm comfortably catches a unit
+// box face's shared corners while staying well inside its 2 m corner spacing.
+ContactManifold.COINCIDENCE_DIST = 0.05;
 
 ContactManifold._scratchNormal = new Vector3();
 ContactManifold._scratchRA = new Vector3();
@@ -5425,7 +5443,7 @@ proto.update = function (newContacts, dt) {
 // Match tolerance for one existing point: the base floor (MATCH_DISTANCE, for a resting/slow
 // contact) widened by how far the contact point itself travels across each body's surface this
 // tick - the tangential relative velocity at the contact, times dt. Without this, a fast-sliding
-// or fast-rolling contact's point genuinely moves several tenths of a metre per tick in bodyA-
+// or fast-rolling contact's point genuinely moves several tenths of a meter per tick in bodyA-
 // local space, blows past a fixed-radius match, and the manifold is destroyed and rebuilt from
 // scratch every tick - warm-start (accumulated lambda) never survives a single tick for exactly
 // the contacts that need it most. Same shape as SpeculativeMargin.js's own base+dynamic split.
@@ -5477,6 +5495,29 @@ ContactManifold._toLocal = function (bodyA, worldPoint, out) {
 var proto = ContactManifold.prototype;
 
 proto._addPoint = function (contact) {
+    // Coincidence merge for MESH face contacts only. A mesh face contact arrives as several
+    // triangle-vs-triangle sub-contacts (see TriTri.js); adjacent triangles legitimately report the
+    // SAME shared corner - the two triangles of a box's bottom face each put a point on both
+    // corners along their shared diagonal. Left in, those near-duplicate corners bias the 4-point
+    // reduction toward one edge and inject torque into a flat rest. Scoped to contacts flagged
+    // `fromMeshFace` so closed-form BoxBox / primitive manifolds (which are already deduped and
+    // whose point spread is load-bearing, e.g. a box tumbling down a ramp) are untouched.
+    if (contact.fromMeshFace) for (let i = 0; i < this.points.length; i++) {
+        const ex = this.points[i];
+        if (!ex.fromMeshFace) continue;
+        const dx = ex.point.x - contact.point.x, dy = ex.point.y - contact.point.y, dz = ex.point.z - contact.point.z;
+        if (dx * dx + dy * dy + dz * dz > ContactManifold.COINCIDENCE_DIST * ContactManifold.COINCIDENCE_DIST) continue;
+        if (ex.normal.x * contact.normal.x + ex.normal.y * contact.normal.y + ex.normal.z * contact.normal.z < 0.99) continue;
+        if (contact.signedDistance > ex.signedDistance) {
+            const keepN = ex.normalLambda, keepT1 = ex.tangentLambda1, keepT2 = ex.tangentLambda2;
+            ex.copy(contact);
+            ex.normalLambda = keepN; ex.tangentLambda1 = keepT1; ex.tangentLambda2 = keepT2;
+            ex.setLocalAnchors(this.bodyA, this.bodyB);
+            ContactManifold._toLocal(this.bodyA, ex.pointOnA, this._localAnchors[i]);
+        }
+        return;
+    }
+
     const point = contact.clone();
     point.normalLambda = 0; point.tangentLambda1 = 0; point.tangentLambda2 = 0; // fresh: no warm-start data
     point.setLocalAnchors(this.bodyA, this.bodyB);
@@ -5606,7 +5647,7 @@ class NarrowPhase {
     }
 }
 
-// Base speculative margin (metres) - see SpeculativeMargin.js.
+// Base speculative margin (meters) - see SpeculativeMargin.js.
 NarrowPhase.SPECULATIVE_BASE = 0.02;
 
 ActionPhysics.NarrowPhase = NarrowPhase;
@@ -6161,13 +6202,301 @@ BoxBox._sidePlanes = [{ axis: null, sign: 1, limit: 0 }, { axis: null, sign: 1, 
 ActionPhysics.BoxBox = BoxBox;
 
 
+// ==== src/phases/TriTri.js ====
+// Closed-form triangle-triangle FACE contact: when two triangles are near-coplanar and near-
+// touching, clip the incident triangle against the reference triangle's 3 edge half-planes
+// (Sutherland-Hodgman in the reference plane) and emit one contact per surviving vertex - a real
+// multi-point manifold spread across the shared face area.
+//
+// WHY THIS EXISTS: a MeshShape's midphase dispatches a flat box-on-box contact as up to four
+// triangle-vs-triangle pairs (two triangles per box face). Routed through GJK/EPA, each pair yields
+// exactly ONE witness point, and EPA consistently picks the shared diagonal edge/vertex the two
+// face triangles have in common - so all four points collapse onto one edge of the square face
+// instead of spanning it. The solver then pushes up on a single edge and the box pitches away from
+// a drop that imparted zero torque. Clipping produces the full contact polygon instead.
+//
+// Only the near-parallel (anti-parallel normals), near-touching FACE case produces contacts here.
+// Most other pairs return null and fall through to GJK/EPA in PairTest.js, like BoxBox.test on a
+// separated pair. The one exception: a near-perpendicular pair sharing a coincident edge without
+// interpenetrating (a mesh box's top face triangle and its own side wall) returns an EMPTY result,
+// which vetoes the GJK/EPA fallback - that shared edge is not a contact. Mirrors
+// BoxBox._buildFaceContact for the clipping half.
+const TriTri = {};
+
+TriTri.applies = function (placedA, placedB) {
+    return placedA.shape instanceof TriangleShape && placedB.shape instanceof TriangleShape;
+};
+
+// dot(nA, nB) below this (i.e. the two outward normals are anti-parallel to within ~2.5 degrees)
+// => a genuine opposing-face pair: one triangle's front faces the other's. A POSITIVE dot near +1
+// is two co-oriented coincident faces (e.g. the two boxes' shared +z side walls when perfectly
+// aligned) - not a contact, must not be clipped. Anything in between is an edge/point feature for
+// GJK/EPA.
+TriTri.ANTIPARALLEL_DOT = -0.999;
+// How far in FRONT of the reference plane (still separated) the incident triangle is trusted to
+// report a speculative face contact - kept generous so all clipped points surface together on the
+// approach tick (same reasoning as BoxBox.SEPARATED_AXIS_LIMIT); PairTest.js's speculative margin
+// does the real filtering.
+TriTri.SEPARATION_LIMIT = 0.5;
+// How far BEHIND the reference plane (penetrating) an opposing-face pair is still resolved as a
+// face contact. Generous: the clip manifold is exactly what pushes an over-penetrated stack back
+// apart, so bailing to GJK/EPA's single point here would reintroduce the torque bug under load.
+// A box's vertical SIDE faces are co-ORIENTED (normals parallel, not anti-parallel) when two boxes
+// align, so they never reach this branch - they are vetoed earlier by the ndot test.
+TriTri.PENETRATION_LIMIT = 1.0;
+// A clipped overlap polygon whose area is below this (m^2) is a glancing edge sliver - typically
+// the near-zero overlap of two box-face triangles split along OPPOSITE diagonals, which otherwise
+// emits a row of points strung along the face diagonal and biases the manifold. The real overlap
+// from the same-diagonal triangle pair is a full half-face and clears this easily; a genuine small
+// face contact below this threshold is left to GJK/EPA.
+TriTri.MIN_AREA = 0.02;
+// |dot(nA,nB)| below this counts as "near perpendicular" for the shared-edge veto.
+TriTri.PERPENDICULAR_DOT = 0.25;
+// Two vertices of one triangle within this distance (meters) of the other triangle's plane, AND
+// projecting inside its edges, count as a coincident shared edge.
+TriTri.EDGE_COINCIDENCE = 1e-3;
+// Degenerate triangle (near-zero area) normal guard.
+TriTri.AREA_EPSILON = 1e-12;
+
+// Unit outward normal of a world-space triangle into `out`. Returns false if degenerate.
+TriTri._normalInto = function (out, a, b, c) {
+    const abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z;
+    const acx = c.x - a.x, acy = c.y - a.y, acz = c.z - a.z;
+    let nx = aby * acz - abz * acy, ny = abz * acx - abx * acz, nz = abx * acy - aby * acx;
+    const lenSq = nx * nx + ny * ny + nz * nz;
+    if (lenSq < TriTri.AREA_EPSILON) return false;
+    const inv = 1 / Math.sqrt(lenSq);
+    out.set(nx * inv, ny * inv, nz * inv);
+    return true;
+};
+
+// Does segment p->q pierce triangle (t0,t1,t2) with unit normal tn, strictly between the endpoints?
+TriTri._segmentHitsTri = function (px, py, pz, qx, qy, qz, t0, t1, t2, tn) {
+    const dx = qx - px, dy = qy - py, dz = qz - pz;
+    const denom = dx * tn.x + dy * tn.y + dz * tn.z;
+    if (denom > -1e-12 && denom < 1e-12) return false; // parallel to the triangle plane
+    const t = ((t0.x - px) * tn.x + (t0.y - py) * tn.y + (t0.z - pz) * tn.z) / denom;
+    if (t <= 1e-9 || t >= 1 - 1e-9) return false; // hit is at/beyond an endpoint, not a true crossing
+    const hx = px + dx * t, hy = py + dy * t, hz = pz + dz * t;
+    // Barycentric inside-test against the three edges.
+    const e0x = t1.x - t0.x, e0y = t1.y - t0.y, e0z = t1.z - t0.z;
+    const e1x = t2.x - t1.x, e1y = t2.y - t1.y, e1z = t2.z - t1.z;
+    const e2x = t0.x - t2.x, e2y = t0.y - t2.y, e2z = t0.z - t2.z;
+    const c0x = (hx - t0.x), c0y = (hy - t0.y), c0z = (hz - t0.z);
+    const c1x = (hx - t1.x), c1y = (hy - t1.y), c1z = (hz - t1.z);
+    const c2x = (hx - t2.x), c2y = (hy - t2.y), c2z = (hz - t2.z);
+    const d0 = tn.x * (e0y * c0z - e0z * c0y) + tn.y * (e0z * c0x - e0x * c0z) + tn.z * (e0x * c0y - e0y * c0x);
+    const d1 = tn.x * (e1y * c1z - e1z * c1y) + tn.y * (e1z * c1x - e1x * c1z) + tn.z * (e1x * c1y - e1y * c1x);
+    const d2 = tn.x * (e2y * c2z - e2z * c2y) + tn.y * (e2z * c2x - e2x * c2z) + tn.z * (e2x * c2y - e2y * c2x);
+    return (d0 >= 0 && d1 >= 0 && d2 >= 0) || (d0 <= 0 && d1 <= 0 && d2 <= 0);
+};
+
+// Point-in-triangle test (point already assumed on the triangle's plane; tn is the unit normal).
+TriTri._pointInTri = function (hx, hy, hz, t0, t1, t2, tn) {
+    const e0x = t1.x - t0.x, e0y = t1.y - t0.y, e0z = t1.z - t0.z;
+    const e1x = t2.x - t1.x, e1y = t2.y - t1.y, e1z = t2.z - t1.z;
+    const e2x = t0.x - t2.x, e2y = t0.y - t2.y, e2z = t0.z - t2.z;
+    const c0x = hx - t0.x, c0y = hy - t0.y, c0z = hz - t0.z;
+    const c1x = hx - t1.x, c1y = hy - t1.y, c1z = hz - t1.z;
+    const c2x = hx - t2.x, c2y = hy - t2.y, c2z = hz - t2.z;
+    const d0 = tn.x * (e0y * c0z - e0z * c0y) + tn.y * (e0z * c0x - e0x * c0z) + tn.z * (e0x * c0y - e0y * c0x);
+    const d1 = tn.x * (e1y * c1z - e1z * c1y) + tn.y * (e1z * c1x - e1x * c1z) + tn.z * (e1x * c1y - e1y * c1x);
+    const d2 = tn.x * (e2y * c2z - e2z * c2y) + tn.y * (e2z * c2x - e2x * c2z) + tn.z * (e2x * c2y - e2y * c2x);
+    return (d0 >= 0 && d1 >= 0 && d2 >= 0) || (d0 <= 0 && d1 <= 0 && d2 <= 0);
+};
+
+// True if the two triangles lie flat against each other along a shared edge: at least two vertices
+// of one triangle sit on the other's plane (within EDGE_COINCIDENCE) and project inside it.
+TriTri._sharesCoincidentEdge = function (a0, a1, a2, nA, b0, b1, b2, nB) {
+    return TriTri._countOnPlane(b0, b1, b2, a0, a1, a2, nA) >= 2 ||
+        TriTri._countOnPlane(a0, a1, a2, b0, b1, b2, nB) >= 2;
+};
+TriTri._countOnPlane = function (p0, p1, p2, t0, t1, t2, tn) {
+    const pts = [p0, p1, p2];
+    let n = 0;
+    for (let i = 0; i < 3; i++) {
+        const p = pts[i];
+        const d = (p.x - t0.x) * tn.x + (p.y - t0.y) * tn.y + (p.z - t0.z) * tn.z;
+        if (d < -TriTri.EDGE_COINCIDENCE || d > TriTri.EDGE_COINCIDENCE) continue;
+        if (TriTri._pointInTri(p.x - d * tn.x, p.y - d * tn.y, p.z - d * tn.z, t0, t1, t2, tn)) n++;
+    }
+    return n;
+};
+
+// True if the two triangles genuinely interpenetrate (some edge of one pierces the interior of the
+// other). Coincident-edge / shared-boundary touching is NOT an intersection.
+TriTri._trianglesIntersect = function (a0, a1, a2, nA, b0, b1, b2, nB) {
+    return TriTri._segmentHitsTri(a0.x, a0.y, a0.z, a1.x, a1.y, a1.z, b0, b1, b2, nB) ||
+        TriTri._segmentHitsTri(a1.x, a1.y, a1.z, a2.x, a2.y, a2.z, b0, b1, b2, nB) ||
+        TriTri._segmentHitsTri(a2.x, a2.y, a2.z, a0.x, a0.y, a0.z, b0, b1, b2, nB) ||
+        TriTri._segmentHitsTri(b0.x, b0.y, b0.z, b1.x, b1.y, b1.z, a0, a1, a2, nA) ||
+        TriTri._segmentHitsTri(b1.x, b1.y, b1.z, b2.x, b2.y, b2.z, a0, a1, a2, nA) ||
+        TriTri._segmentHitsTri(b2.x, b2.y, b2.z, b0.x, b0.y, b0.z, a0, a1, a2, nA);
+};
+
+// out: array to push pooled ContactDetails into. Returns out on success (possibly empty, which
+// vetoes the GJK/EPA fallback), or null to fall through to GJK/EPA.
+TriTri.test = function (placedA, placedB, out, nextContact) {
+    const sA = placedA.shape, sB = placedB.shape;
+    const a0 = sA.a, a1 = sA.b, a2 = sA.c;
+    const b0 = sB.a, b1 = sB.b, b2 = sB.c;
+
+    const nA = TriTri._nA, nB = TriTri._nB;
+    if (!TriTri._normalInto(nA, a0, a1, a2)) return null;
+    if (!TriTri._normalInto(nB, b0, b1, b2)) return null;
+
+    const ndot = nA.x * nB.x + nA.y * nB.y + nA.z * nB.z;
+
+    if (ndot > TriTri.ANTIPARALLEL_DOT) {
+        // Not an opposing-face pair. The one case TriTri must actively suppress here is a NEARLY
+        // PERPENDICULAR pair that only shares a COINCIDENT EDGE and does not interpenetrate - e.g. a
+        // box's own top-face triangle and the vertical side-wall triangle it shares an edge with,
+        // when another box rests on that top face. GJK/EPA reports that shared edge as a "touch"
+        // with an arbitrary (often horizontal) normal, and mixed into the body-pair manifold it
+        // injects torque from nothing. Veto it (return the empty result, stopping the GJK/EPA
+        // fallback). Every other non-parallel pair - oblique facets of a curved mesh near a contact,
+        // genuine edge-first collisions - is left to GJK/EPA (return null).
+        if (Math.abs(ndot) < TriTri.PERPENDICULAR_DOT &&
+            TriTri._sharesCoincidentEdge(a0, a1, a2, nA, b0, b1, b2, nB) &&
+            !TriTri._trianglesIntersect(a0, a1, a2, nA, b0, b1, b2, nB)) {
+            return out;
+        }
+        return null;
+    }
+
+    // refN = triangle A's face normal, oriented to point FROM A's face TOWARD B (the A->B
+    // direction; the pipeline's B->A normal is its negation, applied at emit). A MeshShape's
+    // winding is not a reliable "outward" cue - inverted-winding meshes (used deliberately in the
+    // mesh tests) have their triangle normals pointing INTO the body. Resolve the sign from the two
+    // OWNING BODY centers when the midphase provided them (bodyCenter): they sit ~a body-width apart
+    // and never flicker, unlike the two exactly-flush face triangles' own out-of-plane offset,
+    // whose sign is float noise and would flip the contact normal tick to tick on a settled stack.
+    // Fall back to B's farthest vertex when the hint is absent (standalone TriangleShape bodies).
+    const refN = TriTri._refN;
+    refN.copy(nA);
+    const cenA = placedA.bodyCenter, cenB = placedB.bodyCenter;
+    if (cenA && cenB) {
+        if ((cenB.x - cenA.x) * nA.x + (cenB.y - cenA.y) * nA.y + (cenB.z - cenA.z) * nA.z < 0) refN.scaleInPlace(-1);
+    } else {
+        let farAbs = -1, farSigned = 0;
+        for (let k = 0; k < 3; k++) {
+            const v = k === 0 ? b0 : (k === 1 ? b1 : b2);
+            const d = (v.x - a0.x) * nA.x + (v.y - a0.y) * nA.y + (v.z - a0.z) * nA.z;
+            if (Math.abs(d) > farAbs) { farAbs = Math.abs(d); farSigned = d; }
+        }
+        if (farSigned < 0) refN.scaleInPlace(-1);
+    }
+
+    // Signed gap of B's centroid from A's plane along -refN (the penetrating side). Reject a pair
+    // that is clearly separated, or so deep it is no longer a face contact.
+    const cBx = (b0.x + b1.x + b2.x) / 3, cBy = (b0.y + b1.y + b2.y) / 3, cBz = (b0.z + b1.z + b2.z) / 3;
+    const centroidGap = -((cBx - a0.x) * refN.x + (cBy - a0.y) * refN.y + (cBz - a0.z) * refN.z);
+    if (centroidGap < -TriTri.SEPARATION_LIMIT || centroidGap > TriTri.PENETRATION_LIMIT) return null;
+
+    // Clip triangle B (incident) against triangle A's three edge half-planes, evaluated in A's
+    // plane. Each edge (a_i -> a_{i+1}) gives an inward half-plane with normal = refN x edge,
+    // oriented so A's opposite vertex is inside.
+    let poly = TriTri._polyIn, clipped = TriTri._polyOut;
+    poly[0].set(b0.x, b0.y, b0.z);
+    poly[1].set(b1.x, b1.y, b1.z);
+    poly[2].set(b2.x, b2.y, b2.z);
+    let polyCount = 3;
+
+    const aVerts = TriTri._aVerts;
+    aVerts[0] = a0; aVerts[1] = a1; aVerts[2] = a2;
+
+    for (let e = 0; e < 3; e++) {
+        const p = aVerts[e], q = aVerts[(e + 1) % 3], r = aVerts[(e + 2) % 3];
+        const ex = q.x - p.x, ey = q.y - p.y, ez = q.z - p.z;
+        // Inward normal of this edge's half-plane, lying in A's plane.
+        let hx = refN.y * ez - refN.z * ey;
+        let hy = refN.z * ex - refN.x * ez;
+        let hz = refN.x * ey - refN.y * ex;
+        // Orient so the third vertex r is on the positive side.
+        if ((r.x - p.x) * hx + (r.y - p.y) * hy + (r.z - p.z) * hz < 0) { hx = -hx; hy = -hy; hz = -hz; }
+
+        let outCount = 0;
+        for (let c = 0; c < polyCount; c++) {
+            const cur = poly[c], next = poly[(c + 1) % polyCount];
+            const curD = (cur.x - p.x) * hx + (cur.y - p.y) * hy + (cur.z - p.z) * hz;
+            const nextD = (next.x - p.x) * hx + (next.y - p.y) * hy + (next.z - p.z) * hz;
+            const curIn = curD >= 0, nextIn = nextD >= 0;
+            if (curIn) clipped[outCount++].copy(cur);
+            if (curIn !== nextIn) {
+                const t = curD / (curD - nextD);
+                clipped[outCount++].set(
+                    cur.x + (next.x - cur.x) * t,
+                    cur.y + (next.y - cur.y) * t,
+                    cur.z + (next.z - cur.z) * t
+                );
+            }
+        }
+        polyCount = outCount;
+        const swap = poly; poly = clipped; clipped = swap;
+        if (polyCount < 3) return null; // no in-plane overlap area - GJK/EPA can still report a gap
+    }
+
+    // Reject a sliver overlap (glancing edge touch between two parallel triangles): fan-triangulate
+    // the clipped polygon and sum the area.
+    let area2 = 0;
+    for (let c = 1; c < polyCount - 1; c++) {
+        const p0 = poly[0], p1 = poly[c], p2 = poly[c + 1];
+        const ux = p1.x - p0.x, uy = p1.y - p0.y, uz = p1.z - p0.z;
+        const vx = p2.x - p0.x, vy = p2.y - p0.y, vz = p2.z - p0.z;
+        const cx = uy * vz - uz * vy, cy = uz * vx - ux * vz, cz = ux * vy - uy * vx;
+        area2 += Math.sqrt(cx * cx + cy * cy + cz * cz);
+    }
+    if (area2 * 0.5 < TriTri.MIN_AREA) return null;
+
+    // Emit one contact per surviving polygon vertex, keeping only points near A's plane (a real or
+    // imminent face contact). refN points A->B, so `below` = distance on the -refN side of A's
+    // plane is the penetration; negative `below` = still separated.
+    let emitted = 0;
+    for (let c = 0; c < polyCount; c++) {
+        const pt = poly[c];
+        const below = -((pt.x - a0.x) * refN.x + (pt.y - a0.y) * refN.y + (pt.z - a0.z) * refN.z);
+        if (below < -TriTri.SEPARATION_LIMIT || below > TriTri.PENETRATION_LIMIT) continue;
+
+        const contact = nextContact();
+        // Incident witness = the clipped vertex (on/near B's front). Reference witness = that point
+        // pushed back onto A's plane along -refN (refN points A->B, so A's surface is `below` behind
+        // the incident point in the -refN direction... i.e. + refN * below lands back on the plane).
+        contact.pointOnB.set(pt.x, pt.y, pt.z);
+        contact.pointOnA.set(pt.x + refN.x * below, pt.y + refN.y * below, pt.z + refN.z * below);
+        // Pipeline convention: normal points B -> A. refN points A -> B, so negate.
+        contact.normal.set(-refN.x, -refN.y, -refN.z);
+        contact.signedDistance = below;
+        contact.fromMeshFace = true; // enables the manifold's shared-corner coincidence merge
+        Vector3.addInto(contact.point, contact.pointOnA, contact.pointOnB).scaleInPlace(0.5);
+        out.push(contact);
+        emitted++;
+    }
+
+    if (emitted === 0) return null;
+    return out;
+};
+
+TriTri._nA = new Vector3();
+TriTri._nB = new Vector3();
+TriTri._refN = new Vector3();
+TriTri._aVerts = [null, null, null];
+// Sutherland-Hodgman ping-pong buffers. Clipping a triangle by 3 half-planes yields at most 6
+// vertices; 8 slots for headroom.
+TriTri._polyIn = [new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3()];
+TriTri._polyOut = [new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3()];
+
+ActionPhysics.TriTri = TriTri;
+
+
 // ==== src/phases/PairTest.js ====
 // Per-tick pair dispatch and GJK/EPA testing for one primitive-shape pair.
 var proto = NarrowPhase.prototype;
 
 proto._nextPooledContact = function () {
     if (this._poolIndex >= this._contactPool.length) this._contactPool.push(new ContactDetails());
-    return this._contactPool[this._poolIndex++];
+    const c = this._contactPool[this._poolIndex++];
+    c.fromMeshFace = false; // opt-in flag; only TriTri sets it (see Reduction.js's coincidence merge)
+    return c;
 };
 
 // broadphasePairs: [[bodyA, bodyB], ...]. midphase expands compound/mesh pairs to primitives.
@@ -6228,6 +6557,14 @@ proto._testPrimitivePair = function (placedA, placedB) {
         // closed-form test.
         const boxResult = BoxBox.test(placedA, placedB, results, function () { return self._nextPooledContact(); });
         if (boxResult !== null) return results;
+    }
+
+    if (TriTri.applies(placedA, placedB)) {
+        const self = this;
+        // null = not a face pair (edge/point feature, or too far apart) - fall through to GJK/EPA,
+        // same contract as BoxBox.test's null return above.
+        const triResult = TriTri.test(placedA, placedB, results, function () { return self._nextPooledContact(); });
+        if (triResult !== null) return results;
     }
 
     const contact = this._nextPooledContact();
@@ -6727,7 +7064,7 @@ var proto = Solver.prototype;
 
 // A box-on-box flat face contact reports up to 4 coplanar points sharing one normal. Solving
 // restitution and friction point-by-point (Gauss-Seidel) over that patch is what fabricates lateral
-// drift on a perfectly symmetric drop (box-box/single): each point's off-centre normal impulse spins
+// drift on a perfectly symmetric drop (box-box/single): each point's off-center normal impulse spins
 // the body a hair, the next point reads the spun state, and the four impulses no longer cancel - the
 // residual spin then couples through friction into a net sideways velocity. For that ONE case - both
 // shapes actual BoxShapes, every engaged point sharing a single normal (a genuine face patch) - the
@@ -7083,7 +7420,7 @@ class IslandManager {
      * Updates the sleep state of every dynamic body in `bodies`, using this tick's `manifolds`
      * (a ContactManifoldList) and `constraints` (the world's joint list) for connectivity, advancing
      * timers by `dt`. Parks islands that have been quiet long enough; wakes any body that a moving
-     * static/kinematic neighbour or an already-awake dynamic neighbour keeps in motion.
+     * static/kinematic neighbor or an already-awake dynamic neighbor keeps in motion.
      *
      * After this runs, a body with isAwake === false is one the solver may skip entirely this tick.
      */
@@ -7092,7 +7429,7 @@ class IslandManager {
         this._islands.clear();
 
         // 1. Seed the forest with every DYNAMIC body as its own singleton. Static/kinematic bodies
-        //    are intentionally never seeded - they cannot sleep and must not link their neighbours.
+        //    are intentionally never seeded - they cannot sleep and must not link their neighbors.
         for (let i = 0; i < bodies.length; i++) {
             const b = bodies[i];
             if (b.bodyType === RigidBody.DYNAMIC) this._ensure(b.id);
@@ -7127,8 +7464,8 @@ class IslandManager {
         const forcedAwake = new Set();
         for (const manifold of manifolds.values()) {
             const a = manifold.bodyA, b = manifold.bodyB;
-            IslandManager._maybeForceAwakeFromNeighbour(a, b, forcedAwake);
-            IslandManager._maybeForceAwakeFromNeighbour(b, a, forcedAwake);
+            IslandManager._maybeForceAwakeFromNeighbor(a, b, forcedAwake);
+            IslandManager._maybeForceAwakeFromNeighbor(b, a, forcedAwake);
         }
 
         // 5. Group dynamic bodies by island root, and record each body's own quietness (below BOTH
@@ -7171,11 +7508,11 @@ class IslandManager {
     }
 
     // A dynamic `body` in contact with `other` must be forced awake if `other` is a KINEMATIC body
-    // that is itself moving, or a DYNAMIC body that is currently awake - either way the neighbour is
-    // about to impart motion this body cannot anticipate while asleep. A static neighbour, or a
+    // that is itself moving, or a DYNAMIC body that is currently awake - either way the neighbor is
+    // about to impart motion this body cannot anticipate while asleep. A static neighbor, or a
     // sleeping dynamic one, is not a forcing influence (that is the whole point of a body being able
     // to rest on top of another sleeping body).
-    static _maybeForceAwakeFromNeighbour(body, other, forcedAwake) {
+    static _maybeForceAwakeFromNeighbor(body, other, forcedAwake) {
         if (body.bodyType !== RigidBody.DYNAMIC) return;
         if (other.bodyType === RigidBody.KINEMATIC) {
             if (!IslandManager._isQuiet(other)) forcedAwake.add(body.id);
@@ -9234,15 +9571,15 @@ ActionPhysics.FPSCharacterController = FPSCharacterController;
 // FPS_CONTROLLER_DEFAULTS); they are implementation tolerances kept named here so nothing is a bare literal
 // at a use site. Changing them changes solver behavior — treat as internals, not tuning.
 FPSCharacterController.FPSC = {
-    // Contact tolerances (metres, multiplied by the character scale where used).
+    // Contact tolerances (meters, multiplied by the character scale where used).
     SKIN: 0.01,               // sweep/contact skin width
     GROUND_TOL: 0.1,          // how close the feet must be to a surface to count as grounded
     GHOST_GROUND_INSET: 0.25, // fraction of height the ghost's bottom is lifted above the feet
 
     // "Effectively zero" epsilons — vector/speed magnitudes below which we treat a quantity as null.
     EPS_LEN: 1e-4,            // general length/normal guard
-    EPS_DIR: 1e-5,            // direction-normalisation guard
-    EPS_SPD: 1e-6,            // speed-normalisation guard
+    EPS_DIR: 1e-5,            // direction-normalization guard
+    EPS_SPD: 1e-6,            // speed-normalization guard
     EPS_INPUT2: 1e-10,        // squared move-input threshold (has-input test)
     EPS_SPEED_MARGIN: 1e-3,   // speed must exceed a target by this to count as "above" it
 
@@ -9290,7 +9627,7 @@ FPSCharacterController.FPSC = {
 
     // Sweep sub-stepping + wall interaction.
     SUBSTEP_FRAC: 0.5,        // sub-step length as a fraction of the smallest half-extent
-    NEAR_CENTER_FRAC: 0.4,    // "hit near my centre" band as a fraction of width
+    NEAR_CENTER_FRAC: 0.4,    // "hit near my center" band as a fraction of width
     PUSH_INTO_MIN: 0.5,       // dot(vel, toHit) above this = actively moving into a contact
 
     // Wall clip / step-up / depenetration.

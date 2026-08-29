@@ -4,6 +4,29 @@
 var proto = ContactManifold.prototype;
 
 proto._addPoint = function (contact) {
+    // Coincidence merge for MESH face contacts only. A mesh face contact arrives as several
+    // triangle-vs-triangle sub-contacts (see TriTri.js); adjacent triangles legitimately report the
+    // SAME shared corner - the two triangles of a box's bottom face each put a point on both
+    // corners along their shared diagonal. Left in, those near-duplicate corners bias the 4-point
+    // reduction toward one edge and inject torque into a flat rest. Scoped to contacts flagged
+    // `fromMeshFace` so closed-form BoxBox / primitive manifolds (which are already deduped and
+    // whose point spread is load-bearing, e.g. a box tumbling down a ramp) are untouched.
+    if (contact.fromMeshFace) for (let i = 0; i < this.points.length; i++) {
+        const ex = this.points[i];
+        if (!ex.fromMeshFace) continue;
+        const dx = ex.point.x - contact.point.x, dy = ex.point.y - contact.point.y, dz = ex.point.z - contact.point.z;
+        if (dx * dx + dy * dy + dz * dz > ContactManifold.COINCIDENCE_DIST * ContactManifold.COINCIDENCE_DIST) continue;
+        if (ex.normal.x * contact.normal.x + ex.normal.y * contact.normal.y + ex.normal.z * contact.normal.z < 0.99) continue;
+        if (contact.signedDistance > ex.signedDistance) {
+            const keepN = ex.normalLambda, keepT1 = ex.tangentLambda1, keepT2 = ex.tangentLambda2;
+            ex.copy(contact);
+            ex.normalLambda = keepN; ex.tangentLambda1 = keepT1; ex.tangentLambda2 = keepT2;
+            ex.setLocalAnchors(this.bodyA, this.bodyB);
+            ContactManifold._toLocal(this.bodyA, ex.pointOnA, this._localAnchors[i]);
+        }
+        return;
+    }
+
     const point = contact.clone();
     point.normalLambda = 0; point.tangentLambda1 = 0; point.tangentLambda2 = 0; // fresh: no warm-start data
     point.setLocalAnchors(this.bodyA, this.bodyB);

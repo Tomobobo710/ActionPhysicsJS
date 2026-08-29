@@ -21,7 +21,7 @@ class NarrowPhase {
     }
 }
 
-// Base speculative margin (metres) - see SpeculativeMargin.js.
+// Base speculative margin (meters) - see SpeculativeMargin.js.
 NarrowPhase.SPECULATIVE_BASE = 0.02;
 
 ActionPhysics.NarrowPhase = NarrowPhase;
