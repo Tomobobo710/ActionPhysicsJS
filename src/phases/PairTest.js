@@ -79,6 +79,14 @@ proto._testPrimitivePair = function (placedA, placedB) {
         if (triResult !== null) return results;
     }
 
+    if (ConvexTri.applies(placedA, placedB)) {
+        const self = this;
+        // null = not a face contact (convex off the triangle, or gap outside the band); fall
+        // through to GJK/EPA (same contract as BoxBox.test / TriTri.test above).
+        const ctResult = ConvexTri.test(placedA, placedB, results, function () { return self._nextPooledContact(); });
+        if (ctResult !== null) return results;
+    }
+
     const contact = this._nextPooledContact();
     const support = this._support.setSides(placedA, placedB);
     const gjkResult = this._gjk.run(support);

@@ -29,10 +29,14 @@ if (!fs.existsSync(buildFile)) {
 var stampLine = fs.readFileSync(buildFile, 'utf8').split(/\r?\n/)[0];
 console.log(stampLine.replace(/^\/\/\s*/, '=== ') + ' ===');
 
-// Skipped from headless runs: the two perf-settle scenes are pure timing benchmarks, not pass/fail
-// correctness tests, and dominate wall-clock time; skipped by explicit standing instruction until
-// told otherwise. The files are untouched, just unloaded here; remove an entry to fold it back into
+// Skipped from headless runs: perf-settle-scene.js is a pure timing benchmark, not a pass/fail
+// correctness test, and dominates wall-clock time; skipped by explicit standing instruction until
+// told otherwise. The file is untouched, just unloaded here; remove the entry to fold it back into
 // every run.
+//
+// perf-settle-scene-compound.js was skipped here for the same reason, but now carries a hard assert
+// (no prop tunnels through the compound ground, none slides off the map edge) — folded back in as a
+// scale correctness test for compound-vs-mesh contact, despite the ~7s wall-clock cost.
 //
 // pyramid.js (385-box pyramid, 1200 ticks) was skipped here too while box-box fell through to
 // GJK/EPA's single-point contacts and the perf was untenable for routine runs. Box-box now has its
@@ -45,7 +49,6 @@ console.log(stampLine.replace(/^\/\/\s*/, '=== ') + ' ===');
 // site lands - fold it back in by removing this entry.
 var SKIP_FILES = {
 	'perf-settle-scene.js': true,
-	'perf-settle-scene-compound.js': true,
 	'sleep.js': true,
 };
 

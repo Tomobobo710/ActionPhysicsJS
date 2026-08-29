@@ -83,6 +83,28 @@
 		var phase = 'falling';
 		var settleDeclaredAt = null;
 
+		// The ground is a heightfield: each tile sits at h(x,z) = sin(x·0.05)·0.6 + cos(z·0.05)·0.6,
+		// so the surface genuinely dips to about -1.2 in places and a prop correctly at rest on a
+		// low tile has its origin below Y=0. "Fell through the floor" therefore means below the
+		// LOCAL tile surface by more than any resting prop could account for (biggest half-extent
+		// ~0.55, plus solver slop) — a tunnelled prop free-falls to large negative Y, far past this.
+		// Laterally, props spawn within 0.9 * half the map; anything past the map edge plus a tile
+		// has slid off the side.
+		var tileHeightAt = function (x, z) { return Math.sin(x * 0.05) * 0.6 + Math.cos(z * 0.05) * 0.6; };
+		var FLOOR_MARGIN = 2;
+		var LATERAL_LIMIT = halfExtent + 5;
+
+		var worstY = Infinity;
+		var worstYBody = -1;
+		var worstYTick = -1;
+		// How far the worst-offending prop is below its LOCAL tile surface (positive = below).
+		var worstBelowTile = -Infinity;
+		var worstBelowTileBody = -1;
+		var worstBelowTileTick = -1;
+		var worstLateral = 0;
+		var worstLateralBody = -1;
+		var worstLateralTick = -1;
+
 		var lastStepMs = 0;
 		var now = function () { return (typeof performance !== 'undefined' ? performance.now() : Date.now()); };
 		var origStep = w.step.bind(w);
@@ -97,6 +119,15 @@
 		t.onTick(function (world, tick) {
 			lastTick = tick;
 			if (tick === 1) { t.log('Tick 1: bodies released.'); }
+
+			for (var wi = 0; wi < bodies.length; wi++) {
+				var p = bodies[wi].position;
+				if (p.y < worstY) { worstY = p.y; worstYBody = wi; worstYTick = tick; }
+				var below = tileHeightAt(p.x, p.z) - p.y;
+				if (below > worstBelowTile) { worstBelowTile = below; worstBelowTileBody = wi; worstBelowTileTick = tick; }
+				var lat = Math.max(Math.abs(p.x), Math.abs(p.z));
+				if (lat > worstLateral) { worstLateral = lat; worstLateralBody = wi; worstLateralTick = tick; }
+			}
 
 			var manifoldCount = world.narrowphase.manifolds.size;
 			if (phase === 'falling' && manifoldCount > 0) {
@@ -119,6 +150,20 @@
 					t.log('Tick ' + tick + ': every body is effectively at rest (|v|<0.1, |w|<0.1). Entering the settled phase — this is the steady-state cost tests/bench/compound-children-perf.js reports, and it never drops from here (no sleep system): every resting body still gets a full solve pass, every frame, forever.');
 				}
 			}
+		});
+
+		t.expect('no prop fell through the heightfield floor or slid off the map', function (world) {
+			// Only decide at the end. worstBelowTile/worstLateral accumulate across every tick
+			// (see the onTick hook); checking earlier would latch a pass on tick 1, before
+			// anything has fallen, and never re-evaluate.
+			if (lastTick < TOTAL_TICKS) return { ok: false, detail: 'still running (tick ' + lastTick + '/' + TOTAL_TICKS + ')' };
+			var detail = 'worst dip below local tile=' + worstBelowTile.toFixed(2) + ' (body #' + worstBelowTileBody +
+				' @ tick ' + worstBelowTileTick + ', limit=' + FLOOR_MARGIN.toFixed(2) + ')  lowest absolute Y=' + worstY.toFixed(2) +
+				' (body #' + worstYBody + ' @ tick ' + worstYTick + ')' +
+				'  max lateral=' + worstLateral.toFixed(2) + ' (body #' + worstLateralBody + ' @ tick ' + worstLateralTick + ', limit=' + LATERAL_LIMIT.toFixed(2) + ')';
+			if (worstBelowTile > FLOOR_MARGIN) return { ok: false, detail: 'FELL THROUGH FLOOR: ' + detail };
+			if (worstLateral > LATERAL_LIMIT) return { ok: false, detail: 'SLID OFF MAP: ' + detail };
+			return { ok: true, detail: detail };
 		});
 
 		t.expect('scene ran to completion (this test is for watching, not asserting)', function (world) {
