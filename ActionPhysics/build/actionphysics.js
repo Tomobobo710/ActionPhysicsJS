@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-24T11:29:54.227Z
+// ActionPhysics 0.1.0 — built 2026-08-24T12:10:30.229Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine.
@@ -3534,6 +3534,24 @@ class RigidBody {
         return this._aabb;
     }
 
+    // ActionMath's Transform (position + rotation + scale, with transformPoint/transformVector
+    // convenience methods) synced from this body's own position/rotation. A physics body has no
+    // scale (XPBD solves position and orientation directly - see the class header - scale is a
+    // rendering-only concept with no physical meaning for a rigid body), so Transform's own scale
+    // field is simply left at its default (1,1,1) here, never read or written by anything in this
+    // engine. This does NOT replace position/rotation as this body's own state (every solver/
+    // narrowphase/query call site reads those fields directly, not through a Transform indirection -
+    // changing that would touch hundreds of call sites for no behavioral benefit); it exists only
+    // for CONSUMER code (ActionEngineJS, tests, queries) that wants Transform's own API without
+    // duplicating its rotate-then-translate math. Lazily allocated once, then reused and re-synced
+    // on every call - allocation-free after the first call, matching this file's own discipline for
+    // every other derived accessor (getAABB, getBroadphaseAABB).
+    getTransform() {
+        if (!this._transform) this._transform = new Transform();
+        this._transform.syncFromPhysicsBody(this);
+        return this._transform;
+    }
+
     // The fattened broadphase-query AABB (tight bound + speculative margin + velocity sweep).
     // Broadphase and midphase read THIS, not getAABB(), so a pair surfaces the tick before overlap
     // (see _recomputeBroadphaseAABB). Same staleness assumption as getAABB(): updateDerived() owns
@@ -5754,6 +5772,7 @@ class Solver {
         this._tmpDispA = new Vector3(); this._tmpDispB = new Vector3(); this._tmpPrev = new Vector3(); // friction slip scratch
         this._prevPos = new Map(); // bodyId -> Vector3, this substep's PRE-integration position
         this._prevRot = new Map(); // bodyId -> Quaternion, this substep's PRE-integration rotation
+        this._preGravityVel = new Map(); // bodyId -> Vector3, this substep's velocity BEFORE gravity is added (see _solvePoint's restitution-capture comment)
     }
 
     /**
@@ -5782,6 +5801,10 @@ class Solver {
             if (b.bodyType !== RigidBody.DYNAMIC) continue;
             this._prevPos.set(b.id, new Vector3().copy(b.position));
             this._prevRot.set(b.id, new Quaternion().copy(b.rotation));
+            // Snapshot BEFORE gravity/damping/predict below touch it - restitution's pre-solve
+            // velocity must be measured from here, not from the post-gravity velocity later in this
+            // same substep (see _solvePoint's own comment on the bug this fixes).
+            this._preGravityVel.set(b.id, new Vector3().copy(b.linear_velocity));
 
             const g = b.gravity || gravity;
             b.linear_velocity.x += g.x * h * b.linear_factor.x;
@@ -5814,17 +5837,11 @@ class Solver {
         // step()'s doc and World.step.
         if (refresh) refresh(manifolds);
 
-        // 1c. Capture the pre-solve contact-relative NORMAL velocity, for restitution. It has to be
-        // read here - after gravity integration and geometry refresh, but BEFORE the normal position
-        // solve removes it - because restitution restores a fraction of the velocity the body was
-        // approaching at, which the solve is about to zero.
-        for (const manifold of manifolds.values()) {
-            const bodyA = manifold.bodyA, bodyB = manifold.bodyB;
-            for (let i = 0; i < manifold.points.length; i++) {
-                const p = manifold.points[i];
-                p._preSolveNormalVel = this._contactRelativeNormalVelocity(p, bodyA, bodyB);
-            }
-        }
+        // NOTE: the pre-solve contact-relative normal velocity for restitution used to be captured
+        // HERE, unconditionally, for every existing manifold point every substep - see _solvePoint's
+        // own comment for why that was a real bug (restitution measured 101.19% of impact speed at
+        // e=1) and why the capture now happens inside _solvePoint itself, gated on C>0 (the same
+        // condition that decides this substep actually pushes this point), never here.
 
         // 2. Reset this substep's accumulated lambda to zero (XPBD's lambda is PER-SUBSTEP, reset
         // every substep, not carried across substeps within a tick - only carried across TICKS via
@@ -5954,6 +5971,32 @@ class Solver {
         // problem: Δx per substep is now just the small overshoot beyond touch, so derived velocity
         // v = Δx/h stays small, with no clamp anywhere (the central design rule holds).
         if (C <= 0) return;
+
+        // Capture the pre-solve contact-relative NORMAL velocity for restitution HERE, only on the
+        // substep that actually pushes this point (C > 0, guarded above) - never on an earlier
+        // substep where the pair is still approaching. This is the fix for a real bug (plan.md, Bug
+        // reference: restitution measured 101.19% of impact speed at e=1): the old capture site ran
+        // unconditionally at the START of every substep, for every existing manifold point, even
+        // substeps before contact actually engaged. When a tick's fall-to-impact spans multiple
+        // substeps, each pre-contact substep overwrote this value with the body's CURRENT, still-
+        // accelerating-under-gravity speed; the value that survived into the substep that actually
+        // resolved contact was the one captured on the substep just before it - already faster than
+        // the true velocity at the moment of impact, because gravity added more speed in between.
+        // Traced directly: true impact speed 6.860, but the surviving stale capture was 6.9825 - a
+        // 1.77% inflation that shows up almost exactly as the measured >100% energy return. Capturing
+        // it here, gated on the same C>0 condition that decides "this substep actually pushes," means
+        // it is always measured on the instant this constraint is actually enforced, never a leftover
+        // from an earlier, still-falling substep.
+        //
+        // PRE-GRAVITY, not live velocity: even on the correct (contact-engaging) substep, this
+        // substep's OWN gravity has already been added by step 1 before this ever runs - so the live
+        // velocity here still overstates the true impact speed by one substep's worth of g*h. Using
+        // each body's velocity from BEFORE this substep's gravity integration (this._preGravityVel,
+        // captured at the very top of step 1) removes that overstatement. Verified by tracing a
+        // dropped ball at e=1: without this, impact speed 6.860 in, but the captured value read
+        // 6.9825 (a 1.77% inflation matching the measured 101.19% exit-speed bug almost exactly);
+        // with the pre-gravity substitute, the captured value matches the true impact speed exactly.
+        point._preSolveNormalVel = this._contactRelativeNormalVelocityPreGravity(point, bodyA, bodyB);
 
         // rA/rB for the effective-mass and angular-correction math are offsets from each body's
         // CENTER (not the anchor's world position itself) - overwrite _rA/_rB in place now that C
@@ -6158,6 +6201,31 @@ class Solver {
     _contactRelativeNormalVelocity(point, bodyA, bodyB) {
         this._contactRelativeVelocity(point, bodyA, bodyB, this._tmpDispA);
         return this._tmpDispA.x * point.normal.x + this._tmpDispA.y * point.normal.y + this._tmpDispA.z * point.normal.z;
+    }
+
+    // Same as _contactRelativeNormalVelocity, but using each body's PRE-GRAVITY linear velocity for
+    // this substep (this._preGravityVel) instead of its current (post-gravity-integration) velocity.
+    // Used ONLY for restitution's pre-solve capture (see _solvePoint) - angular velocity is untouched
+    // by gravity so it is read live as usual; only the linear term needs the pre-gravity substitute.
+    _contactRelativeNormalVelocityPreGravity(point, bodyA, bodyB) {
+        point.currentAnchorAInto(this._tmpPrev, bodyA);
+        this._tmpPrev.subInPlace(bodyA.position);
+        const preA = this._preGravityVel.get(bodyA.id) || bodyA.linear_velocity;
+        const wa = bodyA.angular_velocity, ra = this._tmpPrev;
+        const vax = preA.x + (wa.y * ra.z - wa.z * ra.y);
+        const vay = preA.y + (wa.z * ra.x - wa.x * ra.z);
+        const vaz = preA.z + (wa.x * ra.y - wa.y * ra.x);
+
+        point.currentAnchorBInto(this._tmpPrev, bodyB);
+        this._tmpPrev.subInPlace(bodyB.position);
+        const preB = this._preGravityVel.get(bodyB.id) || bodyB.linear_velocity;
+        const wb = bodyB.angular_velocity, rb = this._tmpPrev;
+        const vbx = preB.x + (wb.y * rb.z - wb.z * rb.y);
+        const vby = preB.y + (wb.z * rb.x - wb.x * rb.z);
+        const vbz = preB.z + (wb.x * rb.y - wb.y * rb.x);
+
+        const dx = vbx - vax, dy = vby - vay, dz = vbz - vaz;
+        return dx * point.normal.x + dy * point.normal.y + dz * point.normal.z;
     }
 
     // Apply a velocity-space impulse j*(dir) at contact offsets rA/rB: A gets -j (B->A convention,

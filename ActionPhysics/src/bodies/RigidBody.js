@@ -200,6 +200,24 @@ class RigidBody {
         return this._aabb;
     }
 
+    // ActionMath's Transform (position + rotation + scale, with transformPoint/transformVector
+    // convenience methods) synced from this body's own position/rotation. A physics body has no
+    // scale (XPBD solves position and orientation directly - see the class header - scale is a
+    // rendering-only concept with no physical meaning for a rigid body), so Transform's own scale
+    // field is simply left at its default (1,1,1) here, never read or written by anything in this
+    // engine. This does NOT replace position/rotation as this body's own state (every solver/
+    // narrowphase/query call site reads those fields directly, not through a Transform indirection -
+    // changing that would touch hundreds of call sites for no behavioral benefit); it exists only
+    // for CONSUMER code (ActionEngineJS, tests, queries) that wants Transform's own API without
+    // duplicating its rotate-then-translate math. Lazily allocated once, then reused and re-synced
+    // on every call - allocation-free after the first call, matching this file's own discipline for
+    // every other derived accessor (getAABB, getBroadphaseAABB).
+    getTransform() {
+        if (!this._transform) this._transform = new Transform();
+        this._transform.syncFromPhysicsBody(this);
+        return this._transform;
+    }
+
     // The fattened broadphase-query AABB (tight bound + speculative margin + velocity sweep).
     // Broadphase and midphase read THIS, not getAABB(), so a pair surfaces the tick before overlap
     // (see _recomputeBroadphaseAABB). Same staleness assumption as getAABB(): updateDerived() owns
