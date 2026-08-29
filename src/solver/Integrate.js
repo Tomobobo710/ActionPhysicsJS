@@ -1,5 +1,4 @@
-// Phase 1: integrate velocity (gravity, forces, damping) and predict position for every dynamic
-// body this substep, plus rotation integration and the angular velocity helpers used elsewhere.
+// Integrate velocity and predict position each substep, plus the rotation helpers.
 var proto = Solver.prototype;
 
 proto._integrate = function (bodies, gravity, h) {
@@ -12,8 +11,7 @@ proto._integrate = function (bodies, gravity, h) {
         const bias = this._biasDelta.get(b.id) || new Vector3();
         bias.set(0, 0, 0);
         this._biasDelta.set(b.id, bias);
-        // Snapshot before gravity/damping touch it - restitution's pre-solve velocity reads this,
-        // not the post-gravity value (see PositionSolve.js's restitution capture).
+        // Pre-gravity snapshot; restitution's pre-solve velocity reads this.
         this._preGravityVel.set(b.id, new Vector3().copy(b.linear_velocity));
 
         const g = b.gravity || gravity;
@@ -40,9 +38,8 @@ proto._integrate = function (bodies, gravity, h) {
 
         b.position.addScaledInPlace(b.linear_velocity, h);
         Solver._integrateRotation(b.rotation, b.angular_velocity, h);
-        // Inertia tensor depends on rotation, which just changed - refresh so this substep's
-        // effective-mass/angular-correction math uses the current orientation.
-        b._recomputeWorldInverseInertia();
+        b._recomputeWorldInverseInertia(); // rotation changed
+
     }
 };
 
@@ -53,8 +50,7 @@ proto._deriveVelocities = function (bodies, h) {
         const prevPos = this._prevPos.get(b.id);
         const prevRot = this._prevRot.get(b.id);
         const bias = this._biasDelta.get(b.id);
-        // Bias-only motion (see PositionSolve.js) is excluded here so a body that only moved from
-        // a bias nudge derives zero velocity from that nudge.
+        // Bias-only motion (PositionSolve.js) is excluded so it derives no velocity.
         b.linear_velocity.x = (b.position.x - prevPos.x - bias.x) / h;
         b.linear_velocity.y = (b.position.y - prevPos.y - bias.y) / h;
         b.linear_velocity.z = (b.position.z - prevPos.z - bias.z) / h;

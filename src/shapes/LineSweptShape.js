@@ -1,8 +1,5 @@
-// A shape swept along a line segment from `start` to `end` (LOCAL-space points): the Minkowski sum
-// of `shape` with that segment. Used for continuous-collision / swept queries
-// without a dedicated CCD solver: the query just asks
-// "does this swept volume touch anything", which is a support function away once the base shape
-// has one.
+// `shape` swept along a local-space segment start->end (Minkowski sum with the segment). Used for
+// swept queries.
 class LineSweptShape extends Shape {
     constructor(shape, start, end) {
         super('lineswept');

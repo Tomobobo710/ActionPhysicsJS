@@ -1,10 +1,8 @@
 // Support point, transform sync, ray cast, and event listeners.
 var proto = RigidBody.prototype;
 
-// A Transform (position + rotation + scale) synced from this body's own position/rotation, for
-// consumer code (tests, queries) that wants Transform's own API. Does not replace position/rotation
-// as this body's real state - every solver/narrowphase/query call site reads those fields directly.
-// Lazily allocated once, then reused and re-synced on every call.
+// A Transform synced from this body's position/rotation, for consumers wanting Transform's API.
+// The body's real state stays in position/rotation. Lazily allocated, re-synced per call.
 proto.getTransform = function () {
     if (!this._transform) this._transform = new Transform();
     this._transform.syncFromPhysicsBody(this);

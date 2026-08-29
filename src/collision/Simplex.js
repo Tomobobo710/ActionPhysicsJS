@@ -1,5 +1,5 @@
-// Simplex reduction: closest point to the origin for a 2/3/4-point simplex, with explicit
-// degenerate fallbacks (never NaN, never a discard) - the flush-contact fix.
+// Simplex reduction: closest point to the origin for a 2/3/4-point simplex, with degenerate
+// fallbacks so a flush contact never produces NaN.
 var proto = GJK.prototype;
 
 // Dispatches by point count; a 4-point simplex either encloses the origin or reduces to a triangle.

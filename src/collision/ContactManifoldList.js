@@ -1,5 +1,5 @@
-// Active ContactManifolds, keyed by canonical body-pair id. One manifold per pair; refresh() runs
-// once per tick, prunes any manifold left with zero points.
+// One ContactManifold per body pair, keyed by canonical id. refresh() runs once per tick and
+// prunes any manifold left with zero points.
 class ContactManifoldList {
     constructor() {
         this._manifolds = new Map(); // "idA:idB" (idA < idB) -> ContactManifold
@@ -9,8 +9,7 @@ class ContactManifoldList {
         return bodyA.id < bodyB.id ? bodyA.id + ':' + bodyB.id : bodyB.id + ':' + bodyA.id;
     }
 
-    // Canonical body order (lower id = bodyA) so local-space matching stays consistent regardless
-    // of caller argument order.
+    // Lower id becomes bodyA, so local-space matching is stable regardless of argument order.
     getOrCreate(bodyA, bodyB) {
         const key = ContactManifoldList._key(bodyA, bodyB);
         let m = this._manifolds.get(key);
@@ -23,15 +22,14 @@ class ContactManifoldList {
         return m;
     }
 
-    // contactsByPair: key -> ContactDetails[] for this tick. A pair with no entry is treated as empty.
-    // dt: this tick's timestep, used to size the match-distance tolerance (see Update.js).
+    // contactsByPair: key -> ContactDetails[] for this tick (missing = empty). Callers create new
+    // pairs via getOrCreate() before this runs.
     refresh(contactsByPair, dt) {
         for (const [key, manifold] of this._manifolds) {
             const contacts = contactsByPair.get(key) || [];
             manifold.update(contacts, dt);
             if (manifold.pointCount === 0) this._manifolds.delete(key);
         }
-        // New pairs are created via getOrCreate() by the caller before refresh() runs.
     }
 
     values() {

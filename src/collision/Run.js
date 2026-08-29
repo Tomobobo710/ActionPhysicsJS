@@ -12,9 +12,8 @@ proto.run = function (support, maxIterations) {
     maxIterations = maxIterations || 64;
     this._clear();
 
-    // Seed a tetrahedron from diverse directions rather than growing one incrementally - see
-    // Seeding.js for why. If no seed set encloses, its best reduction becomes the incremental
-    // loop's starting point below.
+    // Seed a tetrahedron from diverse directions (see Seeding.js). If none encloses, its best
+    // reduction seeds the incremental loop below.
     let seeded = this._seedTetrahedron(support);
     if (seeded.overlapping) return seeded;
     this._dir.copy(seeded.direction);
@@ -38,9 +37,8 @@ proto.run = function (support, maxIterations) {
             if (along > bestAlong) bestAlong = along;
         }
         if (newAlong <= bestAlong + 1e-10) {
-            // Stall: could mean separated, or the origin already on/inside the boundary with the
-            // search direction collapsed toward zero. Disambiguate by the closest distance: near
-            // zero means enclosed/touching, hand to the strict-interior check.
+            // Stall. Near-zero closest distance means the origin is on/inside the boundary - defer
+            // to the strict-interior check; otherwise separated.
             const closestDistSq = this._closest.x * this._closest.x + this._closest.y * this._closest.y + this._closest.z * this._closest.z;
             if (closestDistSq < GJK.OVERLAP_DISTANCE_EPSILON * GJK.OVERLAP_DISTANCE_EPSILON) {
                 return this._originStrictlyInside(support) ? { overlapping: true, simplex: this } : this._separatedResult(support);
@@ -59,14 +57,11 @@ proto.run = function (support, maxIterations) {
             return this._originStrictlyInside(support) ? { overlapping: true, simplex: this } : this._separatedResult(support);
         }
     }
-    // Iteration cap reached without clean termination - report the current simplex honestly as
-    // separated rather than pretending overlap.
-    return this._separatedResult(support);
+    return this._separatedResult(support); // iteration cap - report honestly as separated
 };
 
-// Builds the SEPARATED return value from the current simplex's closest point to the origin.
-// Witness points are recovered via barycentric weights applied to the stored world support
-// points, never re-queried, so they stay exactly consistent with the reported distance.
+// SEPARATED result from the simplex's closest point to the origin. Witness points are recovered
+// from barycentric weights on the stored support points, so they stay consistent with `distance`.
 proto._separatedResult = function (support, forcedNormal) {
     const bary = this._barycentricOfClosest();
     const pointA = new Vector3(), pointB = new Vector3();

@@ -1,8 +1,7 @@
-// Per-shape BVH construction (cached on the shape instance, built once) and cached leaf queries.
+// Per-shape BVH (built once, cached on the shape) and cached leaf queries.
 var proto = Midphase.prototype;
 
-// Ensures shape._midphaseBVH exists, building on first use. Compound: one leaf per child. Mesh:
-// one leaf per triangle.
+// Builds shape._midphaseBVH on first use: one leaf per compound child, or per mesh triangle.
 proto._ensureBVH = function (shape) {
     if (shape._midphaseBVH) return shape._midphaseBVH;
     const bvh = new BVH();
@@ -43,9 +42,8 @@ proto._ensureBVH = function (shape) {
     return bvh;
 };
 
-// Leaf indices of `shape` whose local-space AABB overlaps `localQueryAABB` (already in the
-// shape's own local space). Cached per (shape, other body) - an identical query next tick for a
-// body that hasn't moved hits the cache; a different box invalidates and re-walks.
+// Leaf indices of `shape` whose AABB overlaps `localQueryAABB` (in shape-local space). Cached per
+// (shape, other body); an identical query next tick hits the cache.
 proto._queryLeaves = function (shape, otherBodyId, localQueryAABB) {
     const cached = this._leafCache.get(otherBodyId);
     if (cached && cached.shape === shape &&

@@ -1,20 +1,6 @@
-/**
- * Queries: ray casting and shape sweeps against the world's bodies. World's public surface
- * (rayIntersect/shapeIntersect) delegates here (Rule 2: World is pipeline glue).
- *
- * Both queries reuse GJK's own closest-distance result directly rather than a separate ray/shape
- * algorithm: a ray is a zero-radius sphere queried against the target; a shape sweep is the same
- * query with the caller's real shape. This is exact (GJK's separated result IS the true closest
- * distance/normal), so one query per candidate body is enough - no repeated advance-and-requery
- * loop needed the way a hand-rolled slab/segment test would require.
- *
- * Broadphase has no arbitrary-AABB query surface, so both queries filter world.bodies directly
- * with a cheap ray-vs-AABB / swept-AABB reject before calling GJK - queries run on demand, not
- * every tick for every pair, so an O(n) filter over the whole body list is fine.
- *
- * See RayIntersect.js, ShapeIntersect.js (the two public entry points + their compound/mesh
- * dispatch) and Advance.js (the shared conservative-advancement core + AABB rejects).
- */
+// Ray casts and shape sweeps against world.bodies, via GJK's closest-distance result (a ray is a
+// zero-radius sphere). O(n) over the body list after a cheap AABB reject. See RayIntersect.js,
+// ShapeIntersect.js, Advance.js.
 class Queries {
     static _isIgnored(body, ignore) {
         if (!ignore) return false;

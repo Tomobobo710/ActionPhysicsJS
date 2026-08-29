@@ -8,34 +8,17 @@ BoxBox.applies = function (placedA, placedB) {
     return placedA.shape instanceof BoxShape && placedB.shape instanceof BoxShape;
 };
 
-// SAT tie-break: an edge-edge axis only wins over the best face axis if it beats it by more than
-// this fraction of the face overlap - guards the classic SAT jitter case of two boxes resting
-// face-to-face, where an edge axis can numerically tie a face axis and flip the contact type
-// (4-point face manifold vs 1-point edge manifold) tick to tick. 0.25 (not the much tighter 0.005
-// first tried): a real reproduction - two boxes stacked with a real few-degrees relative tilt from
-// asymmetric loading - showed the edge axis beating the face axis by as much as 6% (ratio 0.94) at
-// genuinely small positive (overlapping) depths, well outside a 0.5% margin, and each such flip
-// injected a real torque kick (a 4-point resting manifold collapsing to 1 stray point for a handful
-// of ticks, repeatedly, over the whole run) that accumulated into unbounded rotation over time - not
-// a one-off transient. Edge-edge is only EVER the geometrically correct answer for a genuine corner/
-// edge-first collision (see box-box/corner-drop), which separates from a face contact by a much
-// wider margin than 25% of the face overlap - this loses nothing there while fixing the flicker.
+// An edge-edge axis only beats the best face axis if it wins by more than this fraction of the
+// face overlap. Guards face-to-face resting boxes, where an edge axis can numerically tie a face
+// axis and flicker the manifold between 4 points and 1 tick to tick.
 BoxBox.RELATIVE_TOLERANCE = 0.25;
-// Absolute floor under the tie-break margin above - at near-zero overlap (exact touch, sd ~ 0)
-// RELATIVE_TOLERANCE * faceOverlap itself vanishes to ~0, so plain float noise between the face
-// and edge overlap sums (they differ only by each absR epsilon's rounding) would otherwise win the
-// edge branch essentially at random - producing a spurious 1-point edge contact instead of the
-// correct 4-point face manifold for a flat box resting on a much larger box (e.g. the ground).
+// Absolute floor under the tie-break: near exact touch, RELATIVE_TOLERANCE * faceOverlap vanishes
+// and float noise alone would pick the edge branch.
 BoxBox.ABSOLUTE_TOLERANCE = 1e-6;
-// Edge-cross axes below this squared length are near-parallel edges (degenerate axis, direction
-// undefined) - skipped rather than normalizing a near-zero vector.
+// Edge-cross axes below this squared length are near-parallel edges (degenerate axis).
 BoxBox.PARALLEL_EPSILON = 1e-9;
-// How far apart (along the chosen SAT axis) a still-separated pair is trusted to report a
-// speculative contact via face clipping / edge closest-points, rather than falling through to
-// GJK/EPA. Deliberately generous (not tied to any one pair's speculative margin, which depends on
-// relative velocity and isn't known here) - a face/edge SAT axis stays geometrically meaningful
-// well past any margin PairTest.step would actually keep, so the real filtering happens there; this
-// just bounds it so a wildly separated pair doesn't run the clip machinery for nothing.
+// How far a still-separated pair is trusted to report a speculative contact via SAT before falling
+// through to GJK/EPA. Generous; PairTest.step does the real speculative-margin filtering.
 BoxBox.SEPARATED_AXIS_LIMIT = 1.0;
 
 // out: array to push ContactDetails into (pooled via nextContact()). Returns out.
@@ -72,12 +55,9 @@ BoxBox.test = function (placedA, placedB, out, nextContact) {
     const dA = [d.dot(ax[0]), d.dot(ax[1]), d.dot(ax[2])];
     const dB = [d.dot(bx[0]), d.dot(bx[1]), d.dot(bx[2])];
 
-    // Track the axis of LEAST overlap across all 15 candidates, whether or not any individual
-    // axis is actually separating (overlap < 0) - a negative-overlap axis here just means the
-    // boxes are apart along it, and its magnitude is the gap, which the caller (PairTest.step)
-    // compares against the speculative margin exactly like SphereSphere/SphereBox's separated
-    // case. Bailing out early on the first negative axis (the classic SAT boolean-overlap test)
-    // would silently drop every speculative box-box contact - no more overlap tests, no early return.
+    // Least-overlap axis across all 15 candidates, whether or not any is separating: a negative
+    // overlap is the gap, which PairTest.step compares against the speculative margin. No early
+    // bail on the first separating axis - that would drop every speculative box-box contact.
     let minOverlap = Infinity;
     let bestAxisType = -1; // 0 = face of A, 1 = face of B
     let bestI = -1, bestSign = 1;
@@ -89,10 +69,8 @@ BoxBox.test = function (placedA, placedB, out, nextContact) {
         const overlap = ra + rb - Math.abs(dA[i]);
         if (overlap < minOverlap) { minOverlap = overlap; bestAxisType = 0; bestI = i; bestSign = dA[i] >= 0 ? 1 : -1; }
     }
-    // Face axes of B (3). bestSign here is the OPPOSITE test to A's: d = posB - posA, so d.dot(bx[j])
-    // >= 0 means A sits on B's -bx[j] side - B's reference face (the one facing A) is the -bx[j]
-    // face, sign -1. (For A's own axes above, d points the other way, so the un-flipped sign is
-    // already correct there.)
+    // Face axes of B (3). bestSign is flipped vs A's: d = posB - posA, so d.dot(bx[j]) >= 0 means
+    // A sits on B's -bx[j] side, making that the reference face.
     for (let j = 0; j < 3; j++) {
         const rb = halfB[j];
         const ra = halfA[0] * absR[0][j] + halfA[1] * absR[1][j] + halfA[2] * absR[2][j];
@@ -124,41 +102,12 @@ BoxBox.test = function (placedA, placedB, out, nextContact) {
         }
     }
 
-    // A negative trueMin just means the boxes are apart along that axis, by that many units - the
-    // SAT distance bound is still valid, and face clipping still produces the right witness
-    // points/gap for a genuinely nearby separated pair (a flat box approaching the ground a hair
-    // above it is the common case: all 4 corners are still equally close, and reporting only ONE of
-    // them, as a single-point GJK/EPA fallback would, hands the solver an off-center speculative
-    // contact - torque from nothing the instant that point is later confirmed as touching). Only
-    // bail to the generic GJK/EPA path when SAT's own numbers stop being geometrically meaningful -
-    // see the footprint-disjoint guard below.
-    let trueMin = Math.min(faceOverlap, bestEdgeI >= 0 ? bestEdgeOverlap : Infinity);
-
-    // Prefer the face axis unless an edge axis is a clearly tighter fit - biases toward face
-    // contacts (4-point manifolds) on ties, which is what keeps resting boxes from flickering
-    // into a 1-point edge manifold every few ticks. Scaled by |faceOverlap| (not faceOverlap itself)
-    // so this works the same whether overlapping or separated - a body with even a hair of
-    // accumulated rotation produces an edge-cross axis (ax[i] x bx[j]) that is numerically almost
-    // exactly a face axis in a new direction (see the box-bridging-two-supports repro this fixes: a
-    // ~0.5 degree tilt on the lower box turned "A's x-axis cross B's z-axis" into an axis 0.008 rad
-    // off pure -Y, i.e. functionally the SAME axis as the Y-face test, not a genuinely different
-    // tighter one) - a fixed absolute epsilon is far too tight to catch that at realistic overlap
-    // magnitudes (~0.1+), and simply DROPPING the possibly-negative faceOverlap's sign (as the old
-    // "only when non-negative" version did) left every separated pair with zero relative tolerance,
-    // which is exactly the case that broke.
-    // The edge branch is only trusted when the boxes are ACTUALLY OVERLAPPING (faceOverlap >= 0).
-    // SAT's own "most negative overlap wins" rule (the same rule that correctly picks the tightest
-    // separating axis while overlapping) means the axis with the LARGEST gap wins while separated -
-    // and an edge-cross axis reports a bigger gap than the true face axis remarkably easily under
-    // even modest relative tilt (two boxes 23 degrees off parallel, mid-fall, still well short of
-    // contact) despite the two boxes plainly still approaching FACE first, not edge first. Taking
-    // that "biggest gap" axis at face value while separated collapses what should still be a
-    // multi-point speculative face contact into a single degenerate edge-closest-point - which is
-    // exactly the wrong shape to warm-start into the real contact one substep later (see the offset-
-    // stack repro this fixes: box0-box1 spiralled from a stable ~13 degree lean into a full 179
-    // degree flip once this kicked in around the tick they came close enough to matter). Once
-    // genuinely overlapping (faceOverlap >= 0), SAT's normal minimum-overlap logic is trustworthy
-    // again - a real corner/edge-first collision (box-box/corner-drop) still needs this branch.
+    // Prefer the face axis unless an edge axis is a clearly tighter fit, and only take the edge
+    // branch when the boxes actually overlap. While separated, SAT's "largest gap wins" rule picks
+    // an edge-cross axis over the true face axis under even modest relative tilt, collapsing a
+    // speculative face contact into a degenerate edge point that warm-starts wrong. Scale the margin
+    // by |faceOverlap| so it behaves the same overlapping or separated. A real corner/edge-first
+    // collision (box-box/corner-drop) still clears this and takes the edge branch.
     const tieBreakMargin = Math.max(BoxBox.RELATIVE_TOLERANCE * Math.abs(faceOverlap), BoxBox.ABSOLUTE_TOLERANCE);
     if (faceOverlap >= 0 && bestEdgeI >= 0 && bestEdgeOverlap < faceOverlap - tieBreakMargin) {
         BoxBox._buildEdgeContact(placedA, placedB, ax, bx, halfA, halfB, posA, posB,
@@ -166,10 +115,7 @@ BoxBox.test = function (placedA, placedB, out, nextContact) {
         return out;
     }
 
-    // Face clipping's geometry (project the incident face onto the reference face's extent) only
-    // matches "closest point" once the boxes are far enough apart along OTHER axes that they no
-    // longer face each other at all - bail to GJK/EPA past that point rather than returning a
-    // clipped-away-to-nothing or geometrically-meaningless result.
+    // Too far apart for face clipping to mean anything - let GJK/EPA handle it.
     if (faceOverlap < -BoxBox.SEPARATED_AXIS_LIMIT) return null;
 
     BoxBox._buildFaceContact(placedA, placedB, ax, bx, halfA, halfB, posA, posB,
@@ -253,9 +199,7 @@ BoxBox._buildFaceContact = function (placedA, placedB, ax, bx, halfA, halfB, pos
     refNormal.copy(refAxes[i]);
     refNormal.scaleInPlace(sign);
 
-    // Incident face: the face of the other box whose own outward normal is most anti-parallel to
-    // refNormal (the face "facing into" the reference box) - i.e. minimizing (candidate normal) .
-    // refNormal over the 6 candidate face normals (+/- each local axis).
+    // Incident face: the other box's face most anti-parallel to refNormal (min dot over +/- each axis).
     let incFaceIndex = 0, incFaceSign = 1, best = Infinity;
     for (let k = 0; k < 3; k++) {
         const dp = incAxes[k].dot(refNormal);
@@ -331,13 +275,9 @@ BoxBox._buildFaceContact = function (placedA, placedB, ax, bx, halfA, halfB, pos
         if (polyCount === 0) return; // fully clipped away - shouldn't happen given overlap > 0, but safe
     }
 
-    // Keep points at or behind the reference face (actual penetration, depth > 0) AND points just
-    // in front of it (depth < 0: still separated, a genuine speculative contact - see
-    // SEPARATED_AXIS_LIMIT above for why trusting this here, not just at depth ~ 0, is the fix for
-    // a flat box approaching flush: without it, only whichever single corner GJK/EPA's separated
-    // case happens to pick becomes the pre-touch contact, and the OTHER 3 corners get seen as
-    // touching for the first time only on the substep they've already sunk in - reported one
-    // corner at a time instead of all 4 together, which reads as a torque impulse from nothing).
+    // Keep points behind the reference face (penetrating) and those just in front of it (still
+    // separated - a speculative contact). Reporting all 4 corners together before touch, rather
+    // than one at a time as they sink in, is what keeps a flat flush approach torque-free.
     const normalAtoB = BoxBox._normalAtoB;
     normalAtoB.copy(refNormal);
     if (!refIsA) normalAtoB.scaleInPlace(-1); // refNormal is B's outward normal when B is reference; flip to A->B

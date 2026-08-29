@@ -1,12 +1,6 @@
-/**
- * XPBD solver (Muller et al. 2020 "Detailed Rigid Body Simulation with Extended Position Based
- * Dynamics"; Macklin et al. for the compliance formulation).
- *
- * Velocity is DERIVED from position (v = (x - x_prev) / h), never clamped. Each substep runs:
- * integrate -> refresh contact geometry -> reset lambdas -> solve positions -> derive velocity ->
- * solve contact velocity (friction/restitution/rolling). See Integrate.js, Geometry.js,
- * PositionSolve.js, VelocitySolve.js for each phase.
- */
+// XPBD solver (Muller et al. 2020). Velocity is derived from position (v = (x - x_prev) / h).
+// Per substep: integrate -> refresh contact geometry -> reset lambdas -> solve positions ->
+// derive velocity -> solve contact velocity. See Integrate/PositionSolve/VelocitySolve.
 class Solver {
     constructor(opts) {
         opts = opts || {};
@@ -26,16 +20,12 @@ class Solver {
         this._restRing = new Map(); // per-body ring buffer of recent transforms for rest-velocity reconciliation
     }
 
-    // Margin widening what counts as "explainable by the body's own velocity" in _solvePoint's
-    // position/velocity split (see PositionSolve.js). 3x covers the ordinary numerical gap for
-    // off-center/rotating contacts without letting a real zero-velocity spawn overlap through.
+    // Widens what counts as "explainable by the body's own velocity" in _solvePoint's
+    // position/velocity split (PositionSolve.js).
     static EXPLAINABLE_MARGIN = 3;
 
-    /**
-     * Advances every dynamic body in `bodies` by `dt`, resolving `manifolds` (a ContactManifoldList)
-     * and `constraints` (joints). `refresh(manifolds)`, if given, re-measures each substep's contact
-     * geometry against predicted positions before the solve (see Geometry.js).
-     */
+    // Advances dynamic bodies by dt, resolving manifolds and constraints. `refresh(manifolds)`, if
+    // given, re-measures contact geometry each substep before the solve.
     step(bodies, manifolds, gravity, dt, refresh, constraints) {
         const h = dt / this.substeps;
         for (let s = 0; s < this.substeps; s++) {
@@ -125,17 +115,14 @@ class Solver {
     _solveContactVelocities(manifolds, gravity, h) {
         for (const manifold of manifolds.values()) {
             const bodyA = manifold.bodyA, bodyB = manifold.bodyB;
-            // A flat box-on-box face patch is resolved once at its centroid (order-independent, no
-            // fabricated drift); every other manifold keeps the per-point solve. See
-            // VelocitySolve.js._boxFacePatchVelocity.
+            // A flat face patch solves once at its centroid; everything else per-point.
             if (!this._boxFacePatchVelocity(manifold, bodyA, bodyB, gravity, h)) {
                 for (let i = 0; i < manifold.points.length; i++) {
                     this._solveContactVelocity(manifold.points[i], bodyA, bodyB, gravity, h);
                 }
             }
             if (manifold.points.length > 0) {
-                // Reference point for angular friction: the most-engaged one (largest |normalLambda|),
-                // not always points[0] - see VelocitySolve.js._solveAngularFriction.
+                // Angular friction acts at the most-engaged point.
                 let ref = manifold.points[0];
                 for (let i = 1; i < manifold.points.length; i++) {
                     if (Math.abs(manifold.points[i].normalLambda) > Math.abs(ref.normalLambda)) ref = manifold.points[i];
@@ -146,18 +133,13 @@ class Solver {
     }
 }
 
-// Restitution slop multiplier: an approach speed below (gravityMag*h)*this factor doesn't bounce -
-// keeps a resting body's own one-substep gravity nudge from becoming perpetual micro-jitter,
-// scaled to gravity/timestep instead of a fixed absolute speed so it stays correct across body
-// scale (a fixed threshold silently killed real small/slow bounces - e.g. a marble dropped 5mm hit
-// the floor at 0.31 m/s, a genuine restitution-worthy impact, and got fully suppressed under a
-// flat 0.5 m/s cutoff).
+// Approach speeds below (gravityMag*h)*this don't bounce - suppresses a resting body's one-substep
+// gravity nudge without a fixed absolute cutoff that would kill real small/slow bounces.
 Solver.RESTITUTION_SLOP_FACTOR = 8;
 
-// Largest single-point penetration (C) a multi-point manifold's position-solve resolves in one
-// substep (see PositionSolve.js's cappedC; never applied to a single-point manifold). The
-// remainder is real, live-measured penetration, picked up on the next substep instead of all at
-// once - keeps one point's correction from moving the body before its manifold siblings are read.
+// Largest single-point penetration a multi-point manifold resolves per substep (PositionSolve.js).
+// The rest is picked up next substep, so one point's correction doesn't move the body before its
+// siblings are read.
 Solver.MAX_PENETRATION_PER_SUBSTEP = 0.005;
 
 // Rest-velocity reconciliation thresholds (see Solver._reconcileRestVelocity, NOTES.md).

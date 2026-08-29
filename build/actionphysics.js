@@ -1,26 +1,18 @@
-// ActionPhysics 0.1.0 — built 2026-08-29T09:24:39.074Z
+// ActionPhysics 0.1.0 — built 2026-08-29T11:17:12.778Z
 // ==== src/intro.js ====
 /**
- * ActionPhysics - a deterministic, dependency-free 3D physics engine.
+ * ActionPhysics - a deterministic, dependency-free 3D physics engine. Ships as one concatenated
+ * file, loadable from a <script> tag or require().
  *
- * Ships as a single concatenated file. Loads from a plain <script> tag with no server, no bundler and
- * no modules; also usable via require() in Node.
- *
- * MATH IS INJECTABLE. ActionPhysics runs on ActionMath, and carries its own copy so it works alone.
- * But if the host already has ActionMath loaded, ActionPhysics uses the host's classes rather than
- * defining a second set. Without that, a page loading both ends up with two distinct Vector3 classes -
- * two static object pools, and `instanceof` silently false across the boundary.
- *
- * Injection is by name, checked before the bundled copy is defined:
- *   - explicitly, via window.ActionMath = { Vector3, Quaternion, ... } set before this file loads
- *   - or implicitly, by finding the classes already declared in scope
- * Falling back to the bundled copy when neither is present.
+ * Math is injectable: ActionPhysics runs on ActionMath and bundles its own copy, but if the host
+ * already has ActionMath (via window.ActionMath, or the classes in scope) it adopts those instead,
+ * so a page loading both doesn't end up with two Vector3 classes and `instanceof` false across them.
  */
 (function (root, factory) {
     'use strict';
 
-    // Whatever math the host already has, if any. A host that concatenates its own ActionMath into the
-    // same page exposes the classes at script scope, which `typeof` reaches but `root.X` does not.
+    // A host that concatenates its own ActionMath exposes the classes at script scope (`typeof`
+    // reaches them, `root.X` does not).
     var injected = (typeof root.ActionMath === 'object' && root.ActionMath) ? root.ActionMath : {};
     function adopt(name, scoped) {
         if (injected[name]) return injected[name];
@@ -47,8 +39,7 @@
 
     const ActionPhysics = {};
 
-    // True when every math class came from the host rather than the bundled copy. Reported so a
-    // consumer can verify at runtime which set is live.
+    // True when every math class came from the host rather than the bundled copy.
     ActionPhysics.usingHostMath = false;
 
 
@@ -2524,13 +2515,7 @@ ActionPhysics.Transform = Transform;
 
 
 // ==== src/spatial/AABB.js ====
-/**
- * Axis-aligned bounding box. min/max are Vector3 instances (in whichever precision the host
- * math package uses), min <= max on every axis always holds outside of construction.
- *
- * Every method here is allocation-free — this type lives inside broadphase/BVH sweeps that
- * run every tick over every body.
- */
+// Axis-aligned bounding box (min/max Vector3s). Every method is allocation-free.
 class AABB {
     constructor() {
         this.min = new Vector3(Infinity, Infinity, Infinity);
@@ -2667,8 +2652,7 @@ ActionPhysics.Shape = Shape;
 
 
 // ==== src/shapes/BoxShape.js ====
-// Every dimension is a half-extent — matches AABB, matches
-// every other shape's convention. No shape silently uses a different one.
+// Dimensions are half-extents.
 class BoxShape extends Shape {
     constructor(halfWidth, halfHeight, halfDepth) {
         super('box');
@@ -3220,12 +3204,8 @@ ActionPhysics.ConvexShape = ConvexShape;
 
 
 // ==== src/shapes/PlaneShape.js ====
-// A finite plane: a flat rectangle with zero thickness. Degenerate by construction — special-
-// cased explicitly at the shape level rather than patched into GJK/EPA later.
-//
-// orientation selects which local axis is the normal: 'x', 'y', or 'z'. halfW/halfL extend along
-// the other two axes, in the cyclic order (y,z) for 'x', (z,x) for 'y', (x,y) for 'z' — i.e. the
-// same convention Vector3.cross uses, so normal x axis1 = axis2 always holds.
+// A finite zero-thickness rectangle. `orientation` ('x'/'y'/'z') is the normal axis; halfW/halfL
+// extend along the other two in cross-product cyclic order (y,z)/(z,x)/(x,y).
 class PlaneShape extends Shape {
     constructor(orientation, halfW, halfL) {
         super('plane');
@@ -3273,9 +3253,7 @@ ActionPhysics.PlaneShape = PlaneShape;
 
 
 // ==== src/shapes/TriangleShape.js ====
-// A single zero-thickness triangle in local space. Degenerate like PlaneShape, for the same
-// reason — see PlaneShape's header. Used both standalone and as the per-triangle shape a
-// MeshShape's midphase dispatches into.
+// A single zero-thickness triangle. Used standalone and as the per-triangle shape from a mesh.
 class TriangleShape extends Shape {
     constructor(a, b, c) {
         super('triangle');
@@ -3318,10 +3296,8 @@ ActionPhysics.TriangleShape = TriangleShape;
 
 
 // ==== src/shapes/MeshShape.js ====
-// Static triangle mesh: a vertex list plus flat index triples. Zero mass by construction — a
-// mesh is a static/kinematic-only shape (its BVH is built once and never updated).
-// The midphase BVH over these triangles is built lazily by whatever consumes this shape;
-// this class only owns geometry.
+// Static triangle mesh: vertex list plus flat index triples. Zero mass; static/kinematic only.
+// The midphase BVH over its triangles is built lazily elsewhere.
 class MeshShape extends Shape {
     constructor(vertices, indices) {
         super('mesh');
@@ -3488,11 +3464,8 @@ ActionPhysics.CompoundShape = CompoundShape;
 
 
 // ==== src/shapes/LineSweptShape.js ====
-// A shape swept along a line segment from `start` to `end` (LOCAL-space points): the Minkowski sum
-// of `shape` with that segment. Used for continuous-collision / swept queries
-// without a dedicated CCD solver: the query just asks
-// "does this swept volume touch anything", which is a support function away once the base shape
-// has one.
+// `shape` swept along a local-space segment start->end (Minkowski sum with the segment). Used for
+// swept queries.
 class LineSweptShape extends Shape {
     constructor(shape, start, end) {
         super('lineswept');
@@ -3548,22 +3521,14 @@ ActionPhysics.LineSweptShape = LineSweptShape;
 
 
 // ==== src/bodies/RigidBody.js ====
-// Body type, as a first-class concept: checked in exactly one place per stage, never as scattered
-// mass===Infinity comparisons.
 const BODY_STATIC = 0;
 const BODY_KINEMATIC = 1;
 const BODY_DYNAMIC = 2;
 
 let _nextBodyId = 1;
 
-/**
- * A rigid body: shape + world transform + (for dynamic bodies) mass/motion state. Broadphase and
- * midphase only need shape + transform + AABB; mass/motion/material fields exist so every concern
- * has exactly one owning home.
- *
- * See Forces.js (impulse/force application), DerivedState.js (AABB/inertia recompute), and
- * Accessors.js (support point, ray cast, transform, listeners).
- */
+// Shape + world transform + (for dynamic bodies) mass/motion state. See Forces.js, DerivedState.js,
+// Accessors.js.
 class RigidBody {
     constructor(shape, mass) {
         // ---- Identity ----
@@ -3600,22 +3565,12 @@ class RigidBody {
         this.accumulated_torque = new Vector3(0, 0, 0);
         this.gravity = null; // null = use World.gravity; setGravity() overrides per-body
 
-        // ---- Material ----
-        // Matches ActionEngineJS's own ActionRigidBody3D.MATERIAL_DEFAULTS - a body built directly
-        // against this engine should behave the same as one built through that wrapper.
-        // angular_damping is not 0: Coulomb friction opposes tangential SLIP, and a cleanly rolling
-        // shape has ~zero slip at the contact by construction, so without angular damping a rolling
-        // body never stops on friction alone (see angular_friction below and VelocitySolve.js).
+        // ---- Material ---- (matches ActionEngineJS's MATERIAL_DEFAULTS)
         this.friction = 3.0;
         this.restitution = 0.33;
         this.linear_damping = 0.1;
-        this.angular_damping = 0.9;
-        // Contact-tangent-plane angular damping (meters): caps relative angular velocity ABOUT the
-        // contact's tangent plane (any axis lying in the contact surface), the same way Coulomb
-        // friction caps tangential linear slip. Shape-agnostic - it happens to be what real rolling
-        // resistance looks like on a round shape, but it also damps an ordinary box's pivot/topple
-        // at a contact corner. NOT the same thing as a future shape-aware rolling-resistance model
-        // (which would key off actual rolling contact geometry); this name is reserved for that.
+        this.angular_damping = 0.9; // nonzero, or a cleanly rolling shape never stops on friction alone
+        // Caps relative angular velocity in the contact's tangent plane, like friction caps slip.
         this.angular_friction = 0.05;
 
         // ---- Filtering ----
@@ -3659,7 +3614,7 @@ class RigidBody {
     }
 }
 
-// Scratch objects for the allocation-free AABB/inertia recompute in DerivedState.js.
+// Scratch for DerivedState.js's allocation-free recompute.
 RigidBody._scratchLocalAABB = new AABB();
 RigidBody._scratchMat3 = new Matrix3();
 RigidBody._scratchMat3b = new Matrix3();
@@ -3671,9 +3626,7 @@ RigidBody.STATIC = BODY_STATIC;
 RigidBody.KINEMATIC = BODY_KINEMATIC;
 RigidBody.DYNAMIC = BODY_DYNAMIC;
 
-// Fixed broadphase-AABB fattening for speculative contacts (meters). Matches the narrowphase
-// speculative base so both stages agree on how early a contact is worth seeing.
-RigidBody.SPECULATIVE_MARGIN = 0.02;
+RigidBody.SPECULATIVE_MARGIN = 0.02; // meters; matches NarrowPhase.SPECULATIVE_BASE
 
 ActionPhysics.RigidBody = RigidBody;
 
@@ -3752,9 +3705,8 @@ proto.clearForces = function () {
 
 
 // ==== src/bodies/DerivedState.js ====
-// Recomputes everything derived from position/rotation: tight AABB, fattened broadphase AABB, and
-// world-space inverse inertia. Called once per body per tick by whichever stage owns "current" -
-// narrowphase and the solver assume it has already run.
+// Recomputes tight AABB, fattened broadphase AABB, and world inverse inertia from position/rotation.
+// Runs once per body per tick; narrowphase and the solver assume it already has.
 var proto = RigidBody.prototype;
 
 proto.updateDerived = function (dt) {
@@ -3791,21 +3743,12 @@ proto._recomputeAABB = function () {
     this._aabbDirty = false;
 };
 
-// The BROADPHASE world AABB: tight AABB fattened by a fixed margin plus this tick's velocity sweep
-// per axis, so a fast approach is caught a full tick before the shapes actually overlap - the
-// lookahead speculative contacts depend on. Fattening only ever adds candidate pairs, never
-// removes one; narrowphase culls precisely with its own per-pair margin. Kept separate from the
-// tight AABB so the body's geometric bound stays truthful for queries/rendering.
-//
-// Sweep is directional (grows only on the side the body is moving toward), keeping the box tight
-// rather than symmetric. SPECULATIVE_MARGIN is the absolute floor for the resting/slow case.
+// Tight AABB fattened by SPECULATIVE_MARGIN plus a directional velocity sweep, so a fast approach
+// is caught a tick before overlap. Fattening only adds candidate pairs; narrowphase culls precisely.
 proto._recomputeBroadphaseAABB = function (dt) {
     const m = RigidBody.SPECULATIVE_MARGIN;
     const sx = this.linear_velocity.x * dt, sy = this.linear_velocity.y * dt, sz = this.linear_velocity.z * dt;
-    // Angular sweep: a point at the body's bounding radius R moves at up to |omega|*R even when the
-    // center (tracked by the linear sweep) barely moves - a tipping box's far corner otherwise
-    // slams in undetected. Applied isotropically (all six faces), the conservative honest choice,
-    // since angular motion has no clean per-axis direction.
+    // Angular sweep: a corner at bounding radius R moves at |omega|*R; applied isotropically.
     const ex = (this._aabb.max.x - this._aabb.min.x) * 0.5;
     const ey = (this._aabb.max.y - this._aabb.min.y) * 0.5;
     const ez = (this._aabb.max.z - this._aabb.min.z) * 0.5;
@@ -3847,10 +3790,8 @@ proto.getBroadphaseAABB = function () {
 // Support point, transform sync, ray cast, and event listeners.
 var proto = RigidBody.prototype;
 
-// A Transform (position + rotation + scale) synced from this body's own position/rotation, for
-// consumer code (tests, queries) that wants Transform's own API. Does not replace position/rotation
-// as this body's real state - every solver/narrowphase/query call site reads those fields directly.
-// Lazily allocated once, then reused and re-synced on every call.
+// A Transform synced from this body's position/rotation, for consumers wanting Transform's API.
+// The body's real state stays in position/rotation. Lazily allocated, re-synced per call.
 proto.getTransform = function () {
     if (!this._transform) this._transform = new Transform();
     this._transform.syncFromPhysicsBody(this);
@@ -4014,12 +3955,10 @@ ActionPhysics.BVH = BVH;
 
 
 // ==== src/phases/SAPBroadphase.js ====
-// Sweep-and-prune broadphase over AABBs, sorted along one axis (the most-spread axis, re-picked
-// each call). Reads body.getBroadphaseAABB() (fattened, speculative-margin variant); never tests
-// real shapes.
+// Sweep-and-prune over fattened AABBs (body.getBroadphaseAABB()), sorted along the most-spread axis.
 class SAPBroadphase {
     constructor() {
-        this._entries = []; // { body, aabb } - aabb is a snapshot reference, not a copy
+        this._entries = []; // { body, aabb } - aabb is a live reference
         this._axis = 'x';
     }
 
@@ -4077,35 +4016,22 @@ ActionPhysics.SAPBroadphase = SAPBroadphase;
 
 
 // ==== src/phases/Midphase.js ====
-/**
- * Midphase: which children of a compound / triangles of a mesh actually need narrowphase?
- *
- * Produces candidate PRIMITIVE-shape pairs from a broadphase body pair, each carrying the
- * primitive shape plus its world transform - narrowphase takes these directly, with no
- * compound/mesh awareness of its own. Never computes contact data, only "these two might touch".
- *
- * A body's shape is one of three kinds: primitive (the body IS the one candidate, no BVH needed),
- * CompoundShape (candidates are children whose world AABB overlaps the other side), or MeshShape
- * (candidates are triangles, same rule). See BVHCache.js (per-shape BVH build + leaf query/cache)
- * and ExpandPair.js (turning a broadphase pair into primitive candidates).
- */
+// Expands a broadphase body pair into candidate primitive-shape pairs (compound children / mesh
+// triangles whose world AABB overlaps the other side). See BVHCache.js and ExpandPair.js.
 class Midphase {
     constructor() {
-        // Static-geometry leaf cache: for a (shape, queryAABB) pair, the leaf indices that
-        // overlapped, INCLUDING the empty set (not caching empty made every resting body re-walk
-        // the BVH forever). Keyed by the OTHER body's id, since the query box moves with it.
-        this._leafCache = new Map(); // otherBodyId -> { shape, minx,miny,minz,maxx,maxy,maxz, hits:[leafIndex...] }
+        // otherBodyId -> { shape, min/max bounds, hits:[leafIndex] }. Empty results are cached too
+        // (otherwise a resting body re-walks the BVH every tick).
+        this._leafCache = new Map();
 
-        // Per-expandPair()-call pools for compound-child / mesh-triangle world placement, grown as
-        // needed, never shrunk - see ExpandPair.js's _nextTriSlot / _nextChildSlot.
+        // Per-expandPair() world-placement pools, grown as needed. See ExpandPair.js.
         this._triSlots = [];
         this._triSlotIndex = 0;
         this._childSlots = [];
         this._childSlotIndex = 0;
     }
 
-    // Clears every cached leaf-walk result. Call when a static/kinematic compound or mesh body's
-    // geometry/transform changes - the cache (keyed by the OTHER body) has no way to know on its own.
+    // Call when a static/kinematic compound/mesh body's geometry or transform changes.
     invalidate() {
         this._leafCache.clear();
     }
@@ -4115,11 +4041,10 @@ ActionPhysics.Midphase = Midphase;
 
 
 // ==== src/phases/BVHCache.js ====
-// Per-shape BVH construction (cached on the shape instance, built once) and cached leaf queries.
+// Per-shape BVH (built once, cached on the shape) and cached leaf queries.
 var proto = Midphase.prototype;
 
-// Ensures shape._midphaseBVH exists, building on first use. Compound: one leaf per child. Mesh:
-// one leaf per triangle.
+// Builds shape._midphaseBVH on first use: one leaf per compound child, or per mesh triangle.
 proto._ensureBVH = function (shape) {
     if (shape._midphaseBVH) return shape._midphaseBVH;
     const bvh = new BVH();
@@ -4160,9 +4085,8 @@ proto._ensureBVH = function (shape) {
     return bvh;
 };
 
-// Leaf indices of `shape` whose local-space AABB overlaps `localQueryAABB` (already in the
-// shape's own local space). Cached per (shape, other body) - an identical query next tick for a
-// body that hasn't moved hits the cache; a different box invalidates and re-walks.
+// Leaf indices of `shape` whose AABB overlaps `localQueryAABB` (in shape-local space). Cached per
+// (shape, other body); an identical query next tick hits the cache.
 proto._queryLeaves = function (shape, otherBodyId, localQueryAABB) {
     const cached = this._leafCache.get(otherBodyId);
     if (cached && cached.shape === shape &&
@@ -4187,12 +4111,9 @@ proto._queryLeaves = function (shape, otherBodyId, localQueryAABB) {
 // Expanding a broadphase body pair into primitive-vs-primitive candidates.
 var proto = Midphase.prototype;
 
-// Expands one side into primitive candidates: [{ shape, position, rotation }]. `otherAABB` is the
-// other body's world (fattened) AABB, used to cull children/triangles that can't matter.
-// `otherBodyId` keys the leaf cache. `isNestedChild`: true when `body` is actually a compound
-// child's world placement (a plain {shape,position,rotation}, not a real RigidBody) being expanded
-// recursively because it is itself a mesh/compound - such a child has no speculative margin of its
-// own (that's a whole-body concept), so the own-margin fattening below is skipped for it.
+// Expands one side into primitive candidates. `otherAABB`: the other body's fattened AABB, for
+// culling. `otherBodyId`: leaf-cache key. `isNestedChild`: `body` is a compound child's placement
+// being recursed into (no speculative margin of its own, so the own-margin fattening is skipped).
 proto._expandSide = function (body, otherAABB, otherBodyId, isNestedChild) {
     const shape = body.shape;
     if (!(shape instanceof CompoundShape) && !(shape instanceof MeshShape)) {
@@ -4218,11 +4139,8 @@ proto._expandSide = function (body, otherAABB, otherBodyId, isNestedChild) {
         if (corner.z > localQuery.max.z) localQuery.max.z = corner.z;
     }
 
-    // otherAABB carries the OTHER body's speculative margin, but THIS body's own margin never
-    // entered the query above - fatten symmetrically by this body's own broadphase-vs-tight AABB
-    // delta (taking the largest per-axis delta so a rotated body's local-frame margin isn't
-    // under-estimated), or a compound/mesh body approaching under its own margin can get zero
-    // candidates for a tick or two while already overlapping, then correct in one deep jolt.
+    // otherAABB has the other body's margin but not this one's - fatten by this body's own
+    // broadphase-vs-tight delta (largest per-axis, so a rotated body isn't under-estimated).
     if (!isNestedChild) {
         const tightAABB = body.getAABB(), bpAABB = body.getBroadphaseAABB();
         const marginX = Math.max(bpAABB.max.x - tightAABB.max.x, tightAABB.min.x - bpAABB.min.x);
@@ -4256,17 +4174,14 @@ proto._expandSide = function (body, otherAABB, otherBodyId, isNestedChild) {
         const a = Midphase._scratchTriA, b = Midphase._scratchTriB, c = Midphase._scratchTriC;
         for (let k = 0; k < hits.length; k++) {
             shape.triangleAt(hits[k], a, b, c);
-            // Baked into world space directly, at identity rotation - simpler than a per-triangle
-            // local frame narrowphase would have to undo.
+            // Baked to world space at identity rotation, so the narrowphase has nothing to undo.
             const slot = this._nextTriSlot();
             body.rotation.transformVectorInto(a, slot.a); slot.a.addInPlace(body.position);
             body.rotation.transformVectorInto(b, slot.b); slot.b.addInPlace(body.position);
             body.rotation.transformVectorInto(c, slot.c); slot.c.addInPlace(body.position);
             slot.shape.a = slot.a; slot.shape.b = slot.b; slot.shape.c = slot.c;
-            // slot.position stays at origin (the triangle's verts are already world-space and the
-            // narrowphase support adds slot.position). bodyCenter is a separate hint - the owning
-            // body's world center - which TriTri.js uses to orient a mesh face-contact normal
-            // reliably even when the two faces are exactly flush.
+            // position stays at origin (verts are already world-space); bodyCenter is a hint TriTri
+            // uses to orient the contact normal.
             slot.bodyCenter.copy(body.position);
             out.push({ shape: slot.shape, position: slot.position, rotation: slot.rotation, bodyCenter: slot.bodyCenter });
         }
@@ -4274,10 +4189,8 @@ proto._expandSide = function (body, otherAABB, otherBodyId, isNestedChild) {
     return out;
 };
 
-// One pooled { shape: TriangleShape, a/b/c: Vector3 (the shape's own world-space vertices),
-// position: Vector3(0,0,0), rotation: identity Quaternion } slot, grown as needed, never shrunk -
-// same pattern as NarrowPhase._contactPool. Indexed by _slotIndex, reset once per expandPair() call
-// (not per _expandSide) since both sides of one pair draw from the same tick's pool.
+// Pooled world-space triangle slot, grown as needed. The pool index resets once per expandPair()
+// (both sides draw from it).
 proto._nextTriSlot = function () {
     if (this._triSlotIndex >= this._triSlots.length) {
         this._triSlots.push({
@@ -4392,24 +4305,13 @@ ActionPhysics.MinkowskiSupport = MinkowskiSupport;
 
 
 // ==== src/collision/GJK.js ====
-/**
- * GJK: distance / overlap test between two convex shapes via their Minkowski difference (Ericson,
- * "Real-Time Collision Detection" ch. 5; Gilbert-Johnson-Keerthi).
- *
- * Two outcomes from the same loop: OVERLAPPING (simplex encloses the origin - handed to EPA for
- * depth) or SEPARATED (distance, witness points, normal - used directly for speculative contacts).
- *
- * FLUSH/EXACT-TOUCH: an exactly-touching pair is geometrically ambiguous with a lower-dimensional
- * simplex alone (see Seeding.js and Interior.js). Every point-in-simplex routine below has an
- * explicit degenerate fallback (zero-length edge, zero-area triangle) instead of producing NaN.
- *
- * See Seeding.js (tetrahedron seeding + interior/degenerate-normal probes), Simplex.js
- * (line/triangle/tetrahedron reduction), Run.js (the main loop).
- */
+// GJK distance/overlap test via the Minkowski difference (Ericson ch. 5). Two outcomes: OVERLAPPING
+// (handed to EPA) or SEPARATED (distance, witness points, normal). Exact-touch cases are handled by
+// degenerate fallbacks in the simplex routines rather than producing NaN. See Seeding.js,
+// Simplex.js, Run.js.
 class GJK {
     constructor() {
-        // Simplex: up to 4 points, each { w: Minkowski diff point, a: world point on A, b: on B }.
-        // Parallel scratch arrays, allocation-free across iterations.
+        // Simplex: up to 4 points, each (w = Minkowski diff point, a/b = world points on A/B).
         this._wx = new Float64Array(4); this._wy = new Float64Array(4); this._wz = new Float64Array(4);
         this._ax = new Float64Array(4); this._ay = new Float64Array(4); this._az = new Float64Array(4);
         this._bx = new Float64Array(4); this._by = new Float64Array(4); this._bz = new Float64Array(4);
@@ -4436,8 +4338,7 @@ class GJK {
         this._bx[i] = b.x; this._by[i] = b.y; this._bz[i] = b.z;
     }
 
-    // Replace the simplex with exactly the points at the given source indices, used after each
-    // closest-feature reduction.
+    // Keep only the points at `indices`, after a closest-feature reduction.
     _reduceTo(indices) {
         const wx = this._wx.slice(), wy = this._wy.slice(), wz = this._wz.slice();
         const ax = this._ax.slice(), ay = this._ay.slice(), az = this._az.slice();
@@ -4459,17 +4360,13 @@ ActionPhysics.GJK = GJK;
 
 
 // ==== src/collision/Seeding.js ====
-// Tetrahedron seeding + strict-interior probe. Seeding from several diverse direction sets (rather
-// than growing one incrementally from a single axis) is what tells a real 3D overlap apart from an
-// exact touch: incremental growth tends to walk into the touching plane and stall there, while a
-// real overlap's seed tetrahedron shows every face at a genuine negative margin once built from
-// directions spanning different octants.
+// Tetrahedron seeding + strict-interior probe. Seeding from several diverse direction sets, rather
+// than growing one incrementally, tells a real 3D overlap apart from an exact touch (incremental
+// growth stalls in the touching plane).
 var proto = GJK.prototype;
 
-// Multiple direction sets exist because any single fixed set can, for a particular shape-size
-// pair, itself produce a degenerate seed tetrahedron. Odd/irrational-looking components (not just
-// +-1) avoid a sparse hull's (e.g. an octahedron) support function tying between exactly-aligned
-// vertices, which for two coincident identical hulls can collapse seed points to duplicates.
+// Multiple sets because any single one can produce a degenerate seed for some shape-size pair. The
+// irrational-looking components avoid support ties on sparse hulls (e.g. two coincident octahedra).
 GJK.SEED_DIRECTION_SETS = [
     [[1, 1, 1], [1, -1, -1], [-1, 1, -1], [-1, -1, 1]],
     [[1, 1, -1], [1, -1, 1], [-1, 1, 1], [-1, -1, -1]],
@@ -4483,10 +4380,8 @@ GJK.INTERIOR_PROBE_DIRS = [
     [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]
 ];
 
-// Tries each seed set, building a tetrahedron and checking whether it encloses the origin with a
-// real margin. Returns { overlapping: true, simplex: this } on confirmed overlap, or
-// { overlapping: false, direction, closest } from whichever seed's own reduction got closest to
-// the origin, so the caller's incremental loop continues from the best available start.
+// Tries each seed set. Returns { overlapping: true } on a confirmed enclosing tetrahedron, else
+// { overlapping: false, direction, closest } from whichever seed's reduction got closest to the origin.
 proto._seedTetrahedron = function (support) {
     let bestDistSq = Infinity, bestSet = -1;
     for (let s = 0; s < GJK.SEED_DIRECTION_SETS.length; s++) {
@@ -4516,10 +4411,9 @@ proto._seedTetrahedron = function (support) {
     return { overlapping: false, direction: finalResult.direction, closest: finalResult.closest };
 };
 
-// True iff the origin is strictly inside the Minkowski difference (real penetration), false if it
-// merely lies on the boundary (exact touch). The support function's farthest extent along every
-// direction must be strictly positive for strict interiority; at an exact touch there's a
-// separating direction (the contact normal) where it's ~0.
+// True iff the origin is strictly inside the Minkowski difference (real penetration) vs merely on
+// its boundary (exact touch), tested by checking the support extent exceeds a margin in every
+// probe direction.
 proto._originStrictlyInside = function (support) {
     const margin = GJK.OVERLAP_DISTANCE_EPSILON;
     // The collapsed search direction is numerically along the contact normal - test it first, both signs.
@@ -4548,8 +4442,8 @@ proto._supportExceeds = function (support, dir, margin) {
 
 
 // ==== src/collision/Simplex.js ====
-// Simplex reduction: closest point to the origin for a 2/3/4-point simplex, with explicit
-// degenerate fallbacks (never NaN, never a discard) - the flush-contact fix.
+// Simplex reduction: closest point to the origin for a 2/3/4-point simplex, with degenerate
+// fallbacks so a flush contact never produces NaN.
 var proto = GJK.prototype;
 
 // Dispatches by point count; a 4-point simplex either encloses the origin or reduces to a triangle.
@@ -4729,9 +4623,8 @@ proto.run = function (support, maxIterations) {
     maxIterations = maxIterations || 64;
     this._clear();
 
-    // Seed a tetrahedron from diverse directions rather than growing one incrementally - see
-    // Seeding.js for why. If no seed set encloses, its best reduction becomes the incremental
-    // loop's starting point below.
+    // Seed a tetrahedron from diverse directions (see Seeding.js). If none encloses, its best
+    // reduction seeds the incremental loop below.
     let seeded = this._seedTetrahedron(support);
     if (seeded.overlapping) return seeded;
     this._dir.copy(seeded.direction);
@@ -4755,9 +4648,8 @@ proto.run = function (support, maxIterations) {
             if (along > bestAlong) bestAlong = along;
         }
         if (newAlong <= bestAlong + 1e-10) {
-            // Stall: could mean separated, or the origin already on/inside the boundary with the
-            // search direction collapsed toward zero. Disambiguate by the closest distance: near
-            // zero means enclosed/touching, hand to the strict-interior check.
+            // Stall. Near-zero closest distance means the origin is on/inside the boundary - defer
+            // to the strict-interior check; otherwise separated.
             const closestDistSq = this._closest.x * this._closest.x + this._closest.y * this._closest.y + this._closest.z * this._closest.z;
             if (closestDistSq < GJK.OVERLAP_DISTANCE_EPSILON * GJK.OVERLAP_DISTANCE_EPSILON) {
                 return this._originStrictlyInside(support) ? { overlapping: true, simplex: this } : this._separatedResult(support);
@@ -4776,14 +4668,11 @@ proto.run = function (support, maxIterations) {
             return this._originStrictlyInside(support) ? { overlapping: true, simplex: this } : this._separatedResult(support);
         }
     }
-    // Iteration cap reached without clean termination - report the current simplex honestly as
-    // separated rather than pretending overlap.
-    return this._separatedResult(support);
+    return this._separatedResult(support); // iteration cap - report honestly as separated
 };
 
-// Builds the SEPARATED return value from the current simplex's closest point to the origin.
-// Witness points are recovered via barycentric weights applied to the stored world support
-// points, never re-queried, so they stay exactly consistent with the reported distance.
+// SEPARATED result from the simplex's closest point to the origin. Witness points are recovered
+// from barycentric weights on the stored support points, so they stay consistent with `distance`.
 proto._separatedResult = function (support, forcedNormal) {
     const bary = this._barycentricOfClosest();
     const pointA = new Vector3(), pointB = new Vector3();
@@ -4853,33 +4742,19 @@ proto._barycentricOfClosest = function () {
 
 
 // ==== src/collision/EPA.js ====
-/**
- * EPA (Expanding Polytope Algorithm): penetration depth, normal, and contact points from a GJK
- * simplex that already encloses the origin (van den Bergen, "Collision Detection in Interactive
- * 3D Environments").
- *
- * Produces: signed distance (>= 0, a penetration depth), a world normal B->A, and witness points
- * on each shape's surface. Assumes the input simplex is a genuine origin-enclosing tetrahedron.
- *
- * The result always re-queries the live polytope's closest alive face at the end (see Expand.js) -
- * a face's distance is only meaningful while alive, so tracking "smallest distance ever seen"
- * across iterations would pick up stale, later-invalidated faces.
- *
- * See InitialTetrahedron.js (completing GJK's simplex into a full tetrahedron) and Expand.js (the
- * main expansion loop + result extraction).
- */
+// EPA: penetration depth, normal (B->A), and witness points from a GJK simplex that already
+// encloses the origin (van den Bergen). See InitialTetrahedron.js and Expand.js.
 class EPA {
     constructor() {
-        // Polytope vertices, parallel arrays like GJK's (w = Minkowski diff point, a/b = world
-        // witness points). Capacity grows geometrically to stay allocation-light across calls.
+        // Polytope vertices, parallel arrays like GJK's. Capacity grows geometrically.
         this._capacity = 64;
         this._wx = new Float64Array(this._capacity); this._wy = new Float64Array(this._capacity); this._wz = new Float64Array(this._capacity);
         this._ax = new Float64Array(this._capacity); this._ay = new Float64Array(this._capacity); this._az = new Float64Array(this._capacity);
         this._bx = new Float64Array(this._capacity); this._by = new Float64Array(this._capacity); this._bz = new Float64Array(this._capacity);
         this._vertexCount = 0;
 
-        // Faces: triangle index triples + outward normal + distance-to-origin. Removed faces are
-        // marked dead (faceAlive) rather than spliced out, to avoid reindexing on every removal.
+        // Faces: index triples + outward normal + distance-to-origin. Removed faces are marked dead
+        // (faceAlive), not spliced, to avoid reindexing.
         this._faceCapacity = 128;
         this._faceA = new Int32Array(this._faceCapacity);
         this._faceB = new Int32Array(this._faceCapacity);
@@ -4960,10 +4835,8 @@ ActionPhysics.EPA = EPA;
 
 
 // ==== src/collision/InitialTetrahedron.js ====
-// Completes a full, non-degenerate tetrahedron from GJK's simplex (which may hand over as few as
-// 1 point - its enclosure/stall paths can confirm overlap from a lower-dimensional simplex when a
-// small shape sits shallowly inside a much larger one). EPA needs a real 4-point tetrahedron to
-// start, so this grows one dimension at a time by adding Minkowski support points.
+// Grows GJK's simplex (which may be as few as 1 point) into a full non-degenerate tetrahedron for
+// EPA, one dimension at a time via Minkowski support points.
 var proto = EPA.prototype;
 
 proto._buildInitialTetrahedron = function (support, simplex) {
@@ -5044,8 +4917,7 @@ proto._offPlane = function (i, j, k) {
     return vol * vol > 1e-14;
 };
 
-// Fallback for a genuinely flat (zero-volume) contact: zero depth, using the simplex's first
-// witness points and search normal. The solver's C<=0 guard treats zero depth as non-penetrating.
+// Flat (zero-volume) contact: zero depth from the simplex's first witness points and search normal.
 proto._zeroDepthResult = function (simplex) {
     const pointA = new Vector3(simplex._ax[0], simplex._ay[0], simplex._az[0]);
     const pointB = new Vector3(simplex._bx[0], simplex._by[0], simplex._bz[0]);
@@ -5059,24 +4931,18 @@ proto._zeroDepthResult = function (simplex) {
 
 
 // ==== src/collision/Expand.js ====
-// The main EPA expansion loop: grow the polytope toward the true Minkowski-difference surface,
-// then extract distance/normal/witness points from the winning face.
+// EPA expansion loop and result extraction.
 var proto = EPA.prototype;
 
-/**
- * Expands `simplex` (a GJK instance whose 4 points enclose the origin) into penetration depth and
- * normal. maxIterations guards non-convergence; hitting the cap still returns the live polytope's
- * closest alive face, never a stale one.
- */
+// Expands `simplex` into penetration depth and normal. maxIterations guards non-convergence;
+// hitting the cap still returns the live polytope's closest alive face.
 proto.run = function (support, simplex, maxIterations) {
     maxIterations = maxIterations || 64;
     this._vertexCount = 0;
     this._faceCount = 0;
 
     if (!this._buildInitialTetrahedron(support, simplex)) {
-        // No non-degenerate enclosing tetrahedron obtainable (exact touch or numerically flat) -
-        // report zero depth, which the solver treats as non-penetrating.
-        return this._zeroDepthResult(simplex);
+        return this._zeroDepthResult(simplex); // exact touch / numerically flat: zero depth
     }
     const idx = [0, 1, 2, 3];
     const cx = (this._wx[idx[0]] + this._wx[idx[1]] + this._wx[idx[2]] + this._wx[idx[3]]) / 4;
@@ -5099,21 +4965,15 @@ proto.run = function (support, simplex, maxIterations) {
 
         const newDist = this._newW.x * this._faceNx[face] + this._newW.y * this._faceNy[face] + this._newW.z * this._faceNz[face];
 
-        // Converged: the new support doesn't extend past the closest face's own plane by more than
-        // a small margin, compared relative to the face's own distance (not a fixed epsilon) so
-        // shallow contacts converge correctly too.
-        if (newDist - faceDist < 1e-6) break;
+        if (newDist - faceDist < 1e-6) break; // converged
 
         this._expandAt(this._newW, this._newA, this._newB, centroid);
     }
 
-    // Re-query the live polytope's actual closest alive face - the only way to get the current
-    // answer, whether the loop converged or hit the cap.
     return this._resultFromFace(this._closestAliveFace());
 };
 
-// Linear scan for the living face with the smallest distance-to-origin - the polytope stays small
-// (tens of faces) for this engine's shape pairs.
+// Linear scan for the alive face closest to the origin (polytope stays small).
 proto._closestAliveFace = function () {
     let best = -1, bestDist = Infinity;
     for (let i = 0; i < this._faceCount; i++) {
@@ -5200,8 +5060,7 @@ proto._resultFromFace = function (face) {
         u * this._bz[ia] + v * this._bz[ib] + w * this._bz[ic]
     );
 
-    // The face's own outward normal points A-side to B-side of the Minkowski difference A-B;
-    // negated here to match GJK's convention (B to A).
+    // Face normal points A-side to B-side; negate for the pipeline's B->A convention.
     return {
         distance: Math.max(0, dist),
         normal: new Vector3(-nx, -ny, -nz),
@@ -5222,27 +5081,20 @@ class ContactDetails {
         this.pointOnB = new Vector3();
         this.normal = new Vector3();
         this.signedDistance = 0;
-        // Warm-start data, set by the manifold on match.
-        this.normalLambda = 0;
+        this.normalLambda = 0;   // warm-start data, preserved across a match
         this.tangentLambda1 = 0;
         this.tangentLambda2 = 0;
 
-        // Body-local anchors, set once at point creation, re-read every substep to recompute the
-        // live gap (see Solver's PositionSolve.js) - not recomputed on refresh/copy.
+        // Set once at creation, re-read each substep for the live gap (PositionSolve.js).
         this.localAnchorA = new Vector3();
         this.localAnchorB = new Vector3();
 
-        // Contact-relative normal velocity just before this substep's position solve, for
-        // restitution. Written each substep by the solver.
-        this._preSolveNormalVel = 0;
-
-        // True when this point came from TriTri's mesh face-clip (see TriTri.js). Lets the manifold
-        // apply a coincidence merge that only makes sense for the many-triangle mesh case.
-        this.fromMeshFace = false;
+        this._preSolveNormalVel = 0; // for restitution, written each substep
+        this.fromMeshFace = false;   // set by TriTri; gates the mesh-face merge and patch solve
     }
 
-    // Derives local anchors from current pointOnA/pointOnB + body transforms. Called once, at
-    // point creation - never on a re-matched point (which keeps its original anchors).
+    // Derives local anchors from the current witness points. Called once at creation, never on a
+    // re-matched point.
     setLocalAnchors(bodyA, bodyB) {
         const invRotA = ContactDetails._scratchQuat.copy(bodyA.rotation).invert();
         Vector3.subInto(this.localAnchorA, this.pointOnA, bodyA.position);
@@ -5314,54 +5166,33 @@ ActionPhysics.ContactDetails = ContactDetails;
 
 
 // ==== src/collision/ContactManifold.js ====
-/**
- * ContactManifold: persistent contact state for one pair of primitive shapes, across ticks.
- *
- * Owns point lifetime entirely. Narrowphase (via update(), called once per TICK, never per
- * substep) only ever adds or refreshes points from that tick's GJK/EPA result; only the manifold
- * itself removes a point, and only from update() - never mid-substep, which previously retired
- * points still mid-correction (not actually separated), emptying manifolds and dropping bodies.
- *
- * PERSISTENCE / WARM-START: up to MAX_POINTS points. Each update() matches this tick's result
- * against existing points by proximity in bodyA-local space (a contact feature's position relative
- * to A's own frame stays close between ticks even as A moves). A match refreshes geometry on the
- * EXISTING point object, preserving its accumulated lambda for the solver's warm start.
- *
- * See Update.js (the per-tick match/add/remove) and Reduction.js (4-point cap reduction).
- */
+// Persistent contact state for one primitive-shape pair. update() (once per tick, never per
+// substep) matches this tick's GJK/EPA result against existing points by bodyA-local proximity,
+// refreshing matched points in place to preserve their warm-start lambda. Only update() removes a
+// point. See Update.js and Reduction.js.
 class ContactManifold {
     constructor(bodyA, bodyB) {
         this.bodyA = bodyA;
         this.bodyB = bodyB;
-        this.points = []; // ContactDetails[], length 0..MAX_POINTS
-        // Local-space (bodyA-relative, at match time) anchor per point, parallel to `points` -
-        // used only for next-tick matching, recomputed every update().
-        this._localAnchors = [];
+        this.points = []; // ContactDetails[], 0..MAX_POINTS
+        this._localAnchors = []; // bodyA-local anchor per point, for next-tick matching
     }
 
     get pointCount() { return this.points.length; }
 }
 
 ContactManifold.MAX_POINTS = 4;
-// Base match distance (floor for a resting/slow contact) - see Update.js's _matchDistance, which
-// widens this by the contact point's own tangential travel per tick, the same shape
-// SpeculativeMargin.js already uses for the broadphase/narrowphase gap.
+// Base match radius; Update.js._matchDistance widens it by the point's tangential travel per tick.
 ContactManifold.MATCH_DISTANCE = 0.05;
-// Signed-distance half-width of the exact-touch band where GJK/EPA's normal is ambiguous and a
-// warm-matched point keeps its established normal instead (see Update.js).
+// Signed-distance band where GJK/EPA's normal is ambiguous; a matched point keeps its old normal.
 ContactManifold.EXACT_TOUCH_BAND = 0.001;
-// Two same-tick MESH-face contact points (fromMeshFace) closer than this (meters) with essentially
-// the same normal are the same feature reported by two adjacent triangles that share that vertex
-// (see TriTri.js / Reduction.js) - merged on add. Only applies to mesh-face contacts, so a
-// primitive manifold's load-bearing point spread is never touched; 5 cm comfortably catches a unit
-// box face's shared corners while staying well inside its 2 m corner spacing.
+// Same-tick mesh-face points closer than this (meters) with a matching normal are merged (Reduction.js).
 ContactManifold.COINCIDENCE_DIST = 0.05;
 
 ContactManifold._scratchNormal = new Vector3();
 ContactManifold._scratchRA = new Vector3();
 ContactManifold._scratchRB = new Vector3();
 ContactManifold._scratchInvRot = new Quaternion();
-// Transient-comparison scratch for _toLocal - see Update.js's matching loop.
 ContactManifold._scratchLocal = new Vector3();
 
 ActionPhysics.ContactManifold = ContactManifold;
@@ -5392,25 +5223,19 @@ proto.update = function (newContacts, dt) {
             if (distSq < bestDistSq) { bestDistSq = distSq; bestJ = j; }
         }
         if (bestJ === -1) {
-            // Not re-confirmed this tick: remove. The only removal path - never mid-substep.
+            // Not re-confirmed this tick: remove (the only removal path, never mid-substep).
             this.points.splice(i, 1);
             this._localAnchors.splice(i, 1);
             this._emitBoth('endContact', existing);
             continue;
         }
         matched[bestJ] = true;
-        // Capture lambda BEFORE copy() overwrites it - copy() pulls every field from
-        // newContacts[bestJ], whose lambda is always zero (a fresh ContactDetails has no solver
-        // history). `existing` and `this.points[i]` are the same object, so reading "prior value"
-        // after copy() would just read back the zero just written.
+        // Capture the warm-start lambdas before copy() zeroes them from the fresh incoming contact.
         const keepNormalLambda = existing.normalLambda;
         const keepTangentLambda1 = existing.tangentLambda1;
         const keepTangentLambda2 = existing.tangentLambda2;
-        // Preserve the established normal through an exact-touch refresh: within EXACT_TOUCH_BAND
-        // of zero signed distance, GJK/EPA's recovered normal is genuinely ambiguous (can flip to a
-        // diagonal face normal for one tick), and a persistent contact's true normal doesn't
-        // actually change tick to tick - trusting the ambiguous tick over the established one causes
-        // a penetrate-then-launch limit cycle. Outside the band the fresh normal is trustworthy.
+        // Inside EXACT_TOUCH_BAND, GJK/EPA's recovered normal is ambiguous - keep the established
+        // one, or a persistent contact hits a penetrate-then-launch limit cycle.
         const keepNormal = Math.abs(newContacts[bestJ].signedDistance) < ContactManifold.EXACT_TOUCH_BAND
             ? ContactManifold._scratchNormal.copy(existing.normal)
             : null;
@@ -5440,13 +5265,8 @@ proto.update = function (newContacts, dt) {
     if (hadPointsBefore && this.points.length === 0) this._emitBoth('endAllContact', null);
 };
 
-// Match tolerance for one existing point: the base floor (MATCH_DISTANCE, for a resting/slow
-// contact) widened by how far the contact point itself travels across each body's surface this
-// tick - the tangential relative velocity at the contact, times dt. Without this, a fast-sliding
-// or fast-rolling contact's point genuinely moves several tenths of a meter per tick in bodyA-
-// local space, blows past a fixed-radius match, and the manifold is destroyed and rebuilt from
-// scratch every tick - warm-start (accumulated lambda) never survives a single tick for exactly
-// the contacts that need it most. Same shape as SpeculativeMargin.js's own base+dynamic split.
+// MATCH_DISTANCE widened by the contact point's tangential travel this tick, so a fast-sliding or
+// rolling contact's point still matches instead of rebuilding the manifold (and losing warm-start).
 proto._matchDistance = function (point, dt) {
     if (!dt) return ContactManifold.MATCH_DISTANCE;
     const bodyA = this.bodyA, bodyB = this.bodyB;
@@ -5477,9 +5297,7 @@ proto._emitBoth = function (event, contact) {
     this.bodyB.emit(event, { contact: contact, other: this.bodyA });
 };
 
-// World point -> bodyA-local space, for next-tick matching. Writes into `out` (caller-owned - pass
-// a scratch Vector3 for a transient comparison, or a fresh one to store long-term, e.g. into
-// this._localAnchors).
+// World point -> bodyA-local space, for next-tick matching. Writes into caller-owned `out`.
 ContactManifold._toLocal = function (bodyA, worldPoint, out) {
     Vector3.subInto(out, worldPoint, bodyA.position);
     ContactManifold._scratchInvRot.copy(bodyA.rotation).invert();
@@ -5495,13 +5313,9 @@ ContactManifold._toLocal = function (bodyA, worldPoint, out) {
 var proto = ContactManifold.prototype;
 
 proto._addPoint = function (contact) {
-    // Coincidence merge for MESH face contacts only. A mesh face contact arrives as several
-    // triangle-vs-triangle sub-contacts (see TriTri.js); adjacent triangles legitimately report the
-    // SAME shared corner - the two triangles of a box's bottom face each put a point on both
-    // corners along their shared diagonal. Left in, those near-duplicate corners bias the 4-point
-    // reduction toward one edge and inject torque into a flat rest. Scoped to contacts flagged
-    // `fromMeshFace` so closed-form BoxBox / primitive manifolds (which are already deduped and
-    // whose point spread is load-bearing, e.g. a box tumbling down a ramp) are untouched.
+    // Adjacent mesh triangles report the same shared corner (TriTri emits one contact per clipped
+    // vertex). Merge same-tick mesh-face duplicates so the 4-point reduction isn't biased toward
+    // one edge. Scoped to fromMeshFace so primitive manifolds keep their point spread.
     if (contact.fromMeshFace) for (let i = 0; i < this.points.length; i++) {
         const ex = this.points[i];
         if (!ex.fromMeshFace) continue;
@@ -5519,7 +5333,7 @@ proto._addPoint = function (contact) {
     }
 
     const point = contact.clone();
-    point.normalLambda = 0; point.tangentLambda1 = 0; point.tangentLambda2 = 0; // fresh: no warm-start data
+    point.normalLambda = 0; point.tangentLambda1 = 0; point.tangentLambda2 = 0;
     point.setLocalAnchors(this.bodyA, this.bodyB);
     const local = ContactManifold._toLocal(this.bodyA, point.pointOnA, new Vector3());
 
@@ -5577,8 +5391,8 @@ ContactManifold._triArea = function (a, b, c) {
 
 
 // ==== src/collision/ContactManifoldList.js ====
-// Active ContactManifolds, keyed by canonical body-pair id. One manifold per pair; refresh() runs
-// once per tick, prunes any manifold left with zero points.
+// One ContactManifold per body pair, keyed by canonical id. refresh() runs once per tick and
+// prunes any manifold left with zero points.
 class ContactManifoldList {
     constructor() {
         this._manifolds = new Map(); // "idA:idB" (idA < idB) -> ContactManifold
@@ -5588,8 +5402,7 @@ class ContactManifoldList {
         return bodyA.id < bodyB.id ? bodyA.id + ':' + bodyB.id : bodyB.id + ':' + bodyA.id;
     }
 
-    // Canonical body order (lower id = bodyA) so local-space matching stays consistent regardless
-    // of caller argument order.
+    // Lower id becomes bodyA, so local-space matching is stable regardless of argument order.
     getOrCreate(bodyA, bodyB) {
         const key = ContactManifoldList._key(bodyA, bodyB);
         let m = this._manifolds.get(key);
@@ -5602,15 +5415,14 @@ class ContactManifoldList {
         return m;
     }
 
-    // contactsByPair: key -> ContactDetails[] for this tick. A pair with no entry is treated as empty.
-    // dt: this tick's timestep, used to size the match-distance tolerance (see Update.js).
+    // contactsByPair: key -> ContactDetails[] for this tick (missing = empty). Callers create new
+    // pairs via getOrCreate() before this runs.
     refresh(contactsByPair, dt) {
         for (const [key, manifold] of this._manifolds) {
             const contacts = contactsByPair.get(key) || [];
             manifold.update(contacts, dt);
             if (manifold.pointCount === 0) this._manifolds.delete(key);
         }
-        // New pairs are created via getOrCreate() by the caller before refresh() runs.
     }
 
     values() {
@@ -5624,47 +5436,36 @@ ActionPhysics.ContactManifoldList = ContactManifoldList;
 
 
 // ==== src/phases/NarrowPhase.js ====
-/**
- * NarrowPhase: dispatch layer tying Midphase's primitive-shape pairs through GJK/EPA into
- * ContactDetails, routed into ContactManifoldList. See PairTest.js (per-pair GJK/EPA + tick
- * dispatch), SpeculativeMargin.js (how far ahead a contact is reported), GeometryRefresh.js
- * (per-substep contact geometry re-measure).
- */
+// Dispatches Midphase's primitive-shape pairs through the closed-form tests / GJK/EPA into
+// ContactManifoldList. See PairTest.js, SpeculativeMargin.js, GeometryRefresh.js.
 class NarrowPhase {
     constructor() {
         this.manifolds = new ContactManifoldList();
         this._dt = 1 / 60; // set each tick by step()
-        // Scratch GJK/EPA, reused across every pair tested this tick - safe since pairs run
-        // one at a time, never interleaved.
         this._gjk = new GJK();
         this._epa = new EPA();
-        // Reused across every GJK/EPA-fallback pair this tick, rebound per pair via setSides() -
-        // see PairTest.js.
+        // Rebound per pair via setSides() (PairTest.js).
         this._support = new MinkowskiSupport({ shape: null, position: new Vector3(), rotation: new Quaternion() }, { shape: null, position: new Vector3(), rotation: new Quaternion() });
-        this._contactPool = []; // reused ContactDetails, grown as needed, never shrunk
+        this._contactPool = []; // reused ContactDetails, grown as needed
         this._poolIndex = 0;
-        this._pairResultScratch = []; // reused per-pair contact list, see PairTest.js
+        this._pairResultScratch = [];
     }
 }
 
-// Base speculative margin (meters) - see SpeculativeMargin.js.
-NarrowPhase.SPECULATIVE_BASE = 0.02;
+NarrowPhase.SPECULATIVE_BASE = 0.02; // meters, see SpeculativeMargin.js
 
 ActionPhysics.NarrowPhase = NarrowPhase;
 
 
 // ==== src/phases/SphereSphere.js ====
-// Closed-form sphere-sphere: no GJK, no EPA, no shared epsilon/iteration budget with any other
-// pair type. Own tunable margin (SphereSphere.DEGENERATE_EPSILON), independent of GJK.js/EPA.js.
+// Closed-form sphere-sphere.
 const SphereSphere = {};
 
-// True iff both placed shapes are bare SphereShapes (not a compound/mesh child wrapping one).
 SphereSphere.applies = function (placedA, placedB) {
     return placedA.shape instanceof SphereShape && placedB.shape instanceof SphereShape;
 };
 
-// Below this center-to-center distance the separating direction is undefined (coincident
-// centers) - falls back to a fixed axis rather than dividing by ~0.
+// Below this center-to-center distance the separating direction is undefined; use a fixed axis.
 SphereSphere.DEGENERATE_EPSILON = 1e-9;
 
 SphereSphere.test = function (placedA, placedB, out) {
@@ -5693,8 +5494,7 @@ SphereSphere.test = function (placedA, placedB, out) {
 
 
 // ==== src/phases/SphereBox.js ====
-// Closed-form sphere-box: closest point on an oriented box to the sphere center, clamped per-axis
-// in the box's local frame. Own epsilon, no shared GJK/EPA state.
+// Closed-form sphere-box: closest point on the oriented box to the sphere center, clamped per-axis.
 const SphereBox = {};
 
 SphereBox.applies = function (placedA, placedB) {
@@ -5702,9 +5502,7 @@ SphereBox.applies = function (placedA, placedB) {
         (placedA.shape instanceof BoxShape && placedB.shape instanceof SphereShape);
 };
 
-// Below this distance from the box surface to the sphere center, the surface normal is undefined
-// (center exactly on/past every face at once - only reachable at the box's own center) - falls
-// back to a fixed axis rather than dividing by ~0.
+// Below this distance from box surface to sphere center the normal is undefined; use a fixed axis.
 SphereBox.DEGENERATE_EPSILON = 1e-9;
 
 SphereBox.test = function (placedA, placedB, out) {
@@ -5730,8 +5528,7 @@ SphereBox.test = function (placedA, placedB, out) {
     const closest = SphereBox._scratchV2;
     let localNx = 0, localNy = 0, localNz = 0, penetration = 0;
     if (inside) {
-        // Center is inside the box: push out along whichever axis has the LEAST penetration
-        // (the standard box-interior-point resolution - the shortest way out).
+        // Center inside the box: push out along the axis of least penetration.
         const px = hw - Math.abs(local.x), py = hh - Math.abs(local.y), pz = hd - Math.abs(local.z);
         if (px <= py && px <= pz) { localNx = local.x >= 0 ? 1 : -1; penetration = px; closest.set(local.x >= 0 ? hw : -hw, local.y, local.z); }
         else if (py <= pz) { localNy = local.y >= 0 ? 1 : -1; penetration = py; closest.set(local.x, local.y >= 0 ? hh : -hh, local.z); }
@@ -5761,8 +5558,7 @@ SphereBox.test = function (placedA, placedB, out) {
         boxPlaced.rotation.transformVectorInPlace(SphereBox._scratchV1);
     }
     worldNx = SphereBox._scratchV1.x; worldNy = SphereBox._scratchV1.y; worldNz = SphereBox._scratchV1.z;
-    // Normal points sphere-side -> box-side in this local derivation; flip to A->B then to B->A
-    // (the pipeline convention) based on which placed side is actually the sphere.
+    // Local derivation gives sphere->box; flip to the pipeline's B->A when the box is placed first.
     if (!sphereFirst) { worldNx = -worldNx; worldNy = -worldNy; worldNz = -worldNz; }
 
     const worldClosest = SphereBox._scratchV3;
@@ -5812,34 +5608,17 @@ BoxBox.applies = function (placedA, placedB) {
     return placedA.shape instanceof BoxShape && placedB.shape instanceof BoxShape;
 };
 
-// SAT tie-break: an edge-edge axis only wins over the best face axis if it beats it by more than
-// this fraction of the face overlap - guards the classic SAT jitter case of two boxes resting
-// face-to-face, where an edge axis can numerically tie a face axis and flip the contact type
-// (4-point face manifold vs 1-point edge manifold) tick to tick. 0.25 (not the much tighter 0.005
-// first tried): a real reproduction - two boxes stacked with a real few-degrees relative tilt from
-// asymmetric loading - showed the edge axis beating the face axis by as much as 6% (ratio 0.94) at
-// genuinely small positive (overlapping) depths, well outside a 0.5% margin, and each such flip
-// injected a real torque kick (a 4-point resting manifold collapsing to 1 stray point for a handful
-// of ticks, repeatedly, over the whole run) that accumulated into unbounded rotation over time - not
-// a one-off transient. Edge-edge is only EVER the geometrically correct answer for a genuine corner/
-// edge-first collision (see box-box/corner-drop), which separates from a face contact by a much
-// wider margin than 25% of the face overlap - this loses nothing there while fixing the flicker.
+// An edge-edge axis only beats the best face axis if it wins by more than this fraction of the
+// face overlap. Guards face-to-face resting boxes, where an edge axis can numerically tie a face
+// axis and flicker the manifold between 4 points and 1 tick to tick.
 BoxBox.RELATIVE_TOLERANCE = 0.25;
-// Absolute floor under the tie-break margin above - at near-zero overlap (exact touch, sd ~ 0)
-// RELATIVE_TOLERANCE * faceOverlap itself vanishes to ~0, so plain float noise between the face
-// and edge overlap sums (they differ only by each absR epsilon's rounding) would otherwise win the
-// edge branch essentially at random - producing a spurious 1-point edge contact instead of the
-// correct 4-point face manifold for a flat box resting on a much larger box (e.g. the ground).
+// Absolute floor under the tie-break: near exact touch, RELATIVE_TOLERANCE * faceOverlap vanishes
+// and float noise alone would pick the edge branch.
 BoxBox.ABSOLUTE_TOLERANCE = 1e-6;
-// Edge-cross axes below this squared length are near-parallel edges (degenerate axis, direction
-// undefined) - skipped rather than normalizing a near-zero vector.
+// Edge-cross axes below this squared length are near-parallel edges (degenerate axis).
 BoxBox.PARALLEL_EPSILON = 1e-9;
-// How far apart (along the chosen SAT axis) a still-separated pair is trusted to report a
-// speculative contact via face clipping / edge closest-points, rather than falling through to
-// GJK/EPA. Deliberately generous (not tied to any one pair's speculative margin, which depends on
-// relative velocity and isn't known here) - a face/edge SAT axis stays geometrically meaningful
-// well past any margin PairTest.step would actually keep, so the real filtering happens there; this
-// just bounds it so a wildly separated pair doesn't run the clip machinery for nothing.
+// How far a still-separated pair is trusted to report a speculative contact via SAT before falling
+// through to GJK/EPA. Generous; PairTest.step does the real speculative-margin filtering.
 BoxBox.SEPARATED_AXIS_LIMIT = 1.0;
 
 // out: array to push ContactDetails into (pooled via nextContact()). Returns out.
@@ -5876,12 +5655,9 @@ BoxBox.test = function (placedA, placedB, out, nextContact) {
     const dA = [d.dot(ax[0]), d.dot(ax[1]), d.dot(ax[2])];
     const dB = [d.dot(bx[0]), d.dot(bx[1]), d.dot(bx[2])];
 
-    // Track the axis of LEAST overlap across all 15 candidates, whether or not any individual
-    // axis is actually separating (overlap < 0) - a negative-overlap axis here just means the
-    // boxes are apart along it, and its magnitude is the gap, which the caller (PairTest.step)
-    // compares against the speculative margin exactly like SphereSphere/SphereBox's separated
-    // case. Bailing out early on the first negative axis (the classic SAT boolean-overlap test)
-    // would silently drop every speculative box-box contact - no more overlap tests, no early return.
+    // Least-overlap axis across all 15 candidates, whether or not any is separating: a negative
+    // overlap is the gap, which PairTest.step compares against the speculative margin. No early
+    // bail on the first separating axis - that would drop every speculative box-box contact.
     let minOverlap = Infinity;
     let bestAxisType = -1; // 0 = face of A, 1 = face of B
     let bestI = -1, bestSign = 1;
@@ -5893,10 +5669,8 @@ BoxBox.test = function (placedA, placedB, out, nextContact) {
         const overlap = ra + rb - Math.abs(dA[i]);
         if (overlap < minOverlap) { minOverlap = overlap; bestAxisType = 0; bestI = i; bestSign = dA[i] >= 0 ? 1 : -1; }
     }
-    // Face axes of B (3). bestSign here is the OPPOSITE test to A's: d = posB - posA, so d.dot(bx[j])
-    // >= 0 means A sits on B's -bx[j] side - B's reference face (the one facing A) is the -bx[j]
-    // face, sign -1. (For A's own axes above, d points the other way, so the un-flipped sign is
-    // already correct there.)
+    // Face axes of B (3). bestSign is flipped vs A's: d = posB - posA, so d.dot(bx[j]) >= 0 means
+    // A sits on B's -bx[j] side, making that the reference face.
     for (let j = 0; j < 3; j++) {
         const rb = halfB[j];
         const ra = halfA[0] * absR[0][j] + halfA[1] * absR[1][j] + halfA[2] * absR[2][j];
@@ -5928,41 +5702,12 @@ BoxBox.test = function (placedA, placedB, out, nextContact) {
         }
     }
 
-    // A negative trueMin just means the boxes are apart along that axis, by that many units - the
-    // SAT distance bound is still valid, and face clipping still produces the right witness
-    // points/gap for a genuinely nearby separated pair (a flat box approaching the ground a hair
-    // above it is the common case: all 4 corners are still equally close, and reporting only ONE of
-    // them, as a single-point GJK/EPA fallback would, hands the solver an off-center speculative
-    // contact - torque from nothing the instant that point is later confirmed as touching). Only
-    // bail to the generic GJK/EPA path when SAT's own numbers stop being geometrically meaningful -
-    // see the footprint-disjoint guard below.
-    let trueMin = Math.min(faceOverlap, bestEdgeI >= 0 ? bestEdgeOverlap : Infinity);
-
-    // Prefer the face axis unless an edge axis is a clearly tighter fit - biases toward face
-    // contacts (4-point manifolds) on ties, which is what keeps resting boxes from flickering
-    // into a 1-point edge manifold every few ticks. Scaled by |faceOverlap| (not faceOverlap itself)
-    // so this works the same whether overlapping or separated - a body with even a hair of
-    // accumulated rotation produces an edge-cross axis (ax[i] x bx[j]) that is numerically almost
-    // exactly a face axis in a new direction (see the box-bridging-two-supports repro this fixes: a
-    // ~0.5 degree tilt on the lower box turned "A's x-axis cross B's z-axis" into an axis 0.008 rad
-    // off pure -Y, i.e. functionally the SAME axis as the Y-face test, not a genuinely different
-    // tighter one) - a fixed absolute epsilon is far too tight to catch that at realistic overlap
-    // magnitudes (~0.1+), and simply DROPPING the possibly-negative faceOverlap's sign (as the old
-    // "only when non-negative" version did) left every separated pair with zero relative tolerance,
-    // which is exactly the case that broke.
-    // The edge branch is only trusted when the boxes are ACTUALLY OVERLAPPING (faceOverlap >= 0).
-    // SAT's own "most negative overlap wins" rule (the same rule that correctly picks the tightest
-    // separating axis while overlapping) means the axis with the LARGEST gap wins while separated -
-    // and an edge-cross axis reports a bigger gap than the true face axis remarkably easily under
-    // even modest relative tilt (two boxes 23 degrees off parallel, mid-fall, still well short of
-    // contact) despite the two boxes plainly still approaching FACE first, not edge first. Taking
-    // that "biggest gap" axis at face value while separated collapses what should still be a
-    // multi-point speculative face contact into a single degenerate edge-closest-point - which is
-    // exactly the wrong shape to warm-start into the real contact one substep later (see the offset-
-    // stack repro this fixes: box0-box1 spiralled from a stable ~13 degree lean into a full 179
-    // degree flip once this kicked in around the tick they came close enough to matter). Once
-    // genuinely overlapping (faceOverlap >= 0), SAT's normal minimum-overlap logic is trustworthy
-    // again - a real corner/edge-first collision (box-box/corner-drop) still needs this branch.
+    // Prefer the face axis unless an edge axis is a clearly tighter fit, and only take the edge
+    // branch when the boxes actually overlap. While separated, SAT's "largest gap wins" rule picks
+    // an edge-cross axis over the true face axis under even modest relative tilt, collapsing a
+    // speculative face contact into a degenerate edge point that warm-starts wrong. Scale the margin
+    // by |faceOverlap| so it behaves the same overlapping or separated. A real corner/edge-first
+    // collision (box-box/corner-drop) still clears this and takes the edge branch.
     const tieBreakMargin = Math.max(BoxBox.RELATIVE_TOLERANCE * Math.abs(faceOverlap), BoxBox.ABSOLUTE_TOLERANCE);
     if (faceOverlap >= 0 && bestEdgeI >= 0 && bestEdgeOverlap < faceOverlap - tieBreakMargin) {
         BoxBox._buildEdgeContact(placedA, placedB, ax, bx, halfA, halfB, posA, posB,
@@ -5970,10 +5715,7 @@ BoxBox.test = function (placedA, placedB, out, nextContact) {
         return out;
     }
 
-    // Face clipping's geometry (project the incident face onto the reference face's extent) only
-    // matches "closest point" once the boxes are far enough apart along OTHER axes that they no
-    // longer face each other at all - bail to GJK/EPA past that point rather than returning a
-    // clipped-away-to-nothing or geometrically-meaningless result.
+    // Too far apart for face clipping to mean anything - let GJK/EPA handle it.
     if (faceOverlap < -BoxBox.SEPARATED_AXIS_LIMIT) return null;
 
     BoxBox._buildFaceContact(placedA, placedB, ax, bx, halfA, halfB, posA, posB,
@@ -6057,9 +5799,7 @@ BoxBox._buildFaceContact = function (placedA, placedB, ax, bx, halfA, halfB, pos
     refNormal.copy(refAxes[i]);
     refNormal.scaleInPlace(sign);
 
-    // Incident face: the face of the other box whose own outward normal is most anti-parallel to
-    // refNormal (the face "facing into" the reference box) - i.e. minimizing (candidate normal) .
-    // refNormal over the 6 candidate face normals (+/- each local axis).
+    // Incident face: the other box's face most anti-parallel to refNormal (min dot over +/- each axis).
     let incFaceIndex = 0, incFaceSign = 1, best = Infinity;
     for (let k = 0; k < 3; k++) {
         const dp = incAxes[k].dot(refNormal);
@@ -6135,13 +5875,9 @@ BoxBox._buildFaceContact = function (placedA, placedB, ax, bx, halfA, halfB, pos
         if (polyCount === 0) return; // fully clipped away - shouldn't happen given overlap > 0, but safe
     }
 
-    // Keep points at or behind the reference face (actual penetration, depth > 0) AND points just
-    // in front of it (depth < 0: still separated, a genuine speculative contact - see
-    // SEPARATED_AXIS_LIMIT above for why trusting this here, not just at depth ~ 0, is the fix for
-    // a flat box approaching flush: without it, only whichever single corner GJK/EPA's separated
-    // case happens to pick becomes the pre-touch contact, and the OTHER 3 corners get seen as
-    // touching for the first time only on the substep they've already sunk in - reported one
-    // corner at a time instead of all 4 together, which reads as a torque impulse from nothing).
+    // Keep points behind the reference face (penetrating) and those just in front of it (still
+    // separated - a speculative contact). Reporting all 4 corners together before touch, rather
+    // than one at a time as they sink in, is what keeps a flat flush approach torque-free.
     const normalAtoB = BoxBox._normalAtoB;
     normalAtoB.copy(refNormal);
     if (!refIsA) normalAtoB.scaleInPlace(-1); // refNormal is B's outward normal when B is reference; flip to A->B
@@ -6203,59 +5939,23 @@ ActionPhysics.BoxBox = BoxBox;
 
 
 // ==== src/phases/TriTri.js ====
-// Closed-form triangle-triangle FACE contact: when two triangles are near-coplanar and near-
-// touching, clip the incident triangle against the reference triangle's 3 edge half-planes
-// (Sutherland-Hodgman in the reference plane) and emit one contact per surviving vertex - a real
-// multi-point manifold spread across the shared face area.
-//
-// WHY THIS EXISTS: a MeshShape's midphase dispatches a flat box-on-box contact as up to four
-// triangle-vs-triangle pairs (two triangles per box face). Routed through GJK/EPA, each pair yields
-// exactly ONE witness point, and EPA consistently picks the shared diagonal edge/vertex the two
-// face triangles have in common - so all four points collapse onto one edge of the square face
-// instead of spanning it. The solver then pushes up on a single edge and the box pitches away from
-// a drop that imparted zero torque. Clipping produces the full contact polygon instead.
-//
-// Only the near-parallel (anti-parallel normals), near-touching FACE case produces contacts here.
-// Most other pairs return null and fall through to GJK/EPA in PairTest.js, like BoxBox.test on a
-// separated pair. The one exception: a near-perpendicular pair sharing a coincident edge without
-// interpenetrating (a mesh box's top face triangle and its own side wall) returns an EMPTY result,
-// which vetoes the GJK/EPA fallback - that shared edge is not a contact. Mirrors
-// BoxBox._buildFaceContact for the clipping half.
+// Closed-form triangle-triangle face contact: clip the incident triangle against the reference
+// triangle's edge half-planes (Sutherland-Hodgman) and emit one contact per surviving vertex.
+// Routing a flat mesh face contact through GJK/EPA instead gives one witness point per triangle
+// pair, all landing on the shared diagonal - a single-edge manifold that torques a flat drop.
 const TriTri = {};
 
 TriTri.applies = function (placedA, placedB) {
     return placedA.shape instanceof TriangleShape && placedB.shape instanceof TriangleShape;
 };
 
-// dot(nA, nB) below this (i.e. the two outward normals are anti-parallel to within ~2.5 degrees)
-// => a genuine opposing-face pair: one triangle's front faces the other's. A POSITIVE dot near +1
-// is two co-oriented coincident faces (e.g. the two boxes' shared +z side walls when perfectly
-// aligned) - not a contact, must not be clipped. Anything in between is an edge/point feature for
-// GJK/EPA.
+// Opposing-face pair: outward normals anti-parallel to within ~2.5 deg.
 TriTri.ANTIPARALLEL_DOT = -0.999;
-// How far in FRONT of the reference plane (still separated) the incident triangle is trusted to
-// report a speculative face contact - kept generous so all clipped points surface together on the
-// approach tick (same reasoning as BoxBox.SEPARATED_AXIS_LIMIT); PairTest.js's speculative margin
-// does the real filtering.
-TriTri.SEPARATION_LIMIT = 0.5;
-// How far BEHIND the reference plane (penetrating) an opposing-face pair is still resolved as a
-// face contact. Generous: the clip manifold is exactly what pushes an over-penetrated stack back
-// apart, so bailing to GJK/EPA's single point here would reintroduce the torque bug under load.
-// A box's vertical SIDE faces are co-ORIENTED (normals parallel, not anti-parallel) when two boxes
-// align, so they never reach this branch - they are vetoed earlier by the ndot test.
-TriTri.PENETRATION_LIMIT = 1.0;
-// A clipped overlap polygon whose area is below this (m^2) is a glancing edge sliver - typically
-// the near-zero overlap of two box-face triangles split along OPPOSITE diagonals, which otherwise
-// emits a row of points strung along the face diagonal and biases the manifold. The real overlap
-// from the same-diagonal triangle pair is a full half-face and clears this easily; a genuine small
-// face contact below this threshold is left to GJK/EPA.
-TriTri.MIN_AREA = 0.02;
-// |dot(nA,nB)| below this counts as "near perpendicular" for the shared-edge veto.
+TriTri.SEPARATION_LIMIT = 0.5;  // report a speculative face contact up to this gap in front of A's plane
+TriTri.PENETRATION_LIMIT = 1.0; // keep resolving as a face contact up to this depth behind it
+TriTri.MIN_AREA = 0.02;         // below this the clipped overlap is a sliver, not a face
 TriTri.PERPENDICULAR_DOT = 0.25;
-// Two vertices of one triangle within this distance (meters) of the other triangle's plane, AND
-// projecting inside its edges, count as a coincident shared edge.
 TriTri.EDGE_COINCIDENCE = 1e-3;
-// Degenerate triangle (near-zero area) normal guard.
 TriTri.AREA_EPSILON = 1e-12;
 
 // Unit outward normal of a world-space triangle into `out`. Returns false if degenerate.
@@ -6270,28 +5970,17 @@ TriTri._normalInto = function (out, a, b, c) {
     return true;
 };
 
-// Does segment p->q pierce triangle (t0,t1,t2) with unit normal tn, strictly between the endpoints?
+// Does segment p->q pierce triangle (t0,t1,t2) strictly between its endpoints?
 TriTri._segmentHitsTri = function (px, py, pz, qx, qy, qz, t0, t1, t2, tn) {
     const dx = qx - px, dy = qy - py, dz = qz - pz;
     const denom = dx * tn.x + dy * tn.y + dz * tn.z;
-    if (denom > -1e-12 && denom < 1e-12) return false; // parallel to the triangle plane
+    if (denom > -1e-12 && denom < 1e-12) return false;
     const t = ((t0.x - px) * tn.x + (t0.y - py) * tn.y + (t0.z - pz) * tn.z) / denom;
-    if (t <= 1e-9 || t >= 1 - 1e-9) return false; // hit is at/beyond an endpoint, not a true crossing
-    const hx = px + dx * t, hy = py + dy * t, hz = pz + dz * t;
-    // Barycentric inside-test against the three edges.
-    const e0x = t1.x - t0.x, e0y = t1.y - t0.y, e0z = t1.z - t0.z;
-    const e1x = t2.x - t1.x, e1y = t2.y - t1.y, e1z = t2.z - t1.z;
-    const e2x = t0.x - t2.x, e2y = t0.y - t2.y, e2z = t0.z - t2.z;
-    const c0x = (hx - t0.x), c0y = (hy - t0.y), c0z = (hz - t0.z);
-    const c1x = (hx - t1.x), c1y = (hy - t1.y), c1z = (hz - t1.z);
-    const c2x = (hx - t2.x), c2y = (hy - t2.y), c2z = (hz - t2.z);
-    const d0 = tn.x * (e0y * c0z - e0z * c0y) + tn.y * (e0z * c0x - e0x * c0z) + tn.z * (e0x * c0y - e0y * c0x);
-    const d1 = tn.x * (e1y * c1z - e1z * c1y) + tn.y * (e1z * c1x - e1x * c1z) + tn.z * (e1x * c1y - e1y * c1x);
-    const d2 = tn.x * (e2y * c2z - e2z * c2y) + tn.y * (e2z * c2x - e2x * c2z) + tn.z * (e2x * c2y - e2y * c2x);
-    return (d0 >= 0 && d1 >= 0 && d2 >= 0) || (d0 <= 0 && d1 <= 0 && d2 <= 0);
+    if (t <= 1e-9 || t >= 1 - 1e-9) return false;
+    return TriTri._pointInTri(px + dx * t, py + dy * t, pz + dz * t, t0, t1, t2, tn);
 };
 
-// Point-in-triangle test (point already assumed on the triangle's plane; tn is the unit normal).
+// Point-in-triangle, point assumed on the triangle's plane.
 TriTri._pointInTri = function (hx, hy, hz, t0, t1, t2, tn) {
     const e0x = t1.x - t0.x, e0y = t1.y - t0.y, e0z = t1.z - t0.z;
     const e1x = t2.x - t1.x, e1y = t2.y - t1.y, e1z = t2.z - t1.z;
@@ -6305,26 +5994,7 @@ TriTri._pointInTri = function (hx, hy, hz, t0, t1, t2, tn) {
     return (d0 >= 0 && d1 >= 0 && d2 >= 0) || (d0 <= 0 && d1 <= 0 && d2 <= 0);
 };
 
-// True if the two triangles lie flat against each other along a shared edge: at least two vertices
-// of one triangle sit on the other's plane (within EDGE_COINCIDENCE) and project inside it.
-TriTri._sharesCoincidentEdge = function (a0, a1, a2, nA, b0, b1, b2, nB) {
-    return TriTri._countOnPlane(b0, b1, b2, a0, a1, a2, nA) >= 2 ||
-        TriTri._countOnPlane(a0, a1, a2, b0, b1, b2, nB) >= 2;
-};
-TriTri._countOnPlane = function (p0, p1, p2, t0, t1, t2, tn) {
-    const pts = [p0, p1, p2];
-    let n = 0;
-    for (let i = 0; i < 3; i++) {
-        const p = pts[i];
-        const d = (p.x - t0.x) * tn.x + (p.y - t0.y) * tn.y + (p.z - t0.z) * tn.z;
-        if (d < -TriTri.EDGE_COINCIDENCE || d > TriTri.EDGE_COINCIDENCE) continue;
-        if (TriTri._pointInTri(p.x - d * tn.x, p.y - d * tn.y, p.z - d * tn.z, t0, t1, t2, tn)) n++;
-    }
-    return n;
-};
-
-// True if the two triangles genuinely interpenetrate (some edge of one pierces the interior of the
-// other). Coincident-edge / shared-boundary touching is NOT an intersection.
+// Some edge of one triangle pierces the interior of the other. Shared-boundary touching does not count.
 TriTri._trianglesIntersect = function (a0, a1, a2, nA, b0, b1, b2, nB) {
     return TriTri._segmentHitsTri(a0.x, a0.y, a0.z, a1.x, a1.y, a1.z, b0, b1, b2, nB) ||
         TriTri._segmentHitsTri(a1.x, a1.y, a1.z, a2.x, a2.y, a2.z, b0, b1, b2, nB) ||
@@ -6334,8 +6004,8 @@ TriTri._trianglesIntersect = function (a0, a1, a2, nA, b0, b1, b2, nB) {
         TriTri._segmentHitsTri(b2.x, b2.y, b2.z, b0.x, b0.y, b0.z, a0, a1, a2, nA);
 };
 
-// out: array to push pooled ContactDetails into. Returns out on success (possibly empty, which
-// vetoes the GJK/EPA fallback), or null to fall through to GJK/EPA.
+// Returns `out` on success (may be empty, which vetoes the GJK/EPA fallback in PairTest), or null
+// to fall through to GJK/EPA.
 TriTri.test = function (placedA, placedB, out, nextContact) {
     const sA = placedA.shape, sB = placedB.shape;
     const a0 = sA.a, a1 = sA.b, a2 = sA.c;
@@ -6348,30 +6018,20 @@ TriTri.test = function (placedA, placedB, out, nextContact) {
     const ndot = nA.x * nB.x + nA.y * nB.y + nA.z * nB.z;
 
     if (ndot > TriTri.ANTIPARALLEL_DOT) {
-        // Not an opposing-face pair. The one case TriTri must actively suppress here is a NEARLY
-        // PERPENDICULAR pair that only shares a COINCIDENT EDGE and does not interpenetrate - e.g. a
-        // box's own top-face triangle and the vertical side-wall triangle it shares an edge with,
-        // when another box rests on that top face. GJK/EPA reports that shared edge as a "touch"
-        // with an arbitrary (often horizontal) normal, and mixed into the body-pair manifold it
-        // injects torque from nothing. Veto it (return the empty result, stopping the GJK/EPA
-        // fallback). Every other non-parallel pair - oblique facets of a curved mesh near a contact,
-        // genuine edge-first collisions - is left to GJK/EPA (return null).
+        // Near-perpendicular pair meeting edge-on without interpenetrating (a box's side wall and
+        // the top face another box rests on). GJK/EPA would report that shared edge as a contact
+        // with an arbitrary horizontal normal; veto it. Real edge-first collisions interpenetrate
+        // and reach GJK/EPA via the null return.
         if (Math.abs(ndot) < TriTri.PERPENDICULAR_DOT &&
-            TriTri._sharesCoincidentEdge(a0, a1, a2, nA, b0, b1, b2, nB) &&
             !TriTri._trianglesIntersect(a0, a1, a2, nA, b0, b1, b2, nB)) {
             return out;
         }
         return null;
     }
 
-    // refN = triangle A's face normal, oriented to point FROM A's face TOWARD B (the A->B
-    // direction; the pipeline's B->A normal is its negation, applied at emit). A MeshShape's
-    // winding is not a reliable "outward" cue - inverted-winding meshes (used deliberately in the
-    // mesh tests) have their triangle normals pointing INTO the body. Resolve the sign from the two
-    // OWNING BODY centers when the midphase provided them (bodyCenter): they sit ~a body-width apart
-    // and never flicker, unlike the two exactly-flush face triangles' own out-of-plane offset,
-    // whose sign is float noise and would flip the contact normal tick to tick on a settled stack.
-    // Fall back to B's farthest vertex when the hint is absent (standalone TriangleShape bodies).
+    // refN = A's face normal oriented A->B. Winding is unreliable (inverted-winding meshes point
+    // their normals inward), so take the sign from the owning body centers when the midphase
+    // provided them; the two flush face triangles' own offset is float noise and flips tick to tick.
     const refN = TriTri._refN;
     refN.copy(nA);
     const cenA = placedA.bodyCenter, cenB = placedB.bodyCenter;
@@ -6387,15 +6047,11 @@ TriTri.test = function (placedA, placedB, out, nextContact) {
         if (farSigned < 0) refN.scaleInPlace(-1);
     }
 
-    // Signed gap of B's centroid from A's plane along -refN (the penetrating side). Reject a pair
-    // that is clearly separated, or so deep it is no longer a face contact.
     const cBx = (b0.x + b1.x + b2.x) / 3, cBy = (b0.y + b1.y + b2.y) / 3, cBz = (b0.z + b1.z + b2.z) / 3;
     const centroidGap = -((cBx - a0.x) * refN.x + (cBy - a0.y) * refN.y + (cBz - a0.z) * refN.z);
     if (centroidGap < -TriTri.SEPARATION_LIMIT || centroidGap > TriTri.PENETRATION_LIMIT) return null;
 
-    // Clip triangle B (incident) against triangle A's three edge half-planes, evaluated in A's
-    // plane. Each edge (a_i -> a_{i+1}) gives an inward half-plane with normal = refN x edge,
-    // oriented so A's opposite vertex is inside.
+    // Clip B against A's three edge half-planes (each with inward normal refN x edge).
     let poly = TriTri._polyIn, clipped = TriTri._polyOut;
     poly[0].set(b0.x, b0.y, b0.z);
     poly[1].set(b1.x, b1.y, b1.z);
@@ -6408,11 +6064,9 @@ TriTri.test = function (placedA, placedB, out, nextContact) {
     for (let e = 0; e < 3; e++) {
         const p = aVerts[e], q = aVerts[(e + 1) % 3], r = aVerts[(e + 2) % 3];
         const ex = q.x - p.x, ey = q.y - p.y, ez = q.z - p.z;
-        // Inward normal of this edge's half-plane, lying in A's plane.
         let hx = refN.y * ez - refN.z * ey;
         let hy = refN.z * ex - refN.x * ez;
         let hz = refN.x * ey - refN.y * ex;
-        // Orient so the third vertex r is on the positive side.
         if ((r.x - p.x) * hx + (r.y - p.y) * hy + (r.z - p.z) * hz < 0) { hx = -hx; hy = -hy; hz = -hz; }
 
         let outCount = 0;
@@ -6433,11 +6087,9 @@ TriTri.test = function (placedA, placedB, out, nextContact) {
         }
         polyCount = outCount;
         const swap = poly; poly = clipped; clipped = swap;
-        if (polyCount < 3) return null; // no in-plane overlap area - GJK/EPA can still report a gap
+        if (polyCount < 3) return null;
     }
 
-    // Reject a sliver overlap (glancing edge touch between two parallel triangles): fan-triangulate
-    // the clipped polygon and sum the area.
     let area2 = 0;
     for (let c = 1; c < polyCount - 1; c++) {
         const p0 = poly[0], p1 = poly[c], p2 = poly[c + 1];
@@ -6448,9 +6100,6 @@ TriTri.test = function (placedA, placedB, out, nextContact) {
     }
     if (area2 * 0.5 < TriTri.MIN_AREA) return null;
 
-    // Emit one contact per surviving polygon vertex, keeping only points near A's plane (a real or
-    // imminent face contact). refN points A->B, so `below` = distance on the -refN side of A's
-    // plane is the penetration; negative `below` = still separated.
     let emitted = 0;
     for (let c = 0; c < polyCount; c++) {
         const pt = poly[c];
@@ -6458,15 +6107,11 @@ TriTri.test = function (placedA, placedB, out, nextContact) {
         if (below < -TriTri.SEPARATION_LIMIT || below > TriTri.PENETRATION_LIMIT) continue;
 
         const contact = nextContact();
-        // Incident witness = the clipped vertex (on/near B's front). Reference witness = that point
-        // pushed back onto A's plane along -refN (refN points A->B, so A's surface is `below` behind
-        // the incident point in the -refN direction... i.e. + refN * below lands back on the plane).
         contact.pointOnB.set(pt.x, pt.y, pt.z);
         contact.pointOnA.set(pt.x + refN.x * below, pt.y + refN.y * below, pt.z + refN.z * below);
-        // Pipeline convention: normal points B -> A. refN points A -> B, so negate.
-        contact.normal.set(-refN.x, -refN.y, -refN.z);
+        contact.normal.set(-refN.x, -refN.y, -refN.z); // pipeline convention: B -> A
         contact.signedDistance = below;
-        contact.fromMeshFace = true; // enables the manifold's shared-corner coincidence merge
+        contact.fromMeshFace = true;
         Vector3.addInto(contact.point, contact.pointOnA, contact.pointOnB).scaleInPlace(0.5);
         out.push(contact);
         emitted++;
@@ -6480,8 +6125,6 @@ TriTri._nA = new Vector3();
 TriTri._nB = new Vector3();
 TriTri._refN = new Vector3();
 TriTri._aVerts = [null, null, null];
-// Sutherland-Hodgman ping-pong buffers. Clipping a triangle by 3 half-planes yields at most 6
-// vertices; 8 slots for headroom.
 TriTri._polyIn = [new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3()];
 TriTri._polyOut = [new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3(), new Vector3()];
 
@@ -6495,14 +6138,14 @@ var proto = NarrowPhase.prototype;
 proto._nextPooledContact = function () {
     if (this._poolIndex >= this._contactPool.length) this._contactPool.push(new ContactDetails());
     const c = this._contactPool[this._poolIndex++];
-    c.fromMeshFace = false; // opt-in flag; only TriTri sets it (see Reduction.js's coincidence merge)
+    c.fromMeshFace = false;
     return c;
 };
 
-// broadphasePairs: [[bodyA, bodyB], ...]. midphase expands compound/mesh pairs to primitives.
-// dt sizes the per-pair speculative margin; optional, falls back to the last value / 1/60.
+// midphase expands compound/mesh pairs to primitives; dt sizes the speculative margin.
 proto.step = function (broadphasePairs, midphase, dt) {
     if (dt) this._dt = dt;
+    this._midphase = midphase; // used by the per-substep mesh-face refresh
     this._poolIndex = 0;
     const contactsByPair = new Map(); // canonical "idA:idB" key -> ContactDetails[]
 
@@ -6512,21 +6155,29 @@ proto.step = function (broadphasePairs, midphase, dt) {
         const key = bodyA.id < bodyB.id ? bodyA.id + ':' + bodyB.id : bodyB.id + ':' + bodyA.id;
         const margin = this._speculativeMargin(bodyA, bodyB);
 
+        let sawMeshFace = false;
         for (let i = 0; i < primitivePairs.length; i++) {
             const pairContacts = this._testPrimitivePair(primitivePairs[i].a, primitivePairs[i].b);
             for (let c = 0; c < pairContacts.length; c++) {
                 const contact = pairContacts[c];
-                // signedDistance: positive = overlapping, negative = separated by that gap. Report
-                // while overlapping or within the speculative margin; drop once the gap exceeds it.
-                if (contact.signedDistance < -margin) continue;
+                if (contact.signedDistance < -margin) continue; // gap beyond the speculative margin
+                if (contact.fromMeshFace) sawMeshFace = true;
                 let list = contactsByPair.get(key);
                 if (!list) { list = []; contactsByPair.set(key, list); }
                 list.push(contact);
             }
         }
 
-        // Ensure a manifold exists even with zero contacts this tick, so refresh() below can
-        // prune a pair that just separated. Idempotent for an existing pair.
+        // A TriTri face manifold is authoritative for the pair; drop the GJK/EPA single points from
+        // its other triangle combinations, which would only unbalance the point set.
+        if (sawMeshFace) {
+            const list = contactsByPair.get(key);
+            let w = 0;
+            for (let r = 0; r < list.length; r++) if (list[r].fromMeshFace) list[w++] = list[r];
+            list.length = w;
+        }
+
+        // Ensure a manifold exists even with zero contacts, so refresh() can prune a separated pair.
         this.manifolds.getOrCreate(bodyA, bodyB);
     }
 
@@ -6534,10 +6185,8 @@ proto.step = function (broadphasePairs, midphase, dt) {
     return this.manifolds;
 };
 
-// One or more pooled ContactDetails for one primitive pair, as an array (reused scratch array -
-// copy out before the next call). Dispatches to a closed-form test when one applies (own
-// numerics, no shared epsilon/iteration budget with any other pair type); falls through to
-// GJK/EPA otherwise. Never culls - the caller (step) decides what's worth a manifold entry.
+// Contacts for one primitive pair, into a reused scratch array (copy out before the next call).
+// Uses a closed-form test when one applies, else GJK/EPA. Never culls.
 proto._testPrimitivePair = function (placedA, placedB) {
     const results = this._pairResultScratch;
     results.length = 0;
@@ -6552,17 +6201,14 @@ proto._testPrimitivePair = function (placedA, placedB) {
     }
     if (BoxBox.applies(placedA, placedB)) {
         const self = this;
-        // null = boxes are actually separated - SAT's per-axis numbers aren't a true closest-point
-        // witness once apart, so fall through to GJK/EPA below, same as any pair with no
-        // closed-form test.
+        // null = separated; fall through to GJK/EPA.
         const boxResult = BoxBox.test(placedA, placedB, results, function () { return self._nextPooledContact(); });
         if (boxResult !== null) return results;
     }
 
     if (TriTri.applies(placedA, placedB)) {
         const self = this;
-        // null = not a face pair (edge/point feature, or too far apart) - fall through to GJK/EPA,
-        // same contract as BoxBox.test's null return above.
+        // null = not a face pair; fall through to GJK/EPA (same contract as BoxBox.test above).
         const triResult = TriTri.test(placedA, placedB, results, function () { return self._nextPooledContact(); });
         if (triResult !== null) return results;
     }
@@ -6587,20 +6233,16 @@ proto._isCompoundOrMesh = function (shape) {
 
 
 // ==== src/phases/SpeculativeMargin.js ====
-// How far ahead of actual touch a contact is reported, so the solver's predicted-position
-// non-penetration constraint has a point to work with before overlap happens (the fix for the
-// deep-correction -> large-derived-velocity failure mode).
+// How far ahead of touch a contact is reported, so the predicted-position solve has a constraint
+// to work with before overlap. Base margin plus how far the pair closes in one tick.
 var proto = NarrowPhase.prototype;
 
-// Base margin widened by how far the pair can close in one tick along relative velocity, so a
-// fast approach is still caught a full tick ahead of overlap.
 proto._speculativeMargin = function (bodyA, bodyB) {
     const dvx = bodyA.linear_velocity.x - bodyB.linear_velocity.x;
     const dvy = bodyA.linear_velocity.y - bodyB.linear_velocity.y;
     const dvz = bodyA.linear_velocity.z - bodyB.linear_velocity.z;
     const relSpeed = Math.sqrt(dvx * dvx + dvy * dvy + dvz * dvz);
-    // A rotating body's contact FEATURE (corner/edge) approaches faster than its center moves -
-    // add each body's angular corner speed so a tipping body's corner is still caught in time.
+    // A rotating body's corner moves faster than its center; add each body's angular corner speed.
     const angSpeed = NarrowPhase._angularCornerSpeed(bodyA) + NarrowPhase._angularCornerSpeed(bodyB);
     return NarrowPhase.SPECULATIVE_BASE + (relSpeed + angSpeed) * this._dt;
 };
@@ -6617,16 +6259,22 @@ NarrowPhase._angularCornerSpeed = function (body) {
 
 
 // ==== src/phases/GeometryRefresh.js ====
-// Per-substep contact geometry refresh: re-measures existing manifold points against the bodies'
-// current (predicted) transforms, called by Solver.step's `refresh`. Updates geometry only - never
-// adds/removes/re-matches points, that stays the manifold's once-per-tick job.
+// Per-substep contact geometry refresh: re-measures existing manifold points against current
+// predicted transforms. Geometry only - never adds, removes, or re-matches points.
 var proto = NarrowPhase.prototype;
 
 proto.refreshManifoldGeometry = function (manifolds) {
     for (const manifold of manifolds.values()) {
         const bodyA = manifold.bodyA, bodyB = manifold.bodyB;
-        // Compound/mesh contacts came from an expanded child/triangle whose per-point identity
-        // isn't tracked here, so those manifolds keep tick-start geometry.
+
+        // Mesh face manifold: re-clip it each substep, like the primitive path below, so its
+        // geometry tracks the body as it settles within the tick instead of staying frozen.
+        if (this._midphase && manifold.points.length > 0 && this._allMeshFace(manifold)) {
+            this._refreshMeshFaceManifold(manifold, bodyA, bodyB);
+            continue;
+        }
+
+        // Other compound/mesh contacts don't track per-point triangle identity - keep tick-start geometry.
         if (this._isCompoundOrMesh(bodyA.shape) || this._isCompoundOrMesh(bodyB.shape)) continue;
 
         const placedA = { shape: bodyA.shape, position: bodyA.position, rotation: bodyA.rotation };
@@ -6634,9 +6282,7 @@ proto.refreshManifoldGeometry = function (manifolds) {
         const freshList = this._testPrimitivePair(placedA, placedB);
         if (freshList.length === 0) continue;
 
-        // Match each existing point to its own nearest fresh point (world space) - a multi-point
-        // pair type (BoxBox) reports up to 4 fresh points per tick, one per manifold point, not a
-        // single shared measurement like the other closed-form/GJK-EPA pairs.
+        // Move each existing point onto its nearest fresh point (BoxBox reports up to 4).
         for (let i = 0; i < manifold.points.length; i++) {
             const p = manifold.points[i];
             let best = null, bestDistSq = Infinity;
@@ -6651,28 +6297,59 @@ proto.refreshManifoldGeometry = function (manifolds) {
             p.pointOnA.copy(best.pointOnA);
             p.pointOnB.copy(best.pointOnB);
             p.signedDistance = best.signedDistance;
-            // Keep the established normal through the exact-touch band (ContactManifold.EXACT_TOUCH_BAND)
-            // - the ambiguous diagonal GJK/EPA returns near signed-distance 0 would otherwise clobber a
-            // good resting normal every substep.
+            // Keep the established normal inside the exact-touch band (GJK/EPA is ambiguous there).
             if (Math.abs(best.signedDistance) >= ContactManifold.EXACT_TOUCH_BAND) p.normal.copy(best.normal);
-            // Re-anchor to current geometry so C is measured from where the feature is now. Lambda
-            // untouched (warm start survives).
-            p.setLocalAnchors(bodyA, bodyB);
+            p.setLocalAnchors(bodyA, bodyB); // lambda untouched, warm start survives
         }
+    }
+};
+
+proto._allMeshFace = function (manifold) {
+    const pts = manifold.points;
+    for (let i = 0; i < pts.length; i++) if (!pts[i].fromMeshFace) return false;
+    return true;
+};
+
+// Re-clip the pair and move each existing point onto its nearest fresh clip point. Geometry only;
+// point count and warm-start lambdas are untouched.
+proto._refreshMeshFaceManifold = function (manifold, bodyA, bodyB) {
+    const primitivePairs = this._midphase.expandPair(bodyA, bodyB);
+    // _testPrimitivePair reuses its scratch array per call, so copy the results into a private list.
+    const acc = this._meshRefreshAcc || (this._meshRefreshAcc = []);
+    acc.length = 0;
+    for (let i = 0; i < primitivePairs.length; i++) {
+        const pc = this._testPrimitivePair(primitivePairs[i].a, primitivePairs[i].b);
+        for (let c = 0; c < pc.length; c++) if (pc[c].fromMeshFace) {
+            const s = this._nextPooledContact();
+            s.copy(pc[c]);
+            acc.push(s);
+        }
+    }
+    if (acc.length === 0) return; // lost contact this substep - keep last good geometry
+
+    for (let i = 0; i < manifold.points.length; i++) {
+        const p = manifold.points[i];
+        let best = null, bestDistSq = Infinity;
+        for (let f = 0; f < acc.length; f++) {
+            const dx = p.point.x - acc[f].point.x, dy = p.point.y - acc[f].point.y, dz = p.point.z - acc[f].point.z;
+            const d = dx * dx + dy * dy + dz * dz;
+            if (d < bestDistSq) { bestDistSq = d; best = acc[f]; }
+        }
+        if (!best) continue;
+        p.point.copy(best.point);
+        p.pointOnA.copy(best.pointOnA);
+        p.pointOnB.copy(best.pointOnB);
+        p.signedDistance = best.signedDistance;
+        if (Math.abs(best.signedDistance) >= ContactManifold.EXACT_TOUCH_BAND) p.normal.copy(best.normal);
+        p.setLocalAnchors(bodyA, bodyB);
     }
 };
 
 
 // ==== src/solver/Solver.js ====
-/**
- * XPBD solver (Muller et al. 2020 "Detailed Rigid Body Simulation with Extended Position Based
- * Dynamics"; Macklin et al. for the compliance formulation).
- *
- * Velocity is DERIVED from position (v = (x - x_prev) / h), never clamped. Each substep runs:
- * integrate -> refresh contact geometry -> reset lambdas -> solve positions -> derive velocity ->
- * solve contact velocity (friction/restitution/rolling). See Integrate.js, Geometry.js,
- * PositionSolve.js, VelocitySolve.js for each phase.
- */
+// XPBD solver (Muller et al. 2020). Velocity is derived from position (v = (x - x_prev) / h).
+// Per substep: integrate -> refresh contact geometry -> reset lambdas -> solve positions ->
+// derive velocity -> solve contact velocity. See Integrate/PositionSolve/VelocitySolve.
 class Solver {
     constructor(opts) {
         opts = opts || {};
@@ -6692,16 +6369,12 @@ class Solver {
         this._restRing = new Map(); // per-body ring buffer of recent transforms for rest-velocity reconciliation
     }
 
-    // Margin widening what counts as "explainable by the body's own velocity" in _solvePoint's
-    // position/velocity split (see PositionSolve.js). 3x covers the ordinary numerical gap for
-    // off-center/rotating contacts without letting a real zero-velocity spawn overlap through.
+    // Widens what counts as "explainable by the body's own velocity" in _solvePoint's
+    // position/velocity split (PositionSolve.js).
     static EXPLAINABLE_MARGIN = 3;
 
-    /**
-     * Advances every dynamic body in `bodies` by `dt`, resolving `manifolds` (a ContactManifoldList)
-     * and `constraints` (joints). `refresh(manifolds)`, if given, re-measures each substep's contact
-     * geometry against predicted positions before the solve (see Geometry.js).
-     */
+    // Advances dynamic bodies by dt, resolving manifolds and constraints. `refresh(manifolds)`, if
+    // given, re-measures contact geometry each substep before the solve.
     step(bodies, manifolds, gravity, dt, refresh, constraints) {
         const h = dt / this.substeps;
         for (let s = 0; s < this.substeps; s++) {
@@ -6791,17 +6464,14 @@ class Solver {
     _solveContactVelocities(manifolds, gravity, h) {
         for (const manifold of manifolds.values()) {
             const bodyA = manifold.bodyA, bodyB = manifold.bodyB;
-            // A flat box-on-box face patch is resolved once at its centroid (order-independent, no
-            // fabricated drift); every other manifold keeps the per-point solve. See
-            // VelocitySolve.js._boxFacePatchVelocity.
+            // A flat face patch solves once at its centroid; everything else per-point.
             if (!this._boxFacePatchVelocity(manifold, bodyA, bodyB, gravity, h)) {
                 for (let i = 0; i < manifold.points.length; i++) {
                     this._solveContactVelocity(manifold.points[i], bodyA, bodyB, gravity, h);
                 }
             }
             if (manifold.points.length > 0) {
-                // Reference point for angular friction: the most-engaged one (largest |normalLambda|),
-                // not always points[0] - see VelocitySolve.js._solveAngularFriction.
+                // Angular friction acts at the most-engaged point.
                 let ref = manifold.points[0];
                 for (let i = 1; i < manifold.points.length; i++) {
                     if (Math.abs(manifold.points[i].normalLambda) > Math.abs(ref.normalLambda)) ref = manifold.points[i];
@@ -6812,18 +6482,13 @@ class Solver {
     }
 }
 
-// Restitution slop multiplier: an approach speed below (gravityMag*h)*this factor doesn't bounce -
-// keeps a resting body's own one-substep gravity nudge from becoming perpetual micro-jitter,
-// scaled to gravity/timestep instead of a fixed absolute speed so it stays correct across body
-// scale (a fixed threshold silently killed real small/slow bounces - e.g. a marble dropped 5mm hit
-// the floor at 0.31 m/s, a genuine restitution-worthy impact, and got fully suppressed under a
-// flat 0.5 m/s cutoff).
+// Approach speeds below (gravityMag*h)*this don't bounce - suppresses a resting body's one-substep
+// gravity nudge without a fixed absolute cutoff that would kill real small/slow bounces.
 Solver.RESTITUTION_SLOP_FACTOR = 8;
 
-// Largest single-point penetration (C) a multi-point manifold's position-solve resolves in one
-// substep (see PositionSolve.js's cappedC; never applied to a single-point manifold). The
-// remainder is real, live-measured penetration, picked up on the next substep instead of all at
-// once - keeps one point's correction from moving the body before its manifold siblings are read.
+// Largest single-point penetration a multi-point manifold resolves per substep (PositionSolve.js).
+// The rest is picked up next substep, so one point's correction doesn't move the body before its
+// siblings are read.
 Solver.MAX_PENETRATION_PER_SUBSTEP = 0.005;
 
 // Rest-velocity reconciliation thresholds (see Solver._reconcileRestVelocity, NOTES.md).
@@ -6835,8 +6500,7 @@ ActionPhysics.Solver = Solver;
 
 
 // ==== src/solver/Integrate.js ====
-// Phase 1: integrate velocity (gravity, forces, damping) and predict position for every dynamic
-// body this substep, plus rotation integration and the angular velocity helpers used elsewhere.
+// Integrate velocity and predict position each substep, plus the rotation helpers.
 var proto = Solver.prototype;
 
 proto._integrate = function (bodies, gravity, h) {
@@ -6849,8 +6513,7 @@ proto._integrate = function (bodies, gravity, h) {
         const bias = this._biasDelta.get(b.id) || new Vector3();
         bias.set(0, 0, 0);
         this._biasDelta.set(b.id, bias);
-        // Snapshot before gravity/damping touch it - restitution's pre-solve velocity reads this,
-        // not the post-gravity value (see PositionSolve.js's restitution capture).
+        // Pre-gravity snapshot; restitution's pre-solve velocity reads this.
         this._preGravityVel.set(b.id, new Vector3().copy(b.linear_velocity));
 
         const g = b.gravity || gravity;
@@ -6877,9 +6540,8 @@ proto._integrate = function (bodies, gravity, h) {
 
         b.position.addScaledInPlace(b.linear_velocity, h);
         Solver._integrateRotation(b.rotation, b.angular_velocity, h);
-        // Inertia tensor depends on rotation, which just changed - refresh so this substep's
-        // effective-mass/angular-correction math uses the current orientation.
-        b._recomputeWorldInverseInertia();
+        b._recomputeWorldInverseInertia(); // rotation changed
+
     }
 };
 
@@ -6890,8 +6552,7 @@ proto._deriveVelocities = function (bodies, h) {
         const prevPos = this._prevPos.get(b.id);
         const prevRot = this._prevRot.get(b.id);
         const bias = this._biasDelta.get(b.id);
-        // Bias-only motion (see PositionSolve.js) is excluded here so a body that only moved from
-        // a bias nudge derives zero velocity from that nudge.
+        // Bias-only motion (PositionSolve.js) is excluded so it derives no velocity.
         b.linear_velocity.x = (b.position.x - prevPos.x - bias.x) / h;
         b.linear_velocity.y = (b.position.y - prevPos.y - bias.y) / h;
         b.linear_velocity.z = (b.position.z - prevPos.z - bias.z) / h;
@@ -6934,50 +6595,38 @@ Solver._deriveAngularVelocity = function (out, prevRot, rotation, h) {
 
 
 // ==== src/solver/PositionSolve.js ====
-// Phase 2: position-level XPBD constraint solve for a single contact point, plus the effective-mass
-// and positional-correction helpers it uses.
+// Position-level XPBD solve for one contact point.
 var proto = Solver.prototype;
 
 proto._solvePoint = function (point, bodyA, bodyB, h, capPenetration) {
     point.currentAnchorAInto(this._rA, bodyA);
     point.currentAnchorBInto(this._rB, bodyB);
     const nx = point.normal.x, ny = point.normal.y, nz = point.normal.z;
-    // C = (anchorB - anchorA).normal; normal points B->A (GJK/EPA convention). C > 0 = penetrating.
-    // Recomputed live every call from current anchor positions, never from point.signedDistance
-    // (a tick-start snapshot, stale by the second substep).
+    // C = (anchorB - anchorA).normal, recomputed live (point.signedDistance is a stale tick-start
+    // snapshot). Normal points B->A; C > 0 = penetrating.
     const C = (this._rB.x - this._rA.x) * nx + (this._rB.y - this._rA.y) * ny + (this._rB.z - this._rA.z) * nz;
-    // Speculative contact: created while still separated; only correct once predicted motion has
-    // actually reached/passed touch (C > 0). Never pulls a separated pair together across a gap.
-    if (C <= 0) return;
+    if (C <= 0) return; // speculative contact not yet touching
 
-    // Pre-solve normal velocity for restitution, captured on the substep that actually engages this
-    // point (C > 0), using each body's PRE-gravity velocity (this substep's own gravity add hasn't
-    // happened from the impact's point of view yet).
+    // Captured on the substep this point engages, from pre-gravity velocity, for restitution.
     point._preSolveNormalVel = this._contactRelativeNormalVelocityPreGravity(point, bodyA, bodyB);
 
     Vector3.subInto(this._rA, this._rA, bodyA.position);
     Vector3.subInto(this._rB, this._rB, bodyB.position);
 
     const wSum = this._effectiveMass(bodyA, bodyB, this._rA, this._rB, nx, ny, nz);
-    if (wSum < 1e-12) return; // both bodies immovable along this normal
+    if (wSum < 1e-12) return;
 
-    // capPenetration is only passed true for a multi-point manifold (see Solver.MAX_PENETRATION_PER_SUBSTEP) -
-    // a single-point manifold always resolves C fully in one substep.
     const cappedC = capPenetration ? Math.min(C, Solver.MAX_PENETRATION_PER_SUBSTEP) : C;
 
-    // Rigid (compliance-free) contact: deltaLambda = -C/wSum. normalLambda accumulates <= 0
-    // (a contact can push apart, never pull together).
     const oldLambda = point.normalLambda;
     let newLambda = oldLambda - cappedC / wSum;
-    if (newLambda > 0) newLambda = 0;
+    if (newLambda > 0) newLambda = 0; // a contact pushes apart, never pulls together
     const deltaLambda = newLambda - oldLambda;
     point.normalLambda = newLambda;
 
-    // Split the correction: only the part explainable by the body's own real closing velocity
-    // becomes derived velocity (velocityDelta); the rest is a pure position edit (biasDelta),
-    // excluded from step 4's velocity derivation. This is what lets a resting body under load
-    // correct fully while a raw spawn overlap resolves as gradual position bias instead of
-    // fabricated kinetic energy.
+    // Only the share explainable by the body's own closing velocity becomes derived velocity; the
+    // rest is a pure position edit (biasDelta), subtracted back out in the velocity-derivation
+    // step. Lets a loaded resting body correct fully while a raw spawn overlap resolves gently.
     const liveRelVel = this._contactRelativeNormalVelocity(point, bodyA, bodyB);
     const explainableBySubstep = Math.max(liveRelVel, 0) * h * Solver.EXPLAINABLE_MARGIN;
     let velocityC = cappedC;
@@ -7012,11 +6661,8 @@ proto._effectiveMass = function (bodyA, bodyB, rA, rB, dx, dy, dz) {
     return w;
 };
 
-// Applies dLambda*n (and the matching angular correction) to both bodies. C = (anchorB-anchorA).n,
-// so A moves along -n*dLambda, B along +n*dLambda.
-// `bias`: true for the non-explainable share of a split correction - the body still moves (so the
-// next substep measures a smaller overlap), but the movement is also recorded into this._biasDelta
-// for step 4 to subtract back out.
+// Applies dLambda*n (plus angular correction) to both bodies: A along -n, B along +n. When `bias`,
+// the movement is also recorded into this._biasDelta so the velocity-derivation step subtracts it.
 proto._applyPositionalCorrection = function (bodyA, bodyB, rA, rB, nx, ny, nz, dLambda, bias) {
     const px = nx * dLambda, py = ny * dLambda, pz = nz * dLambda;
 
@@ -7062,46 +6708,49 @@ proto._applyAngularCorrection = function (body, r, px, py, pz) {
 // applied after positions are solved, plus the velocity-space helpers they share.
 var proto = Solver.prototype;
 
-// A box-on-box flat face contact reports up to 4 coplanar points sharing one normal. Solving
-// restitution and friction point-by-point (Gauss-Seidel) over that patch is what fabricates lateral
-// drift on a perfectly symmetric drop (box-box/single): each point's off-center normal impulse spins
-// the body a hair, the next point reads the spun state, and the four impulses no longer cancel - the
-// residual spin then couples through friction into a net sideways velocity. For that ONE case - both
-// shapes actual BoxShapes, every engaged point sharing a single normal (a genuine face patch) - the
-// physically correct model is a single contact patch, not four independent points: restitution and
-// friction are resolved once at the patch centroid, which is exactly symmetric and leaves no residual
-// spin or drift. Everything else (edge/corner box contacts, meshes, spheres, compounds, non-coplanar
-// manifolds) keeps the per-point solve, so the exact per-point restitution/friction contracts other
-// tests pin down are untouched.
+// Solving restitution + friction point-by-point over a flat face patch fabricates lateral drift on
+// a symmetric drop: each point's off-center impulse spins the body a hair, the next reads the spun
+// state, and the impulses no longer cancel. For a genuine face patch (a BoxBox face manifold, or a
+// mesh face manifold whose points all come from TriTri) resolve it once at the centroid instead.
+// Everything else keeps the per-point solve.
 proto.COPLANAR_NORMAL_DOT = 0.9999;
 
 proto._boxFacePatchVelocity = function (manifold, bodyA, bodyB, gravity, h) {
     const pts = manifold.points, n = pts.length;
     if (n < 2) return false;
-    if (!(bodyA.shape instanceof BoxShape) || !(bodyB.shape instanceof BoxShape)) return false;
+    const bothBoxes = (bodyA.shape instanceof BoxShape) && (bodyB.shape instanceof BoxShape);
+    let allMeshFace = !bothBoxes;
+    if (allMeshFace) for (let i = 0; i < n; i++) if (!pts[i].fromMeshFace) { allMeshFace = false; break; }
+    if (!bothBoxes && !allMeshFace) return false;
 
-    // Aggregate engaged points; require a single shared normal (a real face patch, not an edge/corner).
+    // A mesh face patch is one face by construction, so use all its points for the centroid - not
+    // just the ones the position sweep left engaged this substep. A BoxBox patch uses engaged-only.
+    const useAll = allMeshFace;
     let cAx = 0, cAy = 0, cAz = 0, cBx = 0, cBy = 0, cBz = 0;
-    let nx = 0, ny = 0, nz = 0, cnt = 0, maxPre = 0, totLam = 0;
+    let nx = 0, ny = 0, nz = 0, cnt = 0, engaged = 0, maxPre = 0, totLam = 0;
     for (let i = 0; i < n; i++) {
         const p = pts[i];
-        if (p.normalLambda >= 0) continue;
+        const isEngaged = p.normalLambda < 0;
+        if (isEngaged) {
+            engaged++;
+            if (p._preSolveNormalVel > maxPre) maxPre = p._preSolveNormalVel;
+            totLam += Math.abs(p.normalLambda);
+        }
+        if (!useAll && !isEngaged) continue;
         p.currentAnchorAInto(this._rA, bodyA);
         p.currentAnchorBInto(this._rB, bodyB);
         cAx += this._rA.x; cAy += this._rA.y; cAz += this._rA.z;
         cBx += this._rB.x; cBy += this._rB.y; cBz += this._rB.z;
         nx += p.normal.x; ny += p.normal.y; nz += p.normal.z;
-        if (p._preSolveNormalVel > maxPre) maxPre = p._preSolveNormalVel;
-        totLam += Math.abs(p.normalLambda);
         cnt++;
     }
-    if (cnt < 2) return false;
+    if (engaged < 1 || cnt < 2) return false;
     const nl = Math.sqrt(nx * nx + ny * ny + nz * nz);
     if (nl < 1e-9) return false;
     nx /= nl; ny /= nl; nz /= nl;
     for (let i = 0; i < n; i++) {
         const p = pts[i];
-        if (p.normalLambda >= 0) continue;
+        if (!useAll && p.normalLambda >= 0) continue;
         if (p.normal.x * nx + p.normal.y * ny + p.normal.z * nz < this.COPLANAR_NORMAL_DOT) return false; // not coplanar
     }
 
@@ -7198,13 +6847,8 @@ proto._solveContactVelocity = function (point, bodyA, bodyB, gravity, h) {
     this._applyVelocityImpulse(bodyA, bodyB, this._rA, this._rB, -tx, -ty, -tz, jt);
 };
 
-// Angular friction: damps relative angular velocity ABOUT the contact's tangent plane only (spin
-// about the normal is untouched). Shape-agnostic - on a round shape this looks like rolling
-// resistance, but it fires the same way for a box pivoting at a contact corner. Applied once per
-// manifold via the most-engaged point, not once per point - splitting it per-point let each point's
-// correction change the angular velocity the next point read, oscillating instead of converging
-// (traced on a shoved cylinder: stuck at a nonzero fixed-point angular velocity forever instead of
-// decaying to rest).
+// Damps relative angular velocity in the contact's tangent plane (spin about the normal is left
+// alone). Applied once per manifold at the most-engaged point; per-point splitting oscillates.
 proto._solveAngularFriction = function (point, bodyA, bodyB, h) {
     const angularFriction = Math.sqrt(Math.max(bodyA.angular_friction, 0) * Math.max(bodyB.angular_friction, 0));
     if (angularFriction <= 0) return;
@@ -7335,69 +6979,30 @@ Solver._tangentBasis = function (normal, outT1, outT2) {
 
 
 // ==== src/solver/IslandManager.js ====
-/**
- * IslandManager: decides which bodies are ASLEEP each tick, as coupled groups (islands), and parks
- * or wakes whole islands together.
- *
- * WHY ISLANDS, NOT PER-BODY SLEEP: the real target is a game - stacks, piles, ragdolls, debris -
- * where resting bodies rest ON each other. Per-body sleep is not a smaller-but-correct version there,
- * it is WRONG: the bottom crate of a stack reaches rest and sleeps a moment before the crate on top
- * has finished micro-settling; the sleeping bottom body stops being integrated and stops resolving
- * its contact, and the still-awake top body sags into (or through) it. The fix is that a body may
- * sleep only as part of a group where EVERY member is ready to sleep, and the whole group wakes the
- * instant any member is disturbed. Building that grouping IS the island manager.
- *
- * WHAT COUPLES TWO BODIES INTO ONE ISLAND: a contact manifold with at least one point, or an enabled
- * constraint, BETWEEN TWO DYNAMIC BODIES. Static and kinematic bodies deliberately do NOT propagate
- * membership - the floor (static) touches every resting body in a scene, and chaining all of them
- * into one island through the floor would mean no pile could ever sleep unless the entire world did.
- * A static/kinematic body is a boundary, not a link. (A dynamic body resting on a MOVING kinematic
- * platform is kept awake separately - see step() - since the ground under it is itself in motion.)
- *
- * ORDER IN THE PIPELINE: runs in World.step AFTER narrowphase (so it has this tick's manifolds to
- * build connectivity from) and BEFORE the solver (so the solver can skip sleeping islands entirely).
- * The manifolds it reads are the same ContactManifoldList the solver then reads - zero-point
- * manifolds are already pruned by ContactManifoldList.refresh, so every manifold here is a genuine
- * touch.
- */
+// Decides which bodies are asleep each tick, as coupled groups (islands), parking or waking whole
+// islands together. Per-body sleep is wrong for stacks: the bottom body sleeps while the top is
+// still settling and sags into it. Two dynamic bodies are coupled by a contact manifold or an
+// enabled constraint; static/kinematic bodies are boundaries, not links (or the floor would chain
+// the whole world into one island). Runs after narrowphase, before the solver.
 class IslandManager {
-    // Sleep thresholds. A body is "quiet" this tick when BOTH its linear and angular speed are below
-    // these. Set from direct measurement of this engine's own resting bodies, not pasted from a
-    // reference - a sphere and a box settle to EXACTLY zero here, while a cylinder resting on its side
-    // never fully settles: it oscillates forever in a band, angular speed bouncing between ~0.05 and
-    // ~0.071 rad/s, linear between ~0.008 and ~0.013 m/s (traced 600 ticks, no decay). The angular
-    // threshold MUST sit comfortably above that ~0.071 ceiling, or a settling cylinder would cross the
-    // line back and forth and sleep/wake/sleep/wake right at the boundary - a body balanced on the
-    // threshold itself, exactly the knife-edge this engine exists to avoid. 0.12 gives ~1.7x headroom
-    // over the observed ceiling while staying far below any real motion (a rolling/tumbling body is
-    // >1 rad/s, orders of magnitude clear). The linear threshold has enormous margin over the observed
-    // ~0.013 and is the conventional value.
+    // A body is "quiet" this tick when both speeds are below these. The angular threshold sits well
+    // above the ~0.071 rad/s band a side-resting cylinder oscillates in forever, so it doesn't
+    // sleep/wake on the boundary.
     static LINEAR_SLEEP_THRESHOLD = 0.05;        // m/s
     static ANGULAR_SLEEP_THRESHOLD = 0.12;       // rad/s
 
-    // How long (seconds) an entire island must stay quiet before it is parked. Standard ~0.5s: long
-    // enough that a body momentarily still for a real reason (the apex of a bounce, a brief pin
-    // between two others mid-collapse) does not false-sleep, short enough that a settled pile parks
-    // promptly. Tracked per body as sleepTimer (seconds), advanced only while the body is quiet AND
-    // every other body in its island is quiet too - a single restless member holds the whole island
-    // awake by resetting the island's readiness, see step().
-    static TIME_TO_SLEEP = 0.5;                  // seconds
+    // Seconds an entire island must stay quiet before it parks.
+    static TIME_TO_SLEEP = 0.5;
 
     constructor() {
-        // Union-find parent map, rebuilt each tick: bodyId -> bodyId. Kept as a Map (not an array)
-        // because body ids are monotonic and sparse over a session as bodies are added/removed.
-        this._parent = new Map();
-        // Scratch: island id (a representative body id) -> { members: [], quiet: bool }, rebuilt each
-        // tick. Not retained across ticks - island membership is recomputed from live connectivity
-        // every tick, since a contact appearing or breaking changes the graph.
-        this._islands = new Map();
+        this._parent = new Map();  // union-find, rebuilt each tick: bodyId -> bodyId
+        this._islands = new Map(); // island root id -> { members, allQuiet }, rebuilt each tick
     }
 
     _find(id) {
         let root = id;
         while (this._parent.get(root) !== root) root = this._parent.get(root);
-        // Path compression: point every node on the path straight at the root, so repeated finds
-        // this tick are flat. Safe because the forest is rebuilt from scratch next tick.
+        // Path compression.
         let cur = id;
         while (this._parent.get(cur) !== root) {
             const next = this._parent.get(cur);
@@ -7416,37 +7021,26 @@ class IslandManager {
         if (!this._parent.has(id)) this._parent.set(id, id);
     }
 
-    /**
-     * Updates the sleep state of every dynamic body in `bodies`, using this tick's `manifolds`
-     * (a ContactManifoldList) and `constraints` (the world's joint list) for connectivity, advancing
-     * timers by `dt`. Parks islands that have been quiet long enough; wakes any body that a moving
-     * static/kinematic neighbor or an already-awake dynamic neighbor keeps in motion.
-     *
-     * After this runs, a body with isAwake === false is one the solver may skip entirely this tick.
-     */
+    // Updates sleep state for every dynamic body. After this runs, isAwake === false means the
+    // solver may skip the body this tick.
     update(bodies, manifolds, constraints, dt) {
         this._parent.clear();
         this._islands.clear();
 
-        // 1. Seed the forest with every DYNAMIC body as its own singleton. Static/kinematic bodies
-        //    are intentionally never seeded - they cannot sleep and must not link their neighbors.
+        // 1. Seed the forest with every dynamic body as a singleton.
         for (let i = 0; i < bodies.length; i++) {
             const b = bodies[i];
             if (b.bodyType === RigidBody.DYNAMIC) this._ensure(b.id);
         }
 
-        // 2. Union dynamic bodies coupled by a real contact. A manifold touching a static/kinematic
-        //    body does NOT union (that body is not in the forest) - but it is remembered as an
-        //    external contact, handled in step 4, because a dynamic body touching a MOVING
-        //    kinematic/awake body must be forced awake regardless of its own quietness.
+        // 2. Union dynamic bodies coupled by a contact.
         for (const manifold of manifolds.values()) {
             const a = manifold.bodyA, b = manifold.bodyB;
             const aDyn = a.bodyType === RigidBody.DYNAMIC, bDyn = b.bodyType === RigidBody.DYNAMIC;
             if (aDyn && bDyn) this._union(a.id, b.id);
         }
 
-        // 3. Union dynamic bodies coupled by an enabled constraint. A constraint's bodyB may be null
-        //    (anchored to the world) - that is a boundary like a static body, no union.
+        // 3. Union dynamic bodies coupled by an enabled constraint (bodyB null = world-anchored, no union).
         if (constraints) {
             for (let i = 0; i < constraints.length; i++) {
                 const c = constraints[i];
@@ -7456,11 +7050,8 @@ class IslandManager {
             }
         }
 
-        // 4. Determine which dynamic bodies are FORCED awake by an external influence this tick,
-        //    independent of their own speed: a dynamic body in contact with a still-moving kinematic
-        //    body (a rising platform, a swinging door) cannot be allowed to sleep even if it is
-        //    momentarily quiet, because the thing it rests on is about to move it. A contact with a
-        //    STATIC body is not a forcing influence - static ground is exactly what a body sleeps on.
+        // 4. Force awake any dynamic body touching a moving kinematic body or an awake dynamic one,
+        //    regardless of its own speed. A static contact is not a forcing influence.
         const forcedAwake = new Set();
         for (const manifold of manifolds.values()) {
             const a = manifold.bodyA, b = manifold.bodyB;
@@ -7468,8 +7059,7 @@ class IslandManager {
             IslandManager._maybeForceAwakeFromNeighbor(b, a, forcedAwake);
         }
 
-        // 5. Group dynamic bodies by island root, and record each body's own quietness (below BOTH
-        //    thresholds this tick). A forced-awake body counts as not quiet.
+        // 5. Group by island root, recording each body's quietness.
         const bodyById = IslandManager._indexById(bodies);
         for (const [id, ] of this._parent) {
             const root = this._find(id);
@@ -7481,11 +7071,8 @@ class IslandManager {
             if (!quiet) island.allQuiet = false;
         }
 
-        // 6. Per island: if every member is quiet, advance the whole island's sleep timer by dt (each
-        //    body carries its own sleepTimer, but they move in lockstep because the gate is the
-        //    island's shared allQuiet). Once the island has been quiet past TIME_TO_SLEEP, park every
-        //    member together. If ANY member is not quiet, wake the whole island - one restless body
-        //    keeps its entire pile simulating, which is the correctness guarantee islands exist for.
+        // 6. Park an island once every member has been quiet past TIME_TO_SLEEP; wake the whole
+        //    island if any member is restless.
         for (const island of this._islands.values()) {
             if (island.allQuiet) {
                 let minTimer = Infinity;
@@ -7493,8 +7080,6 @@ class IslandManager {
                     body.sleepTimer += dt;
                     if (body.sleepTimer < minTimer) minTimer = body.sleepTimer;
                 }
-                // Park only when the SLOWEST-to-qualify member has also crossed the line, so a body
-                // that only just went quiet does not drag the rest to sleep prematurely.
                 if (minTimer >= IslandManager.TIME_TO_SLEEP) {
                     for (const body of island.members) body.sleep();
                 }
@@ -7507,11 +7092,7 @@ class IslandManager {
         }
     }
 
-    // A dynamic `body` in contact with `other` must be forced awake if `other` is a KINEMATIC body
-    // that is itself moving, or a DYNAMIC body that is currently awake - either way the neighbor is
-    // about to impart motion this body cannot anticipate while asleep. A static neighbor, or a
-    // sleeping dynamic one, is not a forcing influence (that is the whole point of a body being able
-    // to rest on top of another sleeping body).
+    // Force `body` awake if `other` is a moving kinematic body or an awake dynamic one.
     static _maybeForceAwakeFromNeighbor(body, other, forcedAwake) {
         if (body.bodyType !== RigidBody.DYNAMIC) return;
         if (other.bodyType === RigidBody.KINEMATIC) {
@@ -7540,24 +7121,14 @@ ActionPhysics.IslandManager = IslandManager;
 
 
 // ==== src/constraints/Constraint.js ====
-/**
- * Constraint: base class for the user-facing joints (Point, Hinge, Slider, Weld).
- *
- * A joint computes its own position error (a vector or scalar C) and applies the correction via
- * the same generalized-inverse-mass math the contact solver already uses. A joint's solve() runs
- * once per substep inside the position-constraint loop, before velocity is derived - so a joint's
- * effect shows up in derived velocity for free, the same way a contact's does. No
- * compliance/softness yet; every joint here is rigid.
- */
+// Base class for the joints (Point, Hinge, Slider, Weld). Each computes its own position error C
+// and corrects it with the contact solver's generalized-inverse-mass math; solve() runs once per
+// substep before velocity is derived. All rigid, no compliance.
 class Constraint {
     constructor(bodyA, bodyB) {
         this.bodyA = bodyA;
-        this.bodyB = bodyB; // may be null: a joint anchored to the world (bodyA pinned in space)
+        this.bodyB = bodyB; // null = anchored to the world
         this.enabled = true;
-        // Warm-start accumulators, reset per substep like a contact's normalLambda - carried across
-        // TICKS via nothing (a joint has no manifold to warm-start from between ticks the way a
-        // contact does; its own accumulated lambda within a tick's substeps is enough for XPBD's
-        // convergence, matching the contact solver's own per-substep reset discipline).
     }
 }
 
@@ -8135,23 +7706,9 @@ ActionPhysics.SliderConstraint = SliderConstraint;
 
 
 // ==== src/queries/Queries.js ====
-/**
- * Queries: ray casting and shape sweeps against the world's bodies. World's public surface
- * (rayIntersect/shapeIntersect) delegates here (Rule 2: World is pipeline glue).
- *
- * Both queries reuse GJK's own closest-distance result directly rather than a separate ray/shape
- * algorithm: a ray is a zero-radius sphere queried against the target; a shape sweep is the same
- * query with the caller's real shape. This is exact (GJK's separated result IS the true closest
- * distance/normal), so one query per candidate body is enough - no repeated advance-and-requery
- * loop needed the way a hand-rolled slab/segment test would require.
- *
- * Broadphase has no arbitrary-AABB query surface, so both queries filter world.bodies directly
- * with a cheap ray-vs-AABB / swept-AABB reject before calling GJK - queries run on demand, not
- * every tick for every pair, so an O(n) filter over the whole body list is fine.
- *
- * See RayIntersect.js, ShapeIntersect.js (the two public entry points + their compound/mesh
- * dispatch) and Advance.js (the shared conservative-advancement core + AABB rejects).
- */
+// Ray casts and shape sweeps against world.bodies, via GJK's closest-distance result (a ray is a
+// zero-radius sphere). O(n) over the body list after a cheap AABB reject. See RayIntersect.js,
+// ShapeIntersect.js, Advance.js.
 class Queries {
     static _isIgnored(body, ignore) {
         if (!ignore) return false;
@@ -8206,27 +7763,15 @@ ActionPhysics.Queries = Queries;
 
 
 // ==== src/queries/Advance.js ====
-// Shared conservative-advancement sweep core, plus the AABB reject tests both rayIntersect and
-// shapeIntersect use before ever constructing a GJK support for a candidate body.
+// Shared conservative-advancement sweep core plus the AABB rejects rayIntersect/shapeIntersect use.
 
-// Casts `placedMover` (already at `start`) toward `start + dir*fullLen` via conservative
-// advancement using GJK.run() as the distance oracle: GJK's separated-case distance from the
-// mover's current position to the body is the TRUE closest distance in any direction, so the mover
-// can safely advance by exactly that much along the ray without ever overshooting into the body.
-// Repeating (re-running GJK from the new position) narrows in on the true first-hit point -
-// standard sphere-tracing conservative advancement, using an already-proven GJK as the primitive
-// instead of a hand-rolled ray/shape algorithm (a hand-rolled version was tried twice and failed a
-// 500-config ground-truth cross-check both times on corner/grazing cases).
-//
-// Convergence for a corner-on or near-tangent approach is geometric (never reaching exactly zero),
-// so the iteration cap/epsilon (160, 1e-4) are set generously.
+// Casts `placedMover` from `start` toward start + dir*fullLen by conservative advancement, using
+// GJK.run()'s separated distance as the step size (safe, never overshoots). Corner-on approaches
+// converge geometrically, so cap/epsilon (160, 1e-4) are generous.
 Queries._advance = function (support, placedMover, start, dirX, dirY, dirZ, fullLen) {
     const ux = dirX / fullLen, uy = dirY / fullLen, uz = dirZ / fullLen;
     let traveled = 0;
-    // Last normal from a non-degenerate GJK call. GJK's own exact-touch case has no unique normal
-    // at distance ~0 and falls back to an arbitrary-but-valid one - using the LAST good approach
-    // normal instead avoids ever trusting that degenerate fallback (a ray hitting a flat box face
-    // was previously reporting a spurious 45-degree diagonal normal from exactly this).
+    // Last normal from a non-degenerate GJK call - GJK's exact-touch fallback normal is arbitrary.
     let lastGoodNx = -ux, lastGoodNy = -uy, lastGoodNz = -uz;
 
     for (let iter = 0; iter < 160; iter++) {
@@ -8676,22 +8221,17 @@ class World {
         const pairs = this.broadphase.computePairs();
         const manifolds = this.narrowphase.step(pairs, this.midphase, dt);
 
-        // refresh callback: re-measures contact geometry against predicted positions each substep.
         const narrowphase = this.narrowphase;
         this.solver.step(this.bodies, manifolds, this.gravity, dt, function (mans) {
-            narrowphase.refreshManifoldGeometry(mans);
+            narrowphase.refreshManifoldGeometry(mans); // per-substep geometry re-measure
         }, this.constraints);
 
-        // Forces are per-tick: cleared once here, after the solver used this tick's value.
-        for (let i = 0; i < this.bodies.length; i++) {
+        for (let i = 0; i < this.bodies.length; i++) { // forces are per-tick
             const b = this.bodies[i];
             if (b.bodyType === RigidBody.DYNAMIC) b.clearForces();
         }
 
-        // This tick's real contacts (the same ContactManifoldList the solver just resolved), for any
-        // listener that wants to observe genuine touches - each manifold carries bodyA/bodyB and its
-        // surviving contact points. Emitted after the solve so positions/points reflect the resolved
-        // state. A pair with no manifold (or a pruned, zero-point one) simply isn't present.
+        // Resolved contacts, for listeners. Emitted post-solve so positions reflect the result.
         this.emit('contacts', manifolds);
 
         this.emit('stepEnd', dt);

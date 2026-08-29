@@ -1,21 +1,15 @@
-// The main EPA expansion loop: grow the polytope toward the true Minkowski-difference surface,
-// then extract distance/normal/witness points from the winning face.
+// EPA expansion loop and result extraction.
 var proto = EPA.prototype;
 
-/**
- * Expands `simplex` (a GJK instance whose 4 points enclose the origin) into penetration depth and
- * normal. maxIterations guards non-convergence; hitting the cap still returns the live polytope's
- * closest alive face, never a stale one.
- */
+// Expands `simplex` into penetration depth and normal. maxIterations guards non-convergence;
+// hitting the cap still returns the live polytope's closest alive face.
 proto.run = function (support, simplex, maxIterations) {
     maxIterations = maxIterations || 64;
     this._vertexCount = 0;
     this._faceCount = 0;
 
     if (!this._buildInitialTetrahedron(support, simplex)) {
-        // No non-degenerate enclosing tetrahedron obtainable (exact touch or numerically flat) -
-        // report zero depth, which the solver treats as non-penetrating.
-        return this._zeroDepthResult(simplex);
+        return this._zeroDepthResult(simplex); // exact touch / numerically flat: zero depth
     }
     const idx = [0, 1, 2, 3];
     const cx = (this._wx[idx[0]] + this._wx[idx[1]] + this._wx[idx[2]] + this._wx[idx[3]]) / 4;
@@ -38,21 +32,15 @@ proto.run = function (support, simplex, maxIterations) {
 
         const newDist = this._newW.x * this._faceNx[face] + this._newW.y * this._faceNy[face] + this._newW.z * this._faceNz[face];
 
-        // Converged: the new support doesn't extend past the closest face's own plane by more than
-        // a small margin, compared relative to the face's own distance (not a fixed epsilon) so
-        // shallow contacts converge correctly too.
-        if (newDist - faceDist < 1e-6) break;
+        if (newDist - faceDist < 1e-6) break; // converged
 
         this._expandAt(this._newW, this._newA, this._newB, centroid);
     }
 
-    // Re-query the live polytope's actual closest alive face - the only way to get the current
-    // answer, whether the loop converged or hit the cap.
     return this._resultFromFace(this._closestAliveFace());
 };
 
-// Linear scan for the living face with the smallest distance-to-origin - the polytope stays small
-// (tens of faces) for this engine's shape pairs.
+// Linear scan for the alive face closest to the origin (polytope stays small).
 proto._closestAliveFace = function () {
     let best = -1, bestDist = Infinity;
     for (let i = 0; i < this._faceCount; i++) {
@@ -139,8 +127,7 @@ proto._resultFromFace = function (face) {
         u * this._bz[ia] + v * this._bz[ib] + w * this._bz[ic]
     );
 
-    // The face's own outward normal points A-side to B-side of the Minkowski difference A-B;
-    // negated here to match GJK's convention (B to A).
+    // Face normal points A-side to B-side; negate for the pipeline's B->A convention.
     return {
         distance: Math.max(0, dist),
         normal: new Vector3(-nx, -ny, -nz),

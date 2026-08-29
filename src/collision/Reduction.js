@@ -4,13 +4,9 @@
 var proto = ContactManifold.prototype;
 
 proto._addPoint = function (contact) {
-    // Coincidence merge for MESH face contacts only. A mesh face contact arrives as several
-    // triangle-vs-triangle sub-contacts (see TriTri.js); adjacent triangles legitimately report the
-    // SAME shared corner - the two triangles of a box's bottom face each put a point on both
-    // corners along their shared diagonal. Left in, those near-duplicate corners bias the 4-point
-    // reduction toward one edge and inject torque into a flat rest. Scoped to contacts flagged
-    // `fromMeshFace` so closed-form BoxBox / primitive manifolds (which are already deduped and
-    // whose point spread is load-bearing, e.g. a box tumbling down a ramp) are untouched.
+    // Adjacent mesh triangles report the same shared corner (TriTri emits one contact per clipped
+    // vertex). Merge same-tick mesh-face duplicates so the 4-point reduction isn't biased toward
+    // one edge. Scoped to fromMeshFace so primitive manifolds keep their point spread.
     if (contact.fromMeshFace) for (let i = 0; i < this.points.length; i++) {
         const ex = this.points[i];
         if (!ex.fromMeshFace) continue;
@@ -28,7 +24,7 @@ proto._addPoint = function (contact) {
     }
 
     const point = contact.clone();
-    point.normalLambda = 0; point.tangentLambda1 = 0; point.tangentLambda2 = 0; // fresh: no warm-start data
+    point.normalLambda = 0; point.tangentLambda1 = 0; point.tangentLambda2 = 0;
     point.setLocalAnchors(this.bodyA, this.bodyB);
     const local = ContactManifold._toLocal(this.bodyA, point.pointOnA, new Vector3());
 

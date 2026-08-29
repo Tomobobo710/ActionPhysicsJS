@@ -1,6 +1,5 @@
-// Recomputes everything derived from position/rotation: tight AABB, fattened broadphase AABB, and
-// world-space inverse inertia. Called once per body per tick by whichever stage owns "current" -
-// narrowphase and the solver assume it has already run.
+// Recomputes tight AABB, fattened broadphase AABB, and world inverse inertia from position/rotation.
+// Runs once per body per tick; narrowphase and the solver assume it already has.
 var proto = RigidBody.prototype;
 
 proto.updateDerived = function (dt) {
@@ -37,21 +36,12 @@ proto._recomputeAABB = function () {
     this._aabbDirty = false;
 };
 
-// The BROADPHASE world AABB: tight AABB fattened by a fixed margin plus this tick's velocity sweep
-// per axis, so a fast approach is caught a full tick before the shapes actually overlap - the
-// lookahead speculative contacts depend on. Fattening only ever adds candidate pairs, never
-// removes one; narrowphase culls precisely with its own per-pair margin. Kept separate from the
-// tight AABB so the body's geometric bound stays truthful for queries/rendering.
-//
-// Sweep is directional (grows only on the side the body is moving toward), keeping the box tight
-// rather than symmetric. SPECULATIVE_MARGIN is the absolute floor for the resting/slow case.
+// Tight AABB fattened by SPECULATIVE_MARGIN plus a directional velocity sweep, so a fast approach
+// is caught a tick before overlap. Fattening only adds candidate pairs; narrowphase culls precisely.
 proto._recomputeBroadphaseAABB = function (dt) {
     const m = RigidBody.SPECULATIVE_MARGIN;
     const sx = this.linear_velocity.x * dt, sy = this.linear_velocity.y * dt, sz = this.linear_velocity.z * dt;
-    // Angular sweep: a point at the body's bounding radius R moves at up to |omega|*R even when the
-    // center (tracked by the linear sweep) barely moves - a tipping box's far corner otherwise
-    // slams in undetected. Applied isotropically (all six faces), the conservative honest choice,
-    // since angular motion has no clean per-axis direction.
+    // Angular sweep: a corner at bounding radius R moves at |omega|*R; applied isotropically.
     const ex = (this._aabb.max.x - this._aabb.min.x) * 0.5;
     const ey = (this._aabb.max.y - this._aabb.min.y) * 0.5;
     const ez = (this._aabb.max.z - this._aabb.min.z) * 0.5;

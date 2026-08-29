@@ -57,22 +57,17 @@ class World {
         const pairs = this.broadphase.computePairs();
         const manifolds = this.narrowphase.step(pairs, this.midphase, dt);
 
-        // refresh callback: re-measures contact geometry against predicted positions each substep.
         const narrowphase = this.narrowphase;
         this.solver.step(this.bodies, manifolds, this.gravity, dt, function (mans) {
-            narrowphase.refreshManifoldGeometry(mans);
+            narrowphase.refreshManifoldGeometry(mans); // per-substep geometry re-measure
         }, this.constraints);
 
-        // Forces are per-tick: cleared once here, after the solver used this tick's value.
-        for (let i = 0; i < this.bodies.length; i++) {
+        for (let i = 0; i < this.bodies.length; i++) { // forces are per-tick
             const b = this.bodies[i];
             if (b.bodyType === RigidBody.DYNAMIC) b.clearForces();
         }
 
-        // This tick's real contacts (the same ContactManifoldList the solver just resolved), for any
-        // listener that wants to observe genuine touches - each manifold carries bodyA/bodyB and its
-        // surviving contact points. Emitted after the solve so positions/points reflect the resolved
-        // state. A pair with no manifold (or a pruned, zero-point one) simply isn't present.
+        // Resolved contacts, for listeners. Emitted post-solve so positions reflect the result.
         this.emit('contacts', manifolds);
 
         this.emit('stepEnd', dt);

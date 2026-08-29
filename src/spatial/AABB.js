@@ -1,10 +1,4 @@
-/**
- * Axis-aligned bounding box. min/max are Vector3 instances (in whichever precision the host
- * math package uses), min <= max on every axis always holds outside of construction.
- *
- * Every method here is allocation-free — this type lives inside broadphase/BVH sweeps that
- * run every tick over every body.
- */
+// Axis-aligned bounding box (min/max Vector3s). Every method is allocation-free.
 class AABB {
     constructor() {
         this.min = new Vector3(Infinity, Infinity, Infinity);

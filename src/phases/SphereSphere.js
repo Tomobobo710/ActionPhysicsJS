@@ -1,14 +1,11 @@
-// Closed-form sphere-sphere: no GJK, no EPA, no shared epsilon/iteration budget with any other
-// pair type. Own tunable margin (SphereSphere.DEGENERATE_EPSILON), independent of GJK.js/EPA.js.
+// Closed-form sphere-sphere.
 const SphereSphere = {};
 
-// True iff both placed shapes are bare SphereShapes (not a compound/mesh child wrapping one).
 SphereSphere.applies = function (placedA, placedB) {
     return placedA.shape instanceof SphereShape && placedB.shape instanceof SphereShape;
 };
 
-// Below this center-to-center distance the separating direction is undefined (coincident
-// centers) - falls back to a fixed axis rather than dividing by ~0.
+// Below this center-to-center distance the separating direction is undefined; use a fixed axis.
 SphereSphere.DEGENERATE_EPSILON = 1e-9;
 
 SphereSphere.test = function (placedA, placedB, out) {

@@ -8,27 +8,20 @@ class ContactDetails {
         this.pointOnB = new Vector3();
         this.normal = new Vector3();
         this.signedDistance = 0;
-        // Warm-start data, set by the manifold on match.
-        this.normalLambda = 0;
+        this.normalLambda = 0;   // warm-start data, preserved across a match
         this.tangentLambda1 = 0;
         this.tangentLambda2 = 0;
 
-        // Body-local anchors, set once at point creation, re-read every substep to recompute the
-        // live gap (see Solver's PositionSolve.js) - not recomputed on refresh/copy.
+        // Set once at creation, re-read each substep for the live gap (PositionSolve.js).
         this.localAnchorA = new Vector3();
         this.localAnchorB = new Vector3();
 
-        // Contact-relative normal velocity just before this substep's position solve, for
-        // restitution. Written each substep by the solver.
-        this._preSolveNormalVel = 0;
-
-        // True when this point came from TriTri's mesh face-clip (see TriTri.js). Lets the manifold
-        // apply a coincidence merge that only makes sense for the many-triangle mesh case.
-        this.fromMeshFace = false;
+        this._preSolveNormalVel = 0; // for restitution, written each substep
+        this.fromMeshFace = false;   // set by TriTri; gates the mesh-face merge and patch solve
     }
 
-    // Derives local anchors from current pointOnA/pointOnB + body transforms. Called once, at
-    // point creation - never on a re-matched point (which keeps its original anchors).
+    // Derives local anchors from the current witness points. Called once at creation, never on a
+    // re-matched point.
     setLocalAnchors(bodyA, bodyB) {
         const invRotA = ContactDetails._scratchQuat.copy(bodyA.rotation).invert();
         Vector3.subInto(this.localAnchorA, this.pointOnA, bodyA.position);

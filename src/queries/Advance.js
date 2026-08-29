@@ -1,24 +1,12 @@
-// Shared conservative-advancement sweep core, plus the AABB reject tests both rayIntersect and
-// shapeIntersect use before ever constructing a GJK support for a candidate body.
+// Shared conservative-advancement sweep core plus the AABB rejects rayIntersect/shapeIntersect use.
 
-// Casts `placedMover` (already at `start`) toward `start + dir*fullLen` via conservative
-// advancement using GJK.run() as the distance oracle: GJK's separated-case distance from the
-// mover's current position to the body is the TRUE closest distance in any direction, so the mover
-// can safely advance by exactly that much along the ray without ever overshooting into the body.
-// Repeating (re-running GJK from the new position) narrows in on the true first-hit point -
-// standard sphere-tracing conservative advancement, using an already-proven GJK as the primitive
-// instead of a hand-rolled ray/shape algorithm (a hand-rolled version was tried twice and failed a
-// 500-config ground-truth cross-check both times on corner/grazing cases).
-//
-// Convergence for a corner-on or near-tangent approach is geometric (never reaching exactly zero),
-// so the iteration cap/epsilon (160, 1e-4) are set generously.
+// Casts `placedMover` from `start` toward start + dir*fullLen by conservative advancement, using
+// GJK.run()'s separated distance as the step size (safe, never overshoots). Corner-on approaches
+// converge geometrically, so cap/epsilon (160, 1e-4) are generous.
 Queries._advance = function (support, placedMover, start, dirX, dirY, dirZ, fullLen) {
     const ux = dirX / fullLen, uy = dirY / fullLen, uz = dirZ / fullLen;
     let traveled = 0;
-    // Last normal from a non-degenerate GJK call. GJK's own exact-touch case has no unique normal
-    // at distance ~0 and falls back to an arbitrary-but-valid one - using the LAST good approach
-    // normal instead avoids ever trusting that degenerate fallback (a ray hitting a flat box face
-    // was previously reporting a spurious 45-degree diagonal normal from exactly this).
+    // Last normal from a non-degenerate GJK call - GJK's exact-touch fallback normal is arbitrary.
     let lastGoodNx = -ux, lastGoodNy = -uy, lastGoodNz = -uz;
 
     for (let iter = 0; iter < 160; iter++) {

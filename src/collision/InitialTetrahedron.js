@@ -1,7 +1,5 @@
-// Completes a full, non-degenerate tetrahedron from GJK's simplex (which may hand over as few as
-// 1 point - its enclosure/stall paths can confirm overlap from a lower-dimensional simplex when a
-// small shape sits shallowly inside a much larger one). EPA needs a real 4-point tetrahedron to
-// start, so this grows one dimension at a time by adding Minkowski support points.
+// Grows GJK's simplex (which may be as few as 1 point) into a full non-degenerate tetrahedron for
+// EPA, one dimension at a time via Minkowski support points.
 var proto = EPA.prototype;
 
 proto._buildInitialTetrahedron = function (support, simplex) {
@@ -82,8 +80,7 @@ proto._offPlane = function (i, j, k) {
     return vol * vol > 1e-14;
 };
 
-// Fallback for a genuinely flat (zero-volume) contact: zero depth, using the simplex's first
-// witness points and search normal. The solver's C<=0 guard treats zero depth as non-penetrating.
+// Flat (zero-volume) contact: zero depth from the simplex's first witness points and search normal.
 proto._zeroDepthResult = function (simplex) {
     const pointA = new Vector3(simplex._ax[0], simplex._ay[0], simplex._az[0]);
     const pointB = new Vector3(simplex._bx[0], simplex._by[0], simplex._bz[0]);

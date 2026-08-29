@@ -1,21 +1,10 @@
-/**
- * GJK: distance / overlap test between two convex shapes via their Minkowski difference (Ericson,
- * "Real-Time Collision Detection" ch. 5; Gilbert-Johnson-Keerthi).
- *
- * Two outcomes from the same loop: OVERLAPPING (simplex encloses the origin - handed to EPA for
- * depth) or SEPARATED (distance, witness points, normal - used directly for speculative contacts).
- *
- * FLUSH/EXACT-TOUCH: an exactly-touching pair is geometrically ambiguous with a lower-dimensional
- * simplex alone (see Seeding.js and Interior.js). Every point-in-simplex routine below has an
- * explicit degenerate fallback (zero-length edge, zero-area triangle) instead of producing NaN.
- *
- * See Seeding.js (tetrahedron seeding + interior/degenerate-normal probes), Simplex.js
- * (line/triangle/tetrahedron reduction), Run.js (the main loop).
- */
+// GJK distance/overlap test via the Minkowski difference (Ericson ch. 5). Two outcomes: OVERLAPPING
+// (handed to EPA) or SEPARATED (distance, witness points, normal). Exact-touch cases are handled by
+// degenerate fallbacks in the simplex routines rather than producing NaN. See Seeding.js,
+// Simplex.js, Run.js.
 class GJK {
     constructor() {
-        // Simplex: up to 4 points, each { w: Minkowski diff point, a: world point on A, b: on B }.
-        // Parallel scratch arrays, allocation-free across iterations.
+        // Simplex: up to 4 points, each (w = Minkowski diff point, a/b = world points on A/B).
         this._wx = new Float64Array(4); this._wy = new Float64Array(4); this._wz = new Float64Array(4);
         this._ax = new Float64Array(4); this._ay = new Float64Array(4); this._az = new Float64Array(4);
         this._bx = new Float64Array(4); this._by = new Float64Array(4); this._bz = new Float64Array(4);
@@ -42,8 +31,7 @@ class GJK {
         this._bx[i] = b.x; this._by[i] = b.y; this._bz[i] = b.z;
     }
 
-    // Replace the simplex with exactly the points at the given source indices, used after each
-    // closest-feature reduction.
+    // Keep only the points at `indices`, after a closest-feature reduction.
     _reduceTo(indices) {
         const wx = this._wx.slice(), wy = this._wy.slice(), wz = this._wz.slice();
         const ax = this._ax.slice(), ay = this._ay.slice(), az = this._az.slice();

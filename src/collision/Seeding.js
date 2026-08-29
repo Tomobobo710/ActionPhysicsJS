@@ -1,14 +1,10 @@
-// Tetrahedron seeding + strict-interior probe. Seeding from several diverse direction sets (rather
-// than growing one incrementally from a single axis) is what tells a real 3D overlap apart from an
-// exact touch: incremental growth tends to walk into the touching plane and stall there, while a
-// real overlap's seed tetrahedron shows every face at a genuine negative margin once built from
-// directions spanning different octants.
+// Tetrahedron seeding + strict-interior probe. Seeding from several diverse direction sets, rather
+// than growing one incrementally, tells a real 3D overlap apart from an exact touch (incremental
+// growth stalls in the touching plane).
 var proto = GJK.prototype;
 
-// Multiple direction sets exist because any single fixed set can, for a particular shape-size
-// pair, itself produce a degenerate seed tetrahedron. Odd/irrational-looking components (not just
-// +-1) avoid a sparse hull's (e.g. an octahedron) support function tying between exactly-aligned
-// vertices, which for two coincident identical hulls can collapse seed points to duplicates.
+// Multiple sets because any single one can produce a degenerate seed for some shape-size pair. The
+// irrational-looking components avoid support ties on sparse hulls (e.g. two coincident octahedra).
 GJK.SEED_DIRECTION_SETS = [
     [[1, 1, 1], [1, -1, -1], [-1, 1, -1], [-1, -1, 1]],
     [[1, 1, -1], [1, -1, 1], [-1, 1, 1], [-1, -1, -1]],
@@ -22,10 +18,8 @@ GJK.INTERIOR_PROBE_DIRS = [
     [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]
 ];
 
-// Tries each seed set, building a tetrahedron and checking whether it encloses the origin with a
-// real margin. Returns { overlapping: true, simplex: this } on confirmed overlap, or
-// { overlapping: false, direction, closest } from whichever seed's own reduction got closest to
-// the origin, so the caller's incremental loop continues from the best available start.
+// Tries each seed set. Returns { overlapping: true } on a confirmed enclosing tetrahedron, else
+// { overlapping: false, direction, closest } from whichever seed's reduction got closest to the origin.
 proto._seedTetrahedron = function (support) {
     let bestDistSq = Infinity, bestSet = -1;
     for (let s = 0; s < GJK.SEED_DIRECTION_SETS.length; s++) {
@@ -55,10 +49,9 @@ proto._seedTetrahedron = function (support) {
     return { overlapping: false, direction: finalResult.direction, closest: finalResult.closest };
 };
 
-// True iff the origin is strictly inside the Minkowski difference (real penetration), false if it
-// merely lies on the boundary (exact touch). The support function's farthest extent along every
-// direction must be strictly positive for strict interiority; at an exact touch there's a
-// separating direction (the contact normal) where it's ~0.
+// True iff the origin is strictly inside the Minkowski difference (real penetration) vs merely on
+// its boundary (exact touch), tested by checking the support extent exceeds a margin in every
+// probe direction.
 proto._originStrictlyInside = function (support) {
     const margin = GJK.OVERLAP_DISTANCE_EPSILON;
     // The collapsed search direction is numerically along the contact normal - test it first, both signs.

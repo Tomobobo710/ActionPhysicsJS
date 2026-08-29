@@ -166,7 +166,7 @@
 
 		var TAIL = 40;
 		var tailYs = [], maxTailSpeed = 0, maxTailAngSpeed = 0;
-		var maxRot = 0;   // largest total rotation (rad, any axis) either box reaches — a flat drop must not tip
+		var maxRot = 0, maxLatDrift = 0;
 		t.onTick(function (world, tick) {
 			ticks = tick;
 			var gap = (dropped.position.y - half) - (rest.position.y + half);
@@ -174,6 +174,8 @@
 			if (gap <= 0.02) touched = true;
 
 			maxRot = Math.max(maxRot, totalRot(dropped), totalRot(rest));
+			var lat = Math.sqrt(dropped.position.x * dropped.position.x + dropped.position.z * dropped.position.z);
+			if (lat > maxLatDrift) maxLatDrift = lat;
 
 			if (tick > 200 - TAIL) {
 				tailYs.push(dropped.position.y);
@@ -203,9 +205,16 @@
 			return { ok: maxRot < 0.01, detail: 'max total rotation = ' + maxRot.toFixed(4) + ' rad (' + (maxRot * 180 / Math.PI).toFixed(2) + ' deg)' };
 		});
 
+		// 2 cm, not the 1 mm box-box/single holds BoxShapes to: a hard bounce on a mesh face patch
+		// leaks a small tangential kick the primitive path doesn't. Still catches the old ~11 cm regression.
+		t.expect('dropped box barely drifted sideways (flat, centered drop)', function (world) {
+			if (ticks < 200) return false;
+			return { ok: maxLatDrift < 0.02, detail: 'worst lateral drift = ' + maxLatDrift.toFixed(6) + ' m' };
+		});
+
 		U.syncBodies(t, w);
 		t.simulate(w, 200);
-	}, { visual: true, page: 'mesh', steps: 200, description: 'An inverted (reversed-winding) box dropped onto a resting inverted box, axis-aligned and centered. It must land and stack (no sink-through), and neither box may rotate on any axis — a flat face-on-face drop imparts zero torque, so any spin is a bad contact manifold.' });
+	}, { visual: true, page: 'mesh', steps: 200, description: 'An inverted (reversed-winding) box dropped onto a resting inverted box, axis-aligned and centered. It must land and stack (no sink-through), neither box may rotate on any axis, and it must not slide sideways — a flat face-on-face drop imparts zero torque and zero lateral force.' });
 
 	Runner.test('mesh collision', 'normal box stacked on normal box', function (t) {
 
@@ -232,6 +241,7 @@
 		var TAIL = 40;
 		var tailYs = [], maxTailSpeed = 0, maxTailAngSpeed = 0;
 		var maxRot = 0;
+		var maxLatDrift = 0;
 		t.onTick(function (world, tick) {
 			ticks = tick;
 			var gap = (dropped.position.y - half) - (rest.position.y + half);
@@ -239,6 +249,8 @@
 			if (gap <= 0.02) touched = true;
 
 			maxRot = Math.max(maxRot, totalRot(dropped), totalRot(rest));
+			var lat = Math.sqrt(dropped.position.x * dropped.position.x + dropped.position.z * dropped.position.z);
+			if (lat > maxLatDrift) maxLatDrift = lat;
 
 			if (tick > 200 - TAIL) {
 				tailYs.push(dropped.position.y);
@@ -266,6 +278,13 @@
 		t.expect('neither box rotated on any axis (flat face-on-face drop = zero torque)', function (world) {
 			if (ticks < 200) return false;
 			return { ok: maxRot < 0.01, detail: 'max total rotation = ' + maxRot.toFixed(4) + ' rad (' + (maxRot * 180 / Math.PI).toFixed(2) + ' deg)' };
+		});
+
+		// 2 cm, not the 1 mm box-box/single holds BoxShapes to: a hard bounce on a mesh face patch
+		// leaks a small tangential kick the primitive path doesn't. Still catches the old ~11 cm regression.
+		t.expect('dropped box barely drifted sideways (flat, centered drop)', function (world) {
+			if (ticks < 200) return false;
+			return { ok: maxLatDrift < 0.02, detail: 'worst lateral drift = ' + maxLatDrift.toFixed(6) + ' m' };
 		});
 
 		U.syncBodies(t, w);

@@ -1,30 +1,16 @@
-/**
- * EPA (Expanding Polytope Algorithm): penetration depth, normal, and contact points from a GJK
- * simplex that already encloses the origin (van den Bergen, "Collision Detection in Interactive
- * 3D Environments").
- *
- * Produces: signed distance (>= 0, a penetration depth), a world normal B->A, and witness points
- * on each shape's surface. Assumes the input simplex is a genuine origin-enclosing tetrahedron.
- *
- * The result always re-queries the live polytope's closest alive face at the end (see Expand.js) -
- * a face's distance is only meaningful while alive, so tracking "smallest distance ever seen"
- * across iterations would pick up stale, later-invalidated faces.
- *
- * See InitialTetrahedron.js (completing GJK's simplex into a full tetrahedron) and Expand.js (the
- * main expansion loop + result extraction).
- */
+// EPA: penetration depth, normal (B->A), and witness points from a GJK simplex that already
+// encloses the origin (van den Bergen). See InitialTetrahedron.js and Expand.js.
 class EPA {
     constructor() {
-        // Polytope vertices, parallel arrays like GJK's (w = Minkowski diff point, a/b = world
-        // witness points). Capacity grows geometrically to stay allocation-light across calls.
+        // Polytope vertices, parallel arrays like GJK's. Capacity grows geometrically.
         this._capacity = 64;
         this._wx = new Float64Array(this._capacity); this._wy = new Float64Array(this._capacity); this._wz = new Float64Array(this._capacity);
         this._ax = new Float64Array(this._capacity); this._ay = new Float64Array(this._capacity); this._az = new Float64Array(this._capacity);
         this._bx = new Float64Array(this._capacity); this._by = new Float64Array(this._capacity); this._bz = new Float64Array(this._capacity);
         this._vertexCount = 0;
 
-        // Faces: triangle index triples + outward normal + distance-to-origin. Removed faces are
-        // marked dead (faceAlive) rather than spliced out, to avoid reindexing on every removal.
+        // Faces: index triples + outward normal + distance-to-origin. Removed faces are marked dead
+        // (faceAlive), not spliced, to avoid reindexing.
         this._faceCapacity = 128;
         this._faceA = new Int32Array(this._faceCapacity);
         this._faceB = new Int32Array(this._faceCapacity);

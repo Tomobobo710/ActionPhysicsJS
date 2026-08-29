@@ -1,9 +1,7 @@
-// Sweep-and-prune broadphase over AABBs, sorted along one axis (the most-spread axis, re-picked
-// each call). Reads body.getBroadphaseAABB() (fattened, speculative-margin variant); never tests
-// real shapes.
+// Sweep-and-prune over fattened AABBs (body.getBroadphaseAABB()), sorted along the most-spread axis.
 class SAPBroadphase {
     constructor() {
-        this._entries = []; // { body, aabb } - aabb is a snapshot reference, not a copy
+        this._entries = []; // { body, aabb } - aabb is a live reference
         this._axis = 'x';
     }
 

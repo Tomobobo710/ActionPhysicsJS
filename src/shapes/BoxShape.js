@@ -1,5 +1,4 @@
-// Every dimension is a half-extent — matches AABB, matches
-// every other shape's convention. No shape silently uses a different one.
+// Dimensions are half-extents.
 class BoxShape extends Shape {
     constructor(halfWidth, halfHeight, halfDepth) {
         super('box');

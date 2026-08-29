@@ -1,17 +1,13 @@
-// How far ahead of actual touch a contact is reported, so the solver's predicted-position
-// non-penetration constraint has a point to work with before overlap happens (the fix for the
-// deep-correction -> large-derived-velocity failure mode).
+// How far ahead of touch a contact is reported, so the predicted-position solve has a constraint
+// to work with before overlap. Base margin plus how far the pair closes in one tick.
 var proto = NarrowPhase.prototype;
 
-// Base margin widened by how far the pair can close in one tick along relative velocity, so a
-// fast approach is still caught a full tick ahead of overlap.
 proto._speculativeMargin = function (bodyA, bodyB) {
     const dvx = bodyA.linear_velocity.x - bodyB.linear_velocity.x;
     const dvy = bodyA.linear_velocity.y - bodyB.linear_velocity.y;
     const dvz = bodyA.linear_velocity.z - bodyB.linear_velocity.z;
     const relSpeed = Math.sqrt(dvx * dvx + dvy * dvy + dvz * dvz);
-    // A rotating body's contact FEATURE (corner/edge) approaches faster than its center moves -
-    // add each body's angular corner speed so a tipping body's corner is still caught in time.
+    // A rotating body's corner moves faster than its center; add each body's angular corner speed.
     const angSpeed = NarrowPhase._angularCornerSpeed(bodyA) + NarrowPhase._angularCornerSpeed(bodyB);
     return NarrowPhase.SPECULATIVE_BASE + (relSpeed + angSpeed) * this._dt;
 };

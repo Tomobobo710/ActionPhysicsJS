@@ -2,46 +2,49 @@
 // applied after positions are solved, plus the velocity-space helpers they share.
 var proto = Solver.prototype;
 
-// A box-on-box flat face contact reports up to 4 coplanar points sharing one normal. Solving
-// restitution and friction point-by-point (Gauss-Seidel) over that patch is what fabricates lateral
-// drift on a perfectly symmetric drop (box-box/single): each point's off-center normal impulse spins
-// the body a hair, the next point reads the spun state, and the four impulses no longer cancel - the
-// residual spin then couples through friction into a net sideways velocity. For that ONE case - both
-// shapes actual BoxShapes, every engaged point sharing a single normal (a genuine face patch) - the
-// physically correct model is a single contact patch, not four independent points: restitution and
-// friction are resolved once at the patch centroid, which is exactly symmetric and leaves no residual
-// spin or drift. Everything else (edge/corner box contacts, meshes, spheres, compounds, non-coplanar
-// manifolds) keeps the per-point solve, so the exact per-point restitution/friction contracts other
-// tests pin down are untouched.
+// Solving restitution + friction point-by-point over a flat face patch fabricates lateral drift on
+// a symmetric drop: each point's off-center impulse spins the body a hair, the next reads the spun
+// state, and the impulses no longer cancel. For a genuine face patch (a BoxBox face manifold, or a
+// mesh face manifold whose points all come from TriTri) resolve it once at the centroid instead.
+// Everything else keeps the per-point solve.
 proto.COPLANAR_NORMAL_DOT = 0.9999;
 
 proto._boxFacePatchVelocity = function (manifold, bodyA, bodyB, gravity, h) {
     const pts = manifold.points, n = pts.length;
     if (n < 2) return false;
-    if (!(bodyA.shape instanceof BoxShape) || !(bodyB.shape instanceof BoxShape)) return false;
+    const bothBoxes = (bodyA.shape instanceof BoxShape) && (bodyB.shape instanceof BoxShape);
+    let allMeshFace = !bothBoxes;
+    if (allMeshFace) for (let i = 0; i < n; i++) if (!pts[i].fromMeshFace) { allMeshFace = false; break; }
+    if (!bothBoxes && !allMeshFace) return false;
 
-    // Aggregate engaged points; require a single shared normal (a real face patch, not an edge/corner).
+    // A mesh face patch is one face by construction, so use all its points for the centroid - not
+    // just the ones the position sweep left engaged this substep. A BoxBox patch uses engaged-only.
+    const useAll = allMeshFace;
     let cAx = 0, cAy = 0, cAz = 0, cBx = 0, cBy = 0, cBz = 0;
-    let nx = 0, ny = 0, nz = 0, cnt = 0, maxPre = 0, totLam = 0;
+    let nx = 0, ny = 0, nz = 0, cnt = 0, engaged = 0, maxPre = 0, totLam = 0;
     for (let i = 0; i < n; i++) {
         const p = pts[i];
-        if (p.normalLambda >= 0) continue;
+        const isEngaged = p.normalLambda < 0;
+        if (isEngaged) {
+            engaged++;
+            if (p._preSolveNormalVel > maxPre) maxPre = p._preSolveNormalVel;
+            totLam += Math.abs(p.normalLambda);
+        }
+        if (!useAll && !isEngaged) continue;
         p.currentAnchorAInto(this._rA, bodyA);
         p.currentAnchorBInto(this._rB, bodyB);
         cAx += this._rA.x; cAy += this._rA.y; cAz += this._rA.z;
         cBx += this._rB.x; cBy += this._rB.y; cBz += this._rB.z;
         nx += p.normal.x; ny += p.normal.y; nz += p.normal.z;
-        if (p._preSolveNormalVel > maxPre) maxPre = p._preSolveNormalVel;
-        totLam += Math.abs(p.normalLambda);
         cnt++;
     }
-    if (cnt < 2) return false;
+    if (engaged < 1 || cnt < 2) return false;
     const nl = Math.sqrt(nx * nx + ny * ny + nz * nz);
     if (nl < 1e-9) return false;
     nx /= nl; ny /= nl; nz /= nl;
     for (let i = 0; i < n; i++) {
         const p = pts[i];
-        if (p.normalLambda >= 0) continue;
+        if (!useAll && p.normalLambda >= 0) continue;
         if (p.normal.x * nx + p.normal.y * ny + p.normal.z * nz < this.COPLANAR_NORMAL_DOT) return false; // not coplanar
     }
 
@@ -138,13 +141,8 @@ proto._solveContactVelocity = function (point, bodyA, bodyB, gravity, h) {
     this._applyVelocityImpulse(bodyA, bodyB, this._rA, this._rB, -tx, -ty, -tz, jt);
 };
 
-// Angular friction: damps relative angular velocity ABOUT the contact's tangent plane only (spin
-// about the normal is untouched). Shape-agnostic - on a round shape this looks like rolling
-// resistance, but it fires the same way for a box pivoting at a contact corner. Applied once per
-// manifold via the most-engaged point, not once per point - splitting it per-point let each point's
-// correction change the angular velocity the next point read, oscillating instead of converging
-// (traced on a shoved cylinder: stuck at a nonzero fixed-point angular velocity forever instead of
-// decaying to rest).
+// Damps relative angular velocity in the contact's tangent plane (spin about the normal is left
+// alone). Applied once per manifold at the most-engaged point; per-point splitting oscillates.
 proto._solveAngularFriction = function (point, bodyA, bodyB, h) {
     const angularFriction = Math.sqrt(Math.max(bodyA.angular_friction, 0) * Math.max(bodyB.angular_friction, 0));
     if (angularFriction <= 0) return;

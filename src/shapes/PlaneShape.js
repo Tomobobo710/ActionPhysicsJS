@@ -1,9 +1,5 @@
-// A finite plane: a flat rectangle with zero thickness. Degenerate by construction — special-
-// cased explicitly at the shape level rather than patched into GJK/EPA later.
-//
-// orientation selects which local axis is the normal: 'x', 'y', or 'z'. halfW/halfL extend along
-// the other two axes, in the cyclic order (y,z) for 'x', (z,x) for 'y', (x,y) for 'z' — i.e. the
-// same convention Vector3.cross uses, so normal x axis1 = axis2 always holds.
+// A finite zero-thickness rectangle. `orientation` ('x'/'y'/'z') is the normal axis; halfW/halfL
+// extend along the other two in cross-product cyclic order (y,z)/(z,x)/(x,y).
 class PlaneShape extends Shape {
     constructor(orientation, halfW, halfL) {
         super('plane');

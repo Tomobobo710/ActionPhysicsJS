@@ -1,12 +1,9 @@
 // Expanding a broadphase body pair into primitive-vs-primitive candidates.
 var proto = Midphase.prototype;
 
-// Expands one side into primitive candidates: [{ shape, position, rotation }]. `otherAABB` is the
-// other body's world (fattened) AABB, used to cull children/triangles that can't matter.
-// `otherBodyId` keys the leaf cache. `isNestedChild`: true when `body` is actually a compound
-// child's world placement (a plain {shape,position,rotation}, not a real RigidBody) being expanded
-// recursively because it is itself a mesh/compound - such a child has no speculative margin of its
-// own (that's a whole-body concept), so the own-margin fattening below is skipped for it.
+// Expands one side into primitive candidates. `otherAABB`: the other body's fattened AABB, for
+// culling. `otherBodyId`: leaf-cache key. `isNestedChild`: `body` is a compound child's placement
+// being recursed into (no speculative margin of its own, so the own-margin fattening is skipped).
 proto._expandSide = function (body, otherAABB, otherBodyId, isNestedChild) {
     const shape = body.shape;
     if (!(shape instanceof CompoundShape) && !(shape instanceof MeshShape)) {
@@ -32,11 +29,8 @@ proto._expandSide = function (body, otherAABB, otherBodyId, isNestedChild) {
         if (corner.z > localQuery.max.z) localQuery.max.z = corner.z;
     }
 
-    // otherAABB carries the OTHER body's speculative margin, but THIS body's own margin never
-    // entered the query above - fatten symmetrically by this body's own broadphase-vs-tight AABB
-    // delta (taking the largest per-axis delta so a rotated body's local-frame margin isn't
-    // under-estimated), or a compound/mesh body approaching under its own margin can get zero
-    // candidates for a tick or two while already overlapping, then correct in one deep jolt.
+    // otherAABB has the other body's margin but not this one's - fatten by this body's own
+    // broadphase-vs-tight delta (largest per-axis, so a rotated body isn't under-estimated).
     if (!isNestedChild) {
         const tightAABB = body.getAABB(), bpAABB = body.getBroadphaseAABB();
         const marginX = Math.max(bpAABB.max.x - tightAABB.max.x, tightAABB.min.x - bpAABB.min.x);
@@ -70,17 +64,14 @@ proto._expandSide = function (body, otherAABB, otherBodyId, isNestedChild) {
         const a = Midphase._scratchTriA, b = Midphase._scratchTriB, c = Midphase._scratchTriC;
         for (let k = 0; k < hits.length; k++) {
             shape.triangleAt(hits[k], a, b, c);
-            // Baked into world space directly, at identity rotation - simpler than a per-triangle
-            // local frame narrowphase would have to undo.
+            // Baked to world space at identity rotation, so the narrowphase has nothing to undo.
             const slot = this._nextTriSlot();
             body.rotation.transformVectorInto(a, slot.a); slot.a.addInPlace(body.position);
             body.rotation.transformVectorInto(b, slot.b); slot.b.addInPlace(body.position);
             body.rotation.transformVectorInto(c, slot.c); slot.c.addInPlace(body.position);
             slot.shape.a = slot.a; slot.shape.b = slot.b; slot.shape.c = slot.c;
-            // slot.position stays at origin (the triangle's verts are already world-space and the
-            // narrowphase support adds slot.position). bodyCenter is a separate hint - the owning
-            // body's world center - which TriTri.js uses to orient a mesh face-contact normal
-            // reliably even when the two faces are exactly flush.
+            // position stays at origin (verts are already world-space); bodyCenter is a hint TriTri
+            // uses to orient the contact normal.
             slot.bodyCenter.copy(body.position);
             out.push({ shape: slot.shape, position: slot.position, rotation: slot.rotation, bodyCenter: slot.bodyCenter });
         }
@@ -88,10 +79,8 @@ proto._expandSide = function (body, otherAABB, otherBodyId, isNestedChild) {
     return out;
 };
 
-// One pooled { shape: TriangleShape, a/b/c: Vector3 (the shape's own world-space vertices),
-// position: Vector3(0,0,0), rotation: identity Quaternion } slot, grown as needed, never shrunk -
-// same pattern as NarrowPhase._contactPool. Indexed by _slotIndex, reset once per expandPair() call
-// (not per _expandSide) since both sides of one pair draw from the same tick's pool.
+// Pooled world-space triangle slot, grown as needed. The pool index resets once per expandPair()
+// (both sides draw from it).
 proto._nextTriSlot = function () {
     if (this._triSlotIndex >= this._triSlots.length) {
         this._triSlots.push({

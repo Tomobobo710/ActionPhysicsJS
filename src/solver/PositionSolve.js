@@ -1,47 +1,35 @@
-// Phase 2: position-level XPBD constraint solve for a single contact point, plus the effective-mass
-// and positional-correction helpers it uses.
+// Position-level XPBD solve for one contact point.
 var proto = Solver.prototype;
 
 proto._solvePoint = function (point, bodyA, bodyB, h, capPenetration) {
     point.currentAnchorAInto(this._rA, bodyA);
     point.currentAnchorBInto(this._rB, bodyB);
     const nx = point.normal.x, ny = point.normal.y, nz = point.normal.z;
-    // C = (anchorB - anchorA).normal; normal points B->A (GJK/EPA convention). C > 0 = penetrating.
-    // Recomputed live every call from current anchor positions, never from point.signedDistance
-    // (a tick-start snapshot, stale by the second substep).
+    // C = (anchorB - anchorA).normal, recomputed live (point.signedDistance is a stale tick-start
+    // snapshot). Normal points B->A; C > 0 = penetrating.
     const C = (this._rB.x - this._rA.x) * nx + (this._rB.y - this._rA.y) * ny + (this._rB.z - this._rA.z) * nz;
-    // Speculative contact: created while still separated; only correct once predicted motion has
-    // actually reached/passed touch (C > 0). Never pulls a separated pair together across a gap.
-    if (C <= 0) return;
+    if (C <= 0) return; // speculative contact not yet touching
 
-    // Pre-solve normal velocity for restitution, captured on the substep that actually engages this
-    // point (C > 0), using each body's PRE-gravity velocity (this substep's own gravity add hasn't
-    // happened from the impact's point of view yet).
+    // Captured on the substep this point engages, from pre-gravity velocity, for restitution.
     point._preSolveNormalVel = this._contactRelativeNormalVelocityPreGravity(point, bodyA, bodyB);
 
     Vector3.subInto(this._rA, this._rA, bodyA.position);
     Vector3.subInto(this._rB, this._rB, bodyB.position);
 
     const wSum = this._effectiveMass(bodyA, bodyB, this._rA, this._rB, nx, ny, nz);
-    if (wSum < 1e-12) return; // both bodies immovable along this normal
+    if (wSum < 1e-12) return;
 
-    // capPenetration is only passed true for a multi-point manifold (see Solver.MAX_PENETRATION_PER_SUBSTEP) -
-    // a single-point manifold always resolves C fully in one substep.
     const cappedC = capPenetration ? Math.min(C, Solver.MAX_PENETRATION_PER_SUBSTEP) : C;
 
-    // Rigid (compliance-free) contact: deltaLambda = -C/wSum. normalLambda accumulates <= 0
-    // (a contact can push apart, never pull together).
     const oldLambda = point.normalLambda;
     let newLambda = oldLambda - cappedC / wSum;
-    if (newLambda > 0) newLambda = 0;
+    if (newLambda > 0) newLambda = 0; // a contact pushes apart, never pulls together
     const deltaLambda = newLambda - oldLambda;
     point.normalLambda = newLambda;
 
-    // Split the correction: only the part explainable by the body's own real closing velocity
-    // becomes derived velocity (velocityDelta); the rest is a pure position edit (biasDelta),
-    // excluded from step 4's velocity derivation. This is what lets a resting body under load
-    // correct fully while a raw spawn overlap resolves as gradual position bias instead of
-    // fabricated kinetic energy.
+    // Only the share explainable by the body's own closing velocity becomes derived velocity; the
+    // rest is a pure position edit (biasDelta), subtracted back out in the velocity-derivation
+    // step. Lets a loaded resting body correct fully while a raw spawn overlap resolves gently.
     const liveRelVel = this._contactRelativeNormalVelocity(point, bodyA, bodyB);
     const explainableBySubstep = Math.max(liveRelVel, 0) * h * Solver.EXPLAINABLE_MARGIN;
     let velocityC = cappedC;
@@ -76,11 +64,8 @@ proto._effectiveMass = function (bodyA, bodyB, rA, rB, dx, dy, dz) {
     return w;
 };
 
-// Applies dLambda*n (and the matching angular correction) to both bodies. C = (anchorB-anchorA).n,
-// so A moves along -n*dLambda, B along +n*dLambda.
-// `bias`: true for the non-explainable share of a split correction - the body still moves (so the
-// next substep measures a smaller overlap), but the movement is also recorded into this._biasDelta
-// for step 4 to subtract back out.
+// Applies dLambda*n (plus angular correction) to both bodies: A along -n, B along +n. When `bias`,
+// the movement is also recorded into this._biasDelta so the velocity-derivation step subtracts it.
 proto._applyPositionalCorrection = function (bodyA, bodyB, rA, rB, nx, ny, nz, dLambda, bias) {
     const px = nx * dLambda, py = ny * dLambda, pz = nz * dLambda;
 

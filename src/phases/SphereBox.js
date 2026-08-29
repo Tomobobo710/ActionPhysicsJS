@@ -1,5 +1,4 @@
-// Closed-form sphere-box: closest point on an oriented box to the sphere center, clamped per-axis
-// in the box's local frame. Own epsilon, no shared GJK/EPA state.
+// Closed-form sphere-box: closest point on the oriented box to the sphere center, clamped per-axis.
 const SphereBox = {};
 
 SphereBox.applies = function (placedA, placedB) {
@@ -7,9 +6,7 @@ SphereBox.applies = function (placedA, placedB) {
         (placedA.shape instanceof BoxShape && placedB.shape instanceof SphereShape);
 };
 
-// Below this distance from the box surface to the sphere center, the surface normal is undefined
-// (center exactly on/past every face at once - only reachable at the box's own center) - falls
-// back to a fixed axis rather than dividing by ~0.
+// Below this distance from box surface to sphere center the normal is undefined; use a fixed axis.
 SphereBox.DEGENERATE_EPSILON = 1e-9;
 
 SphereBox.test = function (placedA, placedB, out) {
@@ -35,8 +32,7 @@ SphereBox.test = function (placedA, placedB, out) {
     const closest = SphereBox._scratchV2;
     let localNx = 0, localNy = 0, localNz = 0, penetration = 0;
     if (inside) {
-        // Center is inside the box: push out along whichever axis has the LEAST penetration
-        // (the standard box-interior-point resolution - the shortest way out).
+        // Center inside the box: push out along the axis of least penetration.
         const px = hw - Math.abs(local.x), py = hh - Math.abs(local.y), pz = hd - Math.abs(local.z);
         if (px <= py && px <= pz) { localNx = local.x >= 0 ? 1 : -1; penetration = px; closest.set(local.x >= 0 ? hw : -hw, local.y, local.z); }
         else if (py <= pz) { localNy = local.y >= 0 ? 1 : -1; penetration = py; closest.set(local.x, local.y >= 0 ? hh : -hh, local.z); }
@@ -66,8 +62,7 @@ SphereBox.test = function (placedA, placedB, out) {
         boxPlaced.rotation.transformVectorInPlace(SphereBox._scratchV1);
     }
     worldNx = SphereBox._scratchV1.x; worldNy = SphereBox._scratchV1.y; worldNz = SphereBox._scratchV1.z;
-    // Normal points sphere-side -> box-side in this local derivation; flip to A->B then to B->A
-    // (the pipeline convention) based on which placed side is actually the sphere.
+    // Local derivation gives sphere->box; flip to the pipeline's B->A when the box is placed first.
     if (!sphereFirst) { worldNx = -worldNx; worldNy = -worldNy; worldNz = -worldNz; }
 
     const worldClosest = SphereBox._scratchV3;

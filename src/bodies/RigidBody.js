@@ -1,19 +1,11 @@
-// Body type, as a first-class concept: checked in exactly one place per stage, never as scattered
-// mass===Infinity comparisons.
 const BODY_STATIC = 0;
 const BODY_KINEMATIC = 1;
 const BODY_DYNAMIC = 2;
 
 let _nextBodyId = 1;
 
-/**
- * A rigid body: shape + world transform + (for dynamic bodies) mass/motion state. Broadphase and
- * midphase only need shape + transform + AABB; mass/motion/material fields exist so every concern
- * has exactly one owning home.
- *
- * See Forces.js (impulse/force application), DerivedState.js (AABB/inertia recompute), and
- * Accessors.js (support point, ray cast, transform, listeners).
- */
+// Shape + world transform + (for dynamic bodies) mass/motion state. See Forces.js, DerivedState.js,
+// Accessors.js.
 class RigidBody {
     constructor(shape, mass) {
         // ---- Identity ----
@@ -50,22 +42,12 @@ class RigidBody {
         this.accumulated_torque = new Vector3(0, 0, 0);
         this.gravity = null; // null = use World.gravity; setGravity() overrides per-body
 
-        // ---- Material ----
-        // Matches ActionEngineJS's own ActionRigidBody3D.MATERIAL_DEFAULTS - a body built directly
-        // against this engine should behave the same as one built through that wrapper.
-        // angular_damping is not 0: Coulomb friction opposes tangential SLIP, and a cleanly rolling
-        // shape has ~zero slip at the contact by construction, so without angular damping a rolling
-        // body never stops on friction alone (see angular_friction below and VelocitySolve.js).
+        // ---- Material ---- (matches ActionEngineJS's MATERIAL_DEFAULTS)
         this.friction = 3.0;
         this.restitution = 0.33;
         this.linear_damping = 0.1;
-        this.angular_damping = 0.9;
-        // Contact-tangent-plane angular damping (meters): caps relative angular velocity ABOUT the
-        // contact's tangent plane (any axis lying in the contact surface), the same way Coulomb
-        // friction caps tangential linear slip. Shape-agnostic - it happens to be what real rolling
-        // resistance looks like on a round shape, but it also damps an ordinary box's pivot/topple
-        // at a contact corner. NOT the same thing as a future shape-aware rolling-resistance model
-        // (which would key off actual rolling contact geometry); this name is reserved for that.
+        this.angular_damping = 0.9; // nonzero, or a cleanly rolling shape never stops on friction alone
+        // Caps relative angular velocity in the contact's tangent plane, like friction caps slip.
         this.angular_friction = 0.05;
 
         // ---- Filtering ----
@@ -109,7 +91,7 @@ class RigidBody {
     }
 }
 
-// Scratch objects for the allocation-free AABB/inertia recompute in DerivedState.js.
+// Scratch for DerivedState.js's allocation-free recompute.
 RigidBody._scratchLocalAABB = new AABB();
 RigidBody._scratchMat3 = new Matrix3();
 RigidBody._scratchMat3b = new Matrix3();
@@ -121,8 +103,6 @@ RigidBody.STATIC = BODY_STATIC;
 RigidBody.KINEMATIC = BODY_KINEMATIC;
 RigidBody.DYNAMIC = BODY_DYNAMIC;
 
-// Fixed broadphase-AABB fattening for speculative contacts (meters). Matches the narrowphase
-// speculative base so both stages agree on how early a contact is worth seeing.
-RigidBody.SPECULATIVE_MARGIN = 0.02;
+RigidBody.SPECULATIVE_MARGIN = 0.02; // meters; matches NarrowPhase.SPECULATIVE_BASE
 
 ActionPhysics.RigidBody = RigidBody;

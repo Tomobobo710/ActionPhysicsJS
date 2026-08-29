@@ -1,7 +1,5 @@
-// Static triangle mesh: a vertex list plus flat index triples. Zero mass by construction — a
-// mesh is a static/kinematic-only shape (its BVH is built once and never updated).
-// The midphase BVH over these triangles is built lazily by whatever consumes this shape;
-// this class only owns geometry.
+// Static triangle mesh: vertex list plus flat index triples. Zero mass; static/kinematic only.
+// The midphase BVH over its triangles is built lazily elsewhere.
 class MeshShape extends Shape {
     constructor(vertices, indices) {
         super('mesh');
