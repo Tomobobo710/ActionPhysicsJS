@@ -23,6 +23,14 @@ class NarrowPhase {
     // fast body's contact is still caught a full tick ahead - see step().
     static SPECULATIVE_BASE = 0.02;
 
+    // Minimum world-space distance (metres) a manifold point's fresh GJK/EPA result must move from
+    // its own current anchor before refreshManifoldGeometry treats it as a real migration and
+    // re-anchors - see that method's own comment. Comfortably above what a genuinely slow/settling
+    // contact traverses in one substep, comfortably below the near-full-shape-size jump a degenerate
+    // line/face contact's ambiguous closest point showed (traced: a cylinder resting flush on its
+    // side jumped by ~0.95-1.0, its own half-length, substep to substep).
+    static ANCHOR_REFRESH_MIN_MOVE = 0.05;
+
     constructor() {
         this.manifolds = new ContactManifoldList();
         this._dt = 1 / 60; // set each tick by step(); the fallback only matters if step() is never called
@@ -34,6 +42,7 @@ class NarrowPhase {
         this._epa = new EPA();
         this._contactPool = []; // reused ContactDetails objects, grown as needed, never shrunk
         this._poolIndex = 0;
+        this._scratchVec = new Vector3(); // refreshManifoldGeometry's own anchor-drift check
     }
 
     _nextPooledContact() {
@@ -155,9 +164,26 @@ class NarrowPhase {
                 if (d < bestDistSq) { bestDistSq = d; best = p; }
             }
             if (!best) continue;
+            // A curved shape resting flush along a LINE (a cylinder's barrel on flat ground, not a
+            // single point) has no unique closest point - GJK/EPA legitimately returns a different,
+            // equally-valid point along that line from one call to the next even though nothing about
+            // the real contact changed. Re-anchoring to every such jump flips the position solve's
+            // lever arm (and so its torque direction) every substep, which kept re-injecting angular
+            // velocity a settled round shape's own rolling resistance had just removed - a resting
+            // cylinder/cone never fully stopped spinning no matter how strong the damping was, because
+            // the anchor itself never held still long enough to stay damped. Re-anchor only when the
+            // fresh point has genuinely moved from where THIS point's CURRENT anchor sits in world
+            // space right now (currentAnchorBInto - the anchor tracks the body's own rotation each
+            // substep even while frozen, so real cumulative drift still crosses this threshold and
+            // triggers a re-anchor; comparing against a stale cached pointOnB instead let real motion
+            // accumulate invisibly and never re-anchor at all, a real, confirmed bug - a cylinder held
+            // at a stale anchor for 1000+ ticks eventually drifted enough to launch outright, y=58+).
+            best.currentAnchorBInto(this._scratchVec, bodyB);
+            const movedSq = (fresh.pointOnB.x - this._scratchVec.x) * (fresh.pointOnB.x - this._scratchVec.x) +
+                (fresh.pointOnB.y - this._scratchVec.y) * (fresh.pointOnB.y - this._scratchVec.y) +
+                (fresh.pointOnB.z - this._scratchVec.z) * (fresh.pointOnB.z - this._scratchVec.z);
+            const genuineMove = movedSq >= NarrowPhase.ANCHOR_REFRESH_MIN_MOVE * NarrowPhase.ANCHOR_REFRESH_MIN_MOVE;
             best.point.copy(fresh.point);
-            best.pointOnA.copy(fresh.pointOnA);
-            best.pointOnB.copy(fresh.pointOnB);
             best.signedDistance = fresh.signedDistance;
             // Keep the ESTABLISHED normal through the exact-touch band, exactly as the manifold's
             // once-per-tick update() does (ContactManifold.EXACT_TOUCH_BAND) - the per-substep
@@ -166,10 +192,15 @@ class NarrowPhase {
             // the penetrate-then-launch bug the once-per-tick guard was added to prevent (it bit
             // spheres hard: a flush sphere kept getting a (-0.71,0,0.71) normal and launched to y=200+).
             if (Math.abs(fresh.signedDistance) >= ContactManifold.EXACT_TOUCH_BAND) best.normal.copy(fresh.normal);
-            // Re-anchor to the CURRENT geometry so C is measured from where the feature is NOW - the
-            // whole point of refreshing. Persisting stale anchors would defeat it. Lambda is left
-            // untouched (warm start survives).
-            best.setLocalAnchors(bodyA, bodyB);
+            if (genuineMove) {
+                best.pointOnA.copy(fresh.pointOnA);
+                best.pointOnB.copy(fresh.pointOnB);
+                // Re-anchor to the CURRENT geometry so C is measured from where the feature is NOW -
+                // the whole point of refreshing, for a contact that has actually moved. Persisting a
+                // stale anchor through a real migration would defeat this mechanism entirely (see its
+                // own comment above - a fast-rotating body's far corner slamming in undetected).
+                best.setLocalAnchors(bodyA, bodyB);
+            }
         }
     }
 

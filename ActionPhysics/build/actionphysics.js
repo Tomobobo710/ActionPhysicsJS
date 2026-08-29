@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-25T13:48:50.764Z
+// ActionPhysics 0.1.0 — built 2026-08-25T14:19:30.975Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine.
@@ -3717,14 +3717,13 @@ class RigidBody {
         // Rolling resistance coefficient (metres): opposes a round shape's spin AT a contact by
         // capping the angular velocity component about the contact's tangent plane, the same way
         // Coulomb friction caps tangential slip - see Solver._solveContactVelocity's rolling pass.
-        // Was 0 (matching Goblin's own RigidBody.rolling_friction default and ActionEngineJS's
-        // MATERIAL_DEFAULTS, which has no rollingFriction field at all) - relying on angular_damping
-        // alone left round shapes (cylinder/cone/convex) with a small residual spin that never fully
-        // decayed to rest. Set to 0.02 per explicit instruction. Known tradeoff, not yet resolved:
-        // this value only partially converges the round-shape residual-spin tests (cone/cylinder
-        // still fall short of their 0.05 rad/s rest threshold) and destabilizes two previously-solid
-        // box-on-box stacking tests (box stacking's own corner/edge contacts use this same mechanism).
-        this.rolling_friction = 0.02;
+        // Was 0 (matching Goblin's own default and ActionEngineJS's MATERIAL_DEFAULTS, which has no
+        // rollingFriction field). Root cause of the residual spin: the position solve's per-substep
+        // angular correction at a curved contact flips sign substep to substep (the contact anchor
+        // legitimately migrates as the shape spins), re-injecting a kick of similar size to what
+        // rolling resistance's own torque removes. 0.05 is the smallest tested value whose torque
+        // reliably outweighs that kick so the residual actually converges to rest.
+        this.rolling_friction = 0.05;
 
         // ---- Filtering ----
         this.collision_mask = 0xFFFFFFFF;
@@ -6048,6 +6047,14 @@ class NarrowPhase {
     // fast body's contact is still caught a full tick ahead - see step().
     static SPECULATIVE_BASE = 0.02;
 
+    // Minimum world-space distance (metres) a manifold point's fresh GJK/EPA result must move from
+    // its own current anchor before refreshManifoldGeometry treats it as a real migration and
+    // re-anchors - see that method's own comment. Comfortably above what a genuinely slow/settling
+    // contact traverses in one substep, comfortably below the near-full-shape-size jump a degenerate
+    // line/face contact's ambiguous closest point showed (traced: a cylinder resting flush on its
+    // side jumped by ~0.95-1.0, its own half-length, substep to substep).
+    static ANCHOR_REFRESH_MIN_MOVE = 0.05;
+
     constructor() {
         this.manifolds = new ContactManifoldList();
         this._dt = 1 / 60; // set each tick by step(); the fallback only matters if step() is never called
@@ -6059,6 +6066,7 @@ class NarrowPhase {
         this._epa = new EPA();
         this._contactPool = []; // reused ContactDetails objects, grown as needed, never shrunk
         this._poolIndex = 0;
+        this._scratchVec = new Vector3(); // refreshManifoldGeometry's own anchor-drift check
     }
 
     _nextPooledContact() {
@@ -6180,9 +6188,26 @@ class NarrowPhase {
                 if (d < bestDistSq) { bestDistSq = d; best = p; }
             }
             if (!best) continue;
+            // A curved shape resting flush along a LINE (a cylinder's barrel on flat ground, not a
+            // single point) has no unique closest point - GJK/EPA legitimately returns a different,
+            // equally-valid point along that line from one call to the next even though nothing about
+            // the real contact changed. Re-anchoring to every such jump flips the position solve's
+            // lever arm (and so its torque direction) every substep, which kept re-injecting angular
+            // velocity a settled round shape's own rolling resistance had just removed - a resting
+            // cylinder/cone never fully stopped spinning no matter how strong the damping was, because
+            // the anchor itself never held still long enough to stay damped. Re-anchor only when the
+            // fresh point has genuinely moved from where THIS point's CURRENT anchor sits in world
+            // space right now (currentAnchorBInto - the anchor tracks the body's own rotation each
+            // substep even while frozen, so real cumulative drift still crosses this threshold and
+            // triggers a re-anchor; comparing against a stale cached pointOnB instead let real motion
+            // accumulate invisibly and never re-anchor at all, a real, confirmed bug - a cylinder held
+            // at a stale anchor for 1000+ ticks eventually drifted enough to launch outright, y=58+).
+            best.currentAnchorBInto(this._scratchVec, bodyB);
+            const movedSq = (fresh.pointOnB.x - this._scratchVec.x) * (fresh.pointOnB.x - this._scratchVec.x) +
+                (fresh.pointOnB.y - this._scratchVec.y) * (fresh.pointOnB.y - this._scratchVec.y) +
+                (fresh.pointOnB.z - this._scratchVec.z) * (fresh.pointOnB.z - this._scratchVec.z);
+            const genuineMove = movedSq >= NarrowPhase.ANCHOR_REFRESH_MIN_MOVE * NarrowPhase.ANCHOR_REFRESH_MIN_MOVE;
             best.point.copy(fresh.point);
-            best.pointOnA.copy(fresh.pointOnA);
-            best.pointOnB.copy(fresh.pointOnB);
             best.signedDistance = fresh.signedDistance;
             // Keep the ESTABLISHED normal through the exact-touch band, exactly as the manifold's
             // once-per-tick update() does (ContactManifold.EXACT_TOUCH_BAND) - the per-substep
@@ -6191,10 +6216,15 @@ class NarrowPhase {
             // the penetrate-then-launch bug the once-per-tick guard was added to prevent (it bit
             // spheres hard: a flush sphere kept getting a (-0.71,0,0.71) normal and launched to y=200+).
             if (Math.abs(fresh.signedDistance) >= ContactManifold.EXACT_TOUCH_BAND) best.normal.copy(fresh.normal);
-            // Re-anchor to the CURRENT geometry so C is measured from where the feature is NOW - the
-            // whole point of refreshing. Persisting stale anchors would defeat it. Lambda is left
-            // untouched (warm start survives).
-            best.setLocalAnchors(bodyA, bodyB);
+            if (genuineMove) {
+                best.pointOnA.copy(fresh.pointOnA);
+                best.pointOnB.copy(fresh.pointOnB);
+                // Re-anchor to the CURRENT geometry so C is measured from where the feature is NOW -
+                // the whole point of refreshing, for a contact that has actually moved. Persisting a
+                // stale anchor through a real migration would defeat this mechanism entirely (see its
+                // own comment above - a fast-rotating body's far corner slamming in undetected).
+                best.setLocalAnchors(bodyA, bodyB);
+            }
         }
     }
 
@@ -6312,6 +6342,7 @@ class Solver {
     }
 
     _substep(bodies, manifolds, gravity, h, refresh, constraints) {
+        this._gravityMag = Math.sqrt(gravity.x * gravity.x + gravity.y * gravity.y + gravity.z * gravity.z);
         // 1. Integrate velocities (gravity/forces) and predict positions.
         for (let i = 0; i < bodies.length; i++) {
             const b = bodies[i];
@@ -6826,36 +6857,22 @@ class Solver {
         this._applyVelocityImpulse(bodyA, bodyB, this._rA, this._rB, -tx, -ty, -tz, jt);
     }
 
-    // Rolling resistance: a pure roll (no slip AT the contact point) has zero tangential contact
-    // velocity by definition, so the Coulomb friction pass above - which only ever acts on
-    // tangential contact-POINT velocity - is a correct no-op for it (this is real physics, not a
-    // gap: friction opposes slip, and rolling is the absence of slip). A round shape rolling forever
-    // is therefore not a friction bug; it needs its OWN mechanism, exactly as a real ball's contact
-    // patch resists rolling through surface/material deformation ("rolling resistance", distinct
-    // from Coulomb sliding friction). Modelled as a direct angular-velocity damping torque at the
-    // contact: caps the RELATIVE angular velocity component about each tangent direction, the same
-    // structure as the tangential-slip cap above (stop-fully-then-clamp), scaled by the same
-    // Coulomb-style normal-impulse budget so a barely-touching contact can't out-brake a hard-driven
-    // one. Combined per-pair via sqrt (same convention as friction/restitution above).
+    // Rolling resistance: a torque opposing the tangential (non-normal) component of the two
+    // bodies' relative angular velocity - compute the impulse that would zero it exactly, then clamp
+    // to the Coulomb budget (same stop-fully-then-clamp pattern as friction's own tangent pass).
     _solveRollingResistance(point, bodyA, bodyB, h) {
         const rollingFriction = Math.sqrt(Math.max(bodyA.rolling_friction, 0) * Math.max(bodyB.rolling_friction, 0));
         if (rollingFriction <= 0) return;
 
         const nx = point.normal.x, ny = point.normal.y, nz = point.normal.z;
         const rw = bodyA.angular_velocity, ww = bodyB.angular_velocity;
-        // Relative angular velocity, normal component removed (spin ABOUT the normal - e.g. a
-        // basketball spinning in place on one spot - is not rolling and rolling resistance has
-        // nothing to say about it; only the tangential spin components, which are exactly what
-        // carries a round shape's contact point across the surface, are damped here).
         let relWx = ww.x - rw.x, relWy = ww.y - rw.y, relWz = ww.z - rw.z;
         const relWn = relWx * nx + relWy * ny + relWz * nz;
         relWx -= relWn * nx; relWy -= relWn * ny; relWz -= relWn * nz;
         const relWMag = Math.sqrt(relWx * relWx + relWy * relWy + relWz * relWz);
         if (relWMag < 1e-9) return;
 
-        const ax = relWx / relWMag, ay = relWy / relWMag, az = relWz / relWMag; // damping axis
-        // Effective inverse angular mass about this axis, both bodies (no linear term - this is a
-        // pure angular constraint, unlike _effectiveMass's linear+angular contact constraint).
+        const ax = relWx / relWMag, ay = relWy / relWMag, az = relWz / relWMag;
         let wSum = 0;
         if (bodyA._massInverted > 0) {
             const IA = bodyA._worldInverseInertiaTensor;
@@ -6867,10 +6884,18 @@ class Solver {
         }
         if (wSum < 1e-12) return;
 
-        const maxAngImpulse = rollingFriction * Math.abs(point.normalLambda) / h;
-        if (maxAngImpulse <= 0) return;
-        let j = relWMag / wSum;
-        if (j > maxAngImpulse) j = maxAngImpulse;
+        // Budget floored at the contact's real static load (min body mass * gravity), not just
+        // point.normalLambda alone - normalLambda is XPBD's per-substep position multiplier and
+        // collapses to ~0 once a contact is settled (C<=0 most substeps), which starved this budget
+        // to nothing exactly when a resting round shape's last sliver of spin needed killing.
+        let loadMass = Infinity;
+        if (bodyA._massInverted > 0) loadMass = Math.min(loadMass, bodyA.mass);
+        if (bodyB._massInverted > 0) loadMass = Math.min(loadMass, bodyB.mass);
+        const staticFloor = isFinite(loadMass) ? rollingFriction * loadMass * this._gravityMag * h : 0;
+        const maxImpulse = Math.max(rollingFriction * Math.abs(point.normalLambda) / h, staticFloor);
+        if (maxImpulse <= 0) return;
+        let j = relWMag / wSum; // impulse to fully zero the relative angular velocity
+        if (j > maxImpulse) j = maxImpulse;
 
         if (bodyA._massInverted > 0) {
             const IA = bodyA._worldInverseInertiaTensor;

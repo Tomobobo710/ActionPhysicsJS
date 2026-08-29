@@ -84,6 +84,7 @@ class Solver {
     }
 
     _substep(bodies, manifolds, gravity, h, refresh, constraints) {
+        this._gravityMag = Math.sqrt(gravity.x * gravity.x + gravity.y * gravity.y + gravity.z * gravity.z);
         // 1. Integrate velocities (gravity/forces) and predict positions.
         for (let i = 0; i < bodies.length; i++) {
             const b = bodies[i];
@@ -598,36 +599,22 @@ class Solver {
         this._applyVelocityImpulse(bodyA, bodyB, this._rA, this._rB, -tx, -ty, -tz, jt);
     }
 
-    // Rolling resistance: a pure roll (no slip AT the contact point) has zero tangential contact
-    // velocity by definition, so the Coulomb friction pass above - which only ever acts on
-    // tangential contact-POINT velocity - is a correct no-op for it (this is real physics, not a
-    // gap: friction opposes slip, and rolling is the absence of slip). A round shape rolling forever
-    // is therefore not a friction bug; it needs its OWN mechanism, exactly as a real ball's contact
-    // patch resists rolling through surface/material deformation ("rolling resistance", distinct
-    // from Coulomb sliding friction). Modelled as a direct angular-velocity damping torque at the
-    // contact: caps the RELATIVE angular velocity component about each tangent direction, the same
-    // structure as the tangential-slip cap above (stop-fully-then-clamp), scaled by the same
-    // Coulomb-style normal-impulse budget so a barely-touching contact can't out-brake a hard-driven
-    // one. Combined per-pair via sqrt (same convention as friction/restitution above).
+    // Rolling resistance: a torque opposing the tangential (non-normal) component of the two
+    // bodies' relative angular velocity - compute the impulse that would zero it exactly, then clamp
+    // to the Coulomb budget (same stop-fully-then-clamp pattern as friction's own tangent pass).
     _solveRollingResistance(point, bodyA, bodyB, h) {
         const rollingFriction = Math.sqrt(Math.max(bodyA.rolling_friction, 0) * Math.max(bodyB.rolling_friction, 0));
         if (rollingFriction <= 0) return;
 
         const nx = point.normal.x, ny = point.normal.y, nz = point.normal.z;
         const rw = bodyA.angular_velocity, ww = bodyB.angular_velocity;
-        // Relative angular velocity, normal component removed (spin ABOUT the normal - e.g. a
-        // basketball spinning in place on one spot - is not rolling and rolling resistance has
-        // nothing to say about it; only the tangential spin components, which are exactly what
-        // carries a round shape's contact point across the surface, are damped here).
         let relWx = ww.x - rw.x, relWy = ww.y - rw.y, relWz = ww.z - rw.z;
         const relWn = relWx * nx + relWy * ny + relWz * nz;
         relWx -= relWn * nx; relWy -= relWn * ny; relWz -= relWn * nz;
         const relWMag = Math.sqrt(relWx * relWx + relWy * relWy + relWz * relWz);
         if (relWMag < 1e-9) return;
 
-        const ax = relWx / relWMag, ay = relWy / relWMag, az = relWz / relWMag; // damping axis
-        // Effective inverse angular mass about this axis, both bodies (no linear term - this is a
-        // pure angular constraint, unlike _effectiveMass's linear+angular contact constraint).
+        const ax = relWx / relWMag, ay = relWy / relWMag, az = relWz / relWMag;
         let wSum = 0;
         if (bodyA._massInverted > 0) {
             const IA = bodyA._worldInverseInertiaTensor;
@@ -639,10 +626,18 @@ class Solver {
         }
         if (wSum < 1e-12) return;
 
-        const maxAngImpulse = rollingFriction * Math.abs(point.normalLambda) / h;
-        if (maxAngImpulse <= 0) return;
-        let j = relWMag / wSum;
-        if (j > maxAngImpulse) j = maxAngImpulse;
+        // Budget floored at the contact's real static load (min body mass * gravity), not just
+        // point.normalLambda alone - normalLambda is XPBD's per-substep position multiplier and
+        // collapses to ~0 once a contact is settled (C<=0 most substeps), which starved this budget
+        // to nothing exactly when a resting round shape's last sliver of spin needed killing.
+        let loadMass = Infinity;
+        if (bodyA._massInverted > 0) loadMass = Math.min(loadMass, bodyA.mass);
+        if (bodyB._massInverted > 0) loadMass = Math.min(loadMass, bodyB.mass);
+        const staticFloor = isFinite(loadMass) ? rollingFriction * loadMass * this._gravityMag * h : 0;
+        const maxImpulse = Math.max(rollingFriction * Math.abs(point.normalLambda) / h, staticFloor);
+        if (maxImpulse <= 0) return;
+        let j = relWMag / wSum; // impulse to fully zero the relative angular velocity
+        if (j > maxImpulse) j = maxImpulse;
 
         if (bodyA._massInverted > 0) {
             const IA = bodyA._worldInverseInertiaTensor;
