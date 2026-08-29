@@ -64,6 +64,16 @@ class World {
             narrowphase.refreshManifoldGeometry(mans);
         }, this.constraints);
 
+        // Continuous forces/torques (RigidBody.applyForce/applyTorque) stayed in effect for every
+        // substep this tick (Solver._substep integrates accumulated_force/torque alongside gravity)
+        // but do NOT persist into the next tick on their own - a caller who wants a force to keep
+        // acting must call applyForce again next tick, the standard per-tick force contract. Cleared
+        // here, once per tick, after the solver has already used this tick's value.
+        for (let i = 0; i < this.bodies.length; i++) {
+            const b = this.bodies[i];
+            if (b.bodyType === RigidBody.DYNAMIC) b.clearForces();
+        }
+
         // The solver moved bodies; their derived state (AABB, world inertia) is stale until the
         // NEXT tick's pass above runs. Nothing within this tick reads it again after this point,
         // so refreshing here would be wasted work - narrowphase/broadphase for THIS tick already

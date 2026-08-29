@@ -99,6 +99,92 @@ class RigidBody {
         return this;
     }
 
+    // ---- Forces ----
+    //
+    // An IMPULSE is an instantaneous velocity change (a bat hitting a ball) - applied directly to
+    // linear_velocity/angular_velocity right now, the standard physics-engine convention, and
+    // exactly equivalent to spawning the body with that velocity already set (this is what every
+    // impulse call in this file reduces to: dv = j * massInverted, dw = I^-1 * (r x j)).
+    //
+    // A FORCE/TORQUE is continuous (thrust, a constant push) - it accumulates into
+    // accumulated_force/accumulated_torque and is integrated by the solver once per SUBSTEP
+    // (Solver._substep step 1, alongside gravity), then cleared at the end of the full tick
+    // (World.step, after the solver runs) - the standard "forces are re-applied every tick by
+    // whoever wants them to keep acting" contract (matches Goblin's own accumulated-force/torque
+    // convention, and is why these fields already existed on this class before any of Forces was
+    // wired up - see plan.md's API surface table, Forces group).
+    applyImpulse(impulse) {
+        if (this._massInverted <= 0) return this;
+        this.linear_velocity.x += impulse.x * this._massInverted * this.linear_factor.x;
+        this.linear_velocity.y += impulse.y * this._massInverted * this.linear_factor.y;
+        this.linear_velocity.z += impulse.z * this._massInverted * this.linear_factor.z;
+        return this;
+    }
+
+    // Impulse applied at a world-space point (not the body's center) - produces both a linear
+    // velocity change AND an angular one (dw = I^-1 * (r x impulse)), same generalized-impulse shape
+    // the solver's own _applyVelocityImpulse uses for contacts, exposed here for a caller (a game's
+    // hit-react, an explosion) that wants an off-center push.
+    applyImpulseAtPoint(impulse, worldPoint) {
+        if (this._massInverted <= 0) return this;
+        this.applyImpulse(impulse);
+        const rx = worldPoint.x - this.position.x, ry = worldPoint.y - this.position.y, rz = worldPoint.z - this.position.z;
+        const tqx = ry * impulse.z - rz * impulse.y, tqy = rz * impulse.x - rx * impulse.z, tqz = rx * impulse.y - ry * impulse.x;
+        const I = this._worldInverseInertiaTensor;
+        this.angular_velocity.x += (I.e00 * tqx + I.e01 * tqy + I.e02 * tqz) * this.angular_factor.x;
+        this.angular_velocity.y += (I.e10 * tqx + I.e11 * tqy + I.e12 * tqz) * this.angular_factor.y;
+        this.angular_velocity.z += (I.e20 * tqx + I.e21 * tqy + I.e22 * tqz) * this.angular_factor.z;
+        return this;
+    }
+
+    applyTorqueImpulse(torqueImpulse) {
+        if (this._massInverted <= 0) return this;
+        const I = this._worldInverseInertiaTensor;
+        const tx = torqueImpulse.x, ty = torqueImpulse.y, tz = torqueImpulse.z;
+        this.angular_velocity.x += (I.e00 * tx + I.e01 * ty + I.e02 * tz) * this.angular_factor.x;
+        this.angular_velocity.y += (I.e10 * tx + I.e11 * ty + I.e12 * tz) * this.angular_factor.y;
+        this.angular_velocity.z += (I.e20 * tx + I.e21 * ty + I.e22 * tz) * this.angular_factor.z;
+        return this;
+    }
+
+    // Accumulates a CONTINUOUS force, integrated by the solver every substep until cleared. Adds,
+    // does not overwrite - multiple applyForce calls in the same tick (gravity plus thrust plus wind)
+    // all contribute, matching accumulated_force's own name.
+    applyForce(force) {
+        this.accumulated_force.x += force.x;
+        this.accumulated_force.y += force.y;
+        this.accumulated_force.z += force.z;
+        return this;
+    }
+
+    applyTorque(torque) {
+        this.accumulated_torque.x += torque.x;
+        this.accumulated_torque.y += torque.y;
+        this.accumulated_torque.z += torque.z;
+        return this;
+    }
+
+    // A force applied at a world-space point contributes both the force itself AND the torque it
+    // produces about the center (r x force) - the continuous-force analogue of applyImpulseAtPoint.
+    applyForceAtPoint(force, worldPoint) {
+        this.applyForce(force);
+        const rx = worldPoint.x - this.position.x, ry = worldPoint.y - this.position.y, rz = worldPoint.z - this.position.z;
+        this.accumulated_torque.x += ry * force.z - rz * force.y;
+        this.accumulated_torque.y += rz * force.x - rx * force.z;
+        this.accumulated_torque.z += rx * force.y - ry * force.x;
+        return this;
+    }
+
+    // Zeroes accumulated_force/torque. Called by World.step once per TICK (not per substep - a
+    // continuous force stays in effect for every substep within the tick it was applied, then a
+    // caller who wants it to keep acting must call applyForce again next tick, same as Goblin's own
+    // per-tick force contract).
+    clearForces() {
+        this.accumulated_force.set(0, 0, 0);
+        this.accumulated_torque.set(0, 0, 0);
+        return this;
+    }
+
     // Refresh everything derived from position/rotation: the world AABB (tight and broadphase
     // variants) and the world-space inverse inertia tensor. Called once per body per tick by
     // whichever stage owns "current" - narrowphase and the solver assume it has already run (Rule

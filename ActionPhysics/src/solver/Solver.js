@@ -78,6 +78,24 @@ class Solver {
             b.linear_velocity.y += g.y * h * b.linear_factor.y;
             b.linear_velocity.z += g.z * h * b.linear_factor.z;
 
+            // Continuous forces/torques (RigidBody.applyForce/applyTorque), integrated the same way
+            // gravity is - accumulated_force/torque stays in effect for every substep within the
+            // tick it was set (World.step clears it once per TICK, after the solver finishes, not
+            // here), matching the standard "a force keeps acting until told otherwise" contract.
+            const af = b.accumulated_force;
+            if (af.x !== 0 || af.y !== 0 || af.z !== 0) {
+                b.linear_velocity.x += af.x * b._massInverted * h * b.linear_factor.x;
+                b.linear_velocity.y += af.y * b._massInverted * h * b.linear_factor.y;
+                b.linear_velocity.z += af.z * b._massInverted * h * b.linear_factor.z;
+            }
+            const at = b.accumulated_torque;
+            if (at.x !== 0 || at.y !== 0 || at.z !== 0) {
+                const I = b._worldInverseInertiaTensor;
+                b.angular_velocity.x += (I.e00 * at.x + I.e01 * at.y + I.e02 * at.z) * h * b.angular_factor.x;
+                b.angular_velocity.y += (I.e10 * at.x + I.e11 * at.y + I.e12 * at.z) * h * b.angular_factor.y;
+                b.angular_velocity.z += (I.e20 * at.x + I.e21 * at.y + I.e22 * at.z) * h * b.angular_factor.z;
+            }
+
             // Damping applied to velocity before the position predict, same substep - standard
             // XPBD ordering (Muller et al. section 3.1).
             if (b.linear_damping > 0) b.linear_velocity.scaleInPlace(Math.max(0, 1 - b.linear_damping * h));
@@ -164,31 +182,42 @@ class Solver {
         }
     }
 
-    // this = this * (0 + w) * h * 0.5, then normalize - standard PBD quaternion integration
-    // (Muller et al.). Written directly rather than via a general quaternion-derivative helper
-    // since it's the one place this exact operation is needed.
+    // Exact exponential-map quaternion integration: dq = (cos(theta/2), sin(theta/2)*axis) for the
+    // rotation of theta=|w|*h about axis=w/|w|, then rotation = dq * rotation.
     static _integrateRotation(rotation, angularVelocity, h) {
         const wx = angularVelocity.x, wy = angularVelocity.y, wz = angularVelocity.z;
+        const wLenSq = wx * wx + wy * wy + wz * wz;
+        if (wLenSq < 1e-24) return; // no rotation this substep - avoid a 0/0 in the axis normalize below
+        const wLen = Math.sqrt(wLenSq);
+        const halfAngle = wLen * h * 0.5;
+        const s = Scalar.sin(halfAngle) / wLen; // scales w into the (sin(theta/2)*axis) term directly
+        const dqx = wx * s, dqy = wy * s, dqz = wz * s, dqw = Scalar.cos(halfAngle);
+
         const qx = rotation.x, qy = rotation.y, qz = rotation.z, qw = rotation.w;
-        const half = h * 0.5;
-        rotation.x = qx + half * (wx * qw + wy * qz - wz * qy);
-        rotation.y = qy + half * (wy * qw + wz * qx - wx * qz);
-        rotation.z = qz + half * (wz * qw + wx * qy - wy * qx);
-        rotation.w = qw + half * (-wx * qx - wy * qy - wz * qz);
-        rotation.normalize();
+        const rx = dqw * qx + dqx * qw + dqy * qz - dqz * qy;
+        const ry = dqw * qy - dqx * qz + dqy * qw + dqz * qx;
+        const rz = dqw * qz + dqx * qy - dqy * qx + dqz * qw;
+        const rw = dqw * qw - dqx * qx - dqy * qy - dqz * qz;
+        rotation.x = rx; rotation.y = ry; rotation.z = rz; rotation.w = rw;
+        rotation.normalize(); // defensive against float roundoff; composing two unit quaternions is exactly unit length in exact arithmetic
     }
 
-    // Derived angular velocity from the rotation delta between prevRot and rotation, into `out`.
-    // omega = 2 * (q_new * conj(q_prev)).xyz / h, sign-corrected so the shorter rotation path is
-    // always taken (a quaternion and its negation represent the same rotation, but the derivative
-    // formula needs a consistent sign to avoid spurious 2x-angle spins).
+    // Angular velocity from the rotation delta between prevRot and rotation, into `out`. dq =
+    // rotation * conj(prevRot); the rotation angle is recovered via atan2(|dq.xyz|, dq.w), sign-
+    // corrected so the shorter rotation path is always taken (a quaternion and its negation
+    // represent the same rotation, but the angle recovery needs a consistent sign to avoid a
+    // spurious near-2*pi angle for what is actually a small negative rotation).
     static _deriveAngularVelocity(out, prevRot, rotation, h) {
         let dqx = rotation.w * (-prevRot.x) + rotation.x * prevRot.w + rotation.y * (-prevRot.z) - rotation.z * (-prevRot.y);
         let dqy = rotation.w * (-prevRot.y) - rotation.x * (-prevRot.z) + rotation.y * prevRot.w + rotation.z * (-prevRot.x);
         let dqz = rotation.w * (-prevRot.z) + rotation.x * (-prevRot.y) - rotation.y * (-prevRot.x) + rotation.z * prevRot.w;
         let dqw = rotation.w * prevRot.w - rotation.x * (-prevRot.x) - rotation.y * (-prevRot.y) - rotation.z * (-prevRot.z);
-        if (dqw < 0) { dqx = -dqx; dqy = -dqy; dqz = -dqz; } // shorter path
-        out.x = 2 * dqx / h; out.y = 2 * dqy / h; out.z = 2 * dqz / h;
+        if (dqw < 0) { dqx = -dqx; dqy = -dqy; dqz = -dqz; dqw = -dqw; } // shorter path
+        const sinHalf = Math.sqrt(dqx * dqx + dqy * dqy + dqz * dqz);
+        if (sinHalf < 1e-12) { out.x = 0; out.y = 0; out.z = 0; return; } // no rotation this substep
+        const halfAngle = Scalar.atan2(sinHalf, dqw);
+        const scale = (2 * halfAngle / h) / sinHalf; // turns (sin(halfAngle)*axis) into (angle/h)*axis = omega
+        out.x = dqx * scale; out.y = dqy * scale; out.z = dqz * scale;
     }
 
     _solveManifold(manifold, h) {

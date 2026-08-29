@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-24T12:10:30.229Z
+// ActionPhysics 0.1.0 — built 2026-08-24T12:38:36.958Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine.
@@ -3433,6 +3433,92 @@ class RigidBody {
         return this;
     }
 
+    // ---- Forces ----
+    //
+    // An IMPULSE is an instantaneous velocity change (a bat hitting a ball) - applied directly to
+    // linear_velocity/angular_velocity right now, the standard physics-engine convention, and
+    // exactly equivalent to spawning the body with that velocity already set (this is what every
+    // impulse call in this file reduces to: dv = j * massInverted, dw = I^-1 * (r x j)).
+    //
+    // A FORCE/TORQUE is continuous (thrust, a constant push) - it accumulates into
+    // accumulated_force/accumulated_torque and is integrated by the solver once per SUBSTEP
+    // (Solver._substep step 1, alongside gravity), then cleared at the end of the full tick
+    // (World.step, after the solver runs) - the standard "forces are re-applied every tick by
+    // whoever wants them to keep acting" contract (matches Goblin's own accumulated-force/torque
+    // convention, and is why these fields already existed on this class before any of Forces was
+    // wired up - see plan.md's API surface table, Forces group).
+    applyImpulse(impulse) {
+        if (this._massInverted <= 0) return this;
+        this.linear_velocity.x += impulse.x * this._massInverted * this.linear_factor.x;
+        this.linear_velocity.y += impulse.y * this._massInverted * this.linear_factor.y;
+        this.linear_velocity.z += impulse.z * this._massInverted * this.linear_factor.z;
+        return this;
+    }
+
+    // Impulse applied at a world-space point (not the body's center) - produces both a linear
+    // velocity change AND an angular one (dw = I^-1 * (r x impulse)), same generalized-impulse shape
+    // the solver's own _applyVelocityImpulse uses for contacts, exposed here for a caller (a game's
+    // hit-react, an explosion) that wants an off-center push.
+    applyImpulseAtPoint(impulse, worldPoint) {
+        if (this._massInverted <= 0) return this;
+        this.applyImpulse(impulse);
+        const rx = worldPoint.x - this.position.x, ry = worldPoint.y - this.position.y, rz = worldPoint.z - this.position.z;
+        const tqx = ry * impulse.z - rz * impulse.y, tqy = rz * impulse.x - rx * impulse.z, tqz = rx * impulse.y - ry * impulse.x;
+        const I = this._worldInverseInertiaTensor;
+        this.angular_velocity.x += (I.e00 * tqx + I.e01 * tqy + I.e02 * tqz) * this.angular_factor.x;
+        this.angular_velocity.y += (I.e10 * tqx + I.e11 * tqy + I.e12 * tqz) * this.angular_factor.y;
+        this.angular_velocity.z += (I.e20 * tqx + I.e21 * tqy + I.e22 * tqz) * this.angular_factor.z;
+        return this;
+    }
+
+    applyTorqueImpulse(torqueImpulse) {
+        if (this._massInverted <= 0) return this;
+        const I = this._worldInverseInertiaTensor;
+        const tx = torqueImpulse.x, ty = torqueImpulse.y, tz = torqueImpulse.z;
+        this.angular_velocity.x += (I.e00 * tx + I.e01 * ty + I.e02 * tz) * this.angular_factor.x;
+        this.angular_velocity.y += (I.e10 * tx + I.e11 * ty + I.e12 * tz) * this.angular_factor.y;
+        this.angular_velocity.z += (I.e20 * tx + I.e21 * ty + I.e22 * tz) * this.angular_factor.z;
+        return this;
+    }
+
+    // Accumulates a CONTINUOUS force, integrated by the solver every substep until cleared. Adds,
+    // does not overwrite - multiple applyForce calls in the same tick (gravity plus thrust plus wind)
+    // all contribute, matching accumulated_force's own name.
+    applyForce(force) {
+        this.accumulated_force.x += force.x;
+        this.accumulated_force.y += force.y;
+        this.accumulated_force.z += force.z;
+        return this;
+    }
+
+    applyTorque(torque) {
+        this.accumulated_torque.x += torque.x;
+        this.accumulated_torque.y += torque.y;
+        this.accumulated_torque.z += torque.z;
+        return this;
+    }
+
+    // A force applied at a world-space point contributes both the force itself AND the torque it
+    // produces about the center (r x force) - the continuous-force analogue of applyImpulseAtPoint.
+    applyForceAtPoint(force, worldPoint) {
+        this.applyForce(force);
+        const rx = worldPoint.x - this.position.x, ry = worldPoint.y - this.position.y, rz = worldPoint.z - this.position.z;
+        this.accumulated_torque.x += ry * force.z - rz * force.y;
+        this.accumulated_torque.y += rz * force.x - rx * force.z;
+        this.accumulated_torque.z += rx * force.y - ry * force.x;
+        return this;
+    }
+
+    // Zeroes accumulated_force/torque. Called by World.step once per TICK (not per substep - a
+    // continuous force stays in effect for every substep within the tick it was applied, then a
+    // caller who wants it to keep acting must call applyForce again next tick, same as Goblin's own
+    // per-tick force contract).
+    clearForces() {
+        this.accumulated_force.set(0, 0, 0);
+        this.accumulated_torque.set(0, 0, 0);
+        return this;
+    }
+
     // Refresh everything derived from position/rotation: the world AABB (tight and broadphase
     // variants) and the world-space inverse inertia tensor. Called once per body per tick by
     // whichever stage owns "current" - narrowphase and the solver assume it has already run (Rule
@@ -5811,6 +5897,24 @@ class Solver {
             b.linear_velocity.y += g.y * h * b.linear_factor.y;
             b.linear_velocity.z += g.z * h * b.linear_factor.z;
 
+            // Continuous forces/torques (RigidBody.applyForce/applyTorque), integrated the same way
+            // gravity is - accumulated_force/torque stays in effect for every substep within the
+            // tick it was set (World.step clears it once per TICK, after the solver finishes, not
+            // here), matching the standard "a force keeps acting until told otherwise" contract.
+            const af = b.accumulated_force;
+            if (af.x !== 0 || af.y !== 0 || af.z !== 0) {
+                b.linear_velocity.x += af.x * b._massInverted * h * b.linear_factor.x;
+                b.linear_velocity.y += af.y * b._massInverted * h * b.linear_factor.y;
+                b.linear_velocity.z += af.z * b._massInverted * h * b.linear_factor.z;
+            }
+            const at = b.accumulated_torque;
+            if (at.x !== 0 || at.y !== 0 || at.z !== 0) {
+                const I = b._worldInverseInertiaTensor;
+                b.angular_velocity.x += (I.e00 * at.x + I.e01 * at.y + I.e02 * at.z) * h * b.angular_factor.x;
+                b.angular_velocity.y += (I.e10 * at.x + I.e11 * at.y + I.e12 * at.z) * h * b.angular_factor.y;
+                b.angular_velocity.z += (I.e20 * at.x + I.e21 * at.y + I.e22 * at.z) * h * b.angular_factor.z;
+            }
+
             // Damping applied to velocity before the position predict, same substep - standard
             // XPBD ordering (Muller et al. section 3.1).
             if (b.linear_damping > 0) b.linear_velocity.scaleInPlace(Math.max(0, 1 - b.linear_damping * h));
@@ -5897,31 +6001,42 @@ class Solver {
         }
     }
 
-    // this = this * (0 + w) * h * 0.5, then normalize - standard PBD quaternion integration
-    // (Muller et al.). Written directly rather than via a general quaternion-derivative helper
-    // since it's the one place this exact operation is needed.
+    // Exact exponential-map quaternion integration: dq = (cos(theta/2), sin(theta/2)*axis) for the
+    // rotation of theta=|w|*h about axis=w/|w|, then rotation = dq * rotation.
     static _integrateRotation(rotation, angularVelocity, h) {
         const wx = angularVelocity.x, wy = angularVelocity.y, wz = angularVelocity.z;
+        const wLenSq = wx * wx + wy * wy + wz * wz;
+        if (wLenSq < 1e-24) return; // no rotation this substep - avoid a 0/0 in the axis normalize below
+        const wLen = Math.sqrt(wLenSq);
+        const halfAngle = wLen * h * 0.5;
+        const s = Scalar.sin(halfAngle) / wLen; // scales w into the (sin(theta/2)*axis) term directly
+        const dqx = wx * s, dqy = wy * s, dqz = wz * s, dqw = Scalar.cos(halfAngle);
+
         const qx = rotation.x, qy = rotation.y, qz = rotation.z, qw = rotation.w;
-        const half = h * 0.5;
-        rotation.x = qx + half * (wx * qw + wy * qz - wz * qy);
-        rotation.y = qy + half * (wy * qw + wz * qx - wx * qz);
-        rotation.z = qz + half * (wz * qw + wx * qy - wy * qx);
-        rotation.w = qw + half * (-wx * qx - wy * qy - wz * qz);
-        rotation.normalize();
+        const rx = dqw * qx + dqx * qw + dqy * qz - dqz * qy;
+        const ry = dqw * qy - dqx * qz + dqy * qw + dqz * qx;
+        const rz = dqw * qz + dqx * qy - dqy * qx + dqz * qw;
+        const rw = dqw * qw - dqx * qx - dqy * qy - dqz * qz;
+        rotation.x = rx; rotation.y = ry; rotation.z = rz; rotation.w = rw;
+        rotation.normalize(); // defensive against float roundoff; composing two unit quaternions is exactly unit length in exact arithmetic
     }
 
-    // Derived angular velocity from the rotation delta between prevRot and rotation, into `out`.
-    // omega = 2 * (q_new * conj(q_prev)).xyz / h, sign-corrected so the shorter rotation path is
-    // always taken (a quaternion and its negation represent the same rotation, but the derivative
-    // formula needs a consistent sign to avoid spurious 2x-angle spins).
+    // Angular velocity from the rotation delta between prevRot and rotation, into `out`. dq =
+    // rotation * conj(prevRot); the rotation angle is recovered via atan2(|dq.xyz|, dq.w), sign-
+    // corrected so the shorter rotation path is always taken (a quaternion and its negation
+    // represent the same rotation, but the angle recovery needs a consistent sign to avoid a
+    // spurious near-2*pi angle for what is actually a small negative rotation).
     static _deriveAngularVelocity(out, prevRot, rotation, h) {
         let dqx = rotation.w * (-prevRot.x) + rotation.x * prevRot.w + rotation.y * (-prevRot.z) - rotation.z * (-prevRot.y);
         let dqy = rotation.w * (-prevRot.y) - rotation.x * (-prevRot.z) + rotation.y * prevRot.w + rotation.z * (-prevRot.x);
         let dqz = rotation.w * (-prevRot.z) + rotation.x * (-prevRot.y) - rotation.y * (-prevRot.x) + rotation.z * prevRot.w;
         let dqw = rotation.w * prevRot.w - rotation.x * (-prevRot.x) - rotation.y * (-prevRot.y) - rotation.z * (-prevRot.z);
-        if (dqw < 0) { dqx = -dqx; dqy = -dqy; dqz = -dqz; } // shorter path
-        out.x = 2 * dqx / h; out.y = 2 * dqy / h; out.z = 2 * dqz / h;
+        if (dqw < 0) { dqx = -dqx; dqy = -dqy; dqz = -dqz; dqw = -dqw; } // shorter path
+        const sinHalf = Math.sqrt(dqx * dqx + dqy * dqy + dqz * dqz);
+        if (sinHalf < 1e-12) { out.x = 0; out.y = 0; out.z = 0; return; } // no rotation this substep
+        const halfAngle = Scalar.atan2(sinHalf, dqw);
+        const scale = (2 * halfAngle / h) / sinHalf; // turns (sin(halfAngle)*axis) into (angle/h)*axis = omega
+        out.x = dqx * scale; out.y = dqy * scale; out.z = dqz * scale;
     }
 
     _solveManifold(manifold, h) {
@@ -7158,6 +7273,16 @@ class World {
         this.solver.step(this.bodies, manifolds, this.gravity, dt, function (mans) {
             narrowphase.refreshManifoldGeometry(mans);
         }, this.constraints);
+
+        // Continuous forces/torques (RigidBody.applyForce/applyTorque) stayed in effect for every
+        // substep this tick (Solver._substep integrates accumulated_force/torque alongside gravity)
+        // but do NOT persist into the next tick on their own - a caller who wants a force to keep
+        // acting must call applyForce again next tick, the standard per-tick force contract. Cleared
+        // here, once per tick, after the solver has already used this tick's value.
+        for (let i = 0; i < this.bodies.length; i++) {
+            const b = this.bodies[i];
+            if (b.bodyType === RigidBody.DYNAMIC) b.clearForces();
+        }
 
         // The solver moved bodies; their derived state (AABB, world inertia) is stale until the
         // NEXT tick's pass above runs. Nothing within this tick reads it again after this point,
