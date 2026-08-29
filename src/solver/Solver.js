@@ -36,6 +36,7 @@ class Solver {
         this._impulse = new Vector3();
         this._tangent1 = new Vector3(); this._tangent2 = new Vector3();
         this._angularCorrA = new Vector3(); this._angularCorrB = new Vector3();
+        this._tmpDispA = new Vector3(); this._tmpDispB = new Vector3(); this._tmpPrev = new Vector3(); // friction slip scratch
         this._prevPos = new Map(); // bodyId -> Vector3, this substep's PRE-integration position
         this._prevRot = new Map(); // bodyId -> Quaternion, this substep's PRE-integration rotation
     }
@@ -45,15 +46,21 @@ class Solver {
      * (a ContactManifoldList). Gravity is `gravity` (a Vector3) unless a body overrides it via
      * RigidBody.gravity. May assume every contact's depth/normal is accurate (Rule 1) - never
      * re-checks or discounts a contact's own geometry.
+     *
+     * `refresh(manifolds)`, if given, re-measures each existing contact point's geometry (normal,
+     * anchors, depth) against the predicted positions once per substep, before the constraint
+     * solve - the interleaved detect-then-solve that makes rotating/corner contacts stable. It must
+     * only update existing points' geometry, never add/remove/re-match them (that is the manifold's
+     * once-per-tick job). Omitted -> tick-start geometry is reused every substep.
      */
-    step(bodies, manifolds, gravity, dt) {
+    step(bodies, manifolds, gravity, dt, refresh) {
         const h = dt / this.substeps;
         for (let s = 0; s < this.substeps; s++) {
-            this._substep(bodies, manifolds, gravity, h);
+            this._substep(bodies, manifolds, gravity, h, refresh);
         }
     }
 
-    _substep(bodies, manifolds, gravity, h) {
+    _substep(bodies, manifolds, gravity, h, refresh) {
         // 1. Integrate velocities (gravity/forces) and predict positions.
         for (let i = 0; i < bodies.length; i++) {
             const b = bodies[i];
@@ -73,7 +80,24 @@ class Solver {
 
             b.position.addScaledInPlace(b.linear_velocity, h);
             Solver._integrateRotation(b.rotation, b.angular_velocity, h);
+            // The world inverse inertia tensor depends on the rotation, which just changed - refresh
+            // it so _effectiveMass and _applyAngularCorrection this substep use the CURRENT
+            // orientation, not the tick-start one. Cheap (one 3x3 similarity transform) and keeps
+            // the angular math consistent with the per-substep geometry refresh below; a fast-
+            // rotating body would otherwise solve against an orientation several substeps stale.
+            b._recomputeWorldInverseInertia();
         }
+
+        // 1b. Re-measure contact geometry against the just-predicted positions. This is the
+        // interleaved detect-then-solve that keeps rotating/corner contacts stable: without it the
+        // contact's normal and anchors are frozen at tick-start, so a body that rotates fast enough
+        // for its contact CORNER to move between substeps gets solved against stale geometry, its
+        // far corner slams in undetected, and the one-shot correction of the resulting deep overlap
+        // injects a large derived angular velocity (which only grows as the substep shrinks - the
+        // rotational form of the derived-velocity problem). `refresh` re-measures geometry ONLY; it
+        // never adds/removes/re-matches points (that stays the manifold's once-per-tick job). See
+        // step()'s doc and World.step.
+        if (refresh) refresh(manifolds);
 
         // 2. Reset this substep's accumulated lambda to zero (XPBD's lambda is PER-SUBSTEP, reset
         // every substep, not carried across substeps within a tick - only carried across TICKS via
@@ -295,27 +319,39 @@ class Solver {
         Solver._integrateRotation(body.rotation, this._angularCorrA, 1); // h=1: this IS the delta, not a rate
     }
 
+    // Friction via a persistent anchor, scaled to match the normal constraint's per-substep units.
+    //
+    // The friction anchor is a material point coincident on both bodies when the contact last stuck.
+    // Its tangential separation NOW is the total slip to resist, but that raw separation grows every
+    // substep while the normal constraint's error C is a small per-substep penetration - solving the
+    // raw separation directly produces a lambda in different units from |normalLambda|, so the
+    // Coulomb cap (mu*|normalLambda|) is meaningless against it and friction either never bites or
+    // always saturates (the bug that made a box slide down a 15-degree slope it should stick on).
+    //
+    // The fix: this XPBD contact lambda scales with h^2 (deltaLambda = -C/wSum where the normal C is
+    // itself the h^2-order overlap). To keep friction commensurate, the tangential error is likewise
+    // taken as a per-substep quantity: the slip that occurred THIS substep (anchor separation minus
+    // what it was at substep start), not the accumulated total. That per-substep slip is the same
+    // order as the normal penetration, so mu*|normalLambda| caps it correctly - static stick when the
+    // slip stays within the cone, dynamic slide (anchor dragged) when it exceeds it.
     _solveFriction(point, bodyA, bodyB, h) {
         const friction = Math.sqrt(bodyA.friction * bodyB.friction); // combined friction, geometric mean (standard convention)
         if (friction <= 0) return;
-        // normalLambda is <= 0 in this file's sign convention (see _solvePoint) - the Coulomb cap is
-        // a magnitude, so take |normalLambda|. Skipping this abs was a latent bug: with a negative
-        // normalLambda the cap came out negative, the early-return below always fired, and friction
-        // silently never ran at all.
-        const maxFriction = friction * Math.abs(point.normalLambda);
+        const maxFriction = friction * Math.abs(point.normalLambda); // Coulomb cap magnitude (normalLambda <= 0 here)
         if (maxFriction <= 0) return;
 
         Solver._tangentBasis(point.normal, this._tangent1, this._tangent2);
-
-        this._solveFrictionAxis(point, bodyA, bodyB, this._tangent1, maxFriction, true);
-        this._solveFrictionAxis(point, bodyA, bodyB, this._tangent2, maxFriction, false);
+        this._currentMaxFriction = maxFriction;
+        this._solveFrictionAxis(point, bodyA, bodyB, this._tangent1, true);
+        this._solveFrictionAxis(point, bodyA, bodyB, this._tangent2, false);
     }
 
-    // rA/rB (center-relative offsets) are recomputed from the LIVE anchor positions here too -
-    // same reasoning as _solvePoint: point.pointOnA/pointOnB are a snapshot from this tick's
-    // narrowphase pass, stale after the normal constraint above has already moved the bodies this
-    // substep.
-    _solveFrictionAxis(point, bodyA, bodyB, tangent, maxFriction, isFirstAxis) {
+    // One tangent axis: resist THIS substep's tangential slip of the contact anchors, Coulomb-capped
+    // as a disc against the other axis (isotropic, so diagonal friction cannot exceed mu*N by
+    // sqrt(2)). The slip is measured from prevPos/prevRot (substep start) to now, so it is a
+    // per-substep quantity commensurate with the normal constraint - see _solveFriction's header.
+    _solveFrictionAxis(point, bodyA, bodyB, tangent, isFirstAxis) {
+        const slip = this._contactSlipAlong(point, bodyA, bodyB, tangent);
         point.currentAnchorAInto(this._rA, bodyA);
         point.currentAnchorBInto(this._rB, bodyB);
         Vector3.subInto(this._rA, this._rA, bodyA.position);
@@ -324,21 +360,44 @@ class Solver {
         const wSum = this._effectiveMass(bodyA, bodyB, this._rA, this._rB, tx, ty, tz);
         if (wSum < 1e-12) return;
 
-        // Tangential separation since this contact point was created is approximated here by the
-        // CURRENT relative position along the tangent (no separate anchor tracking yet - a static
-        // friction anchor for stick-vs-slip fidelity is a refinement, not a correctness
-        // requirement: this still produces Coulomb-capped tangential resistance every substep,
-        // which is what actually prevents sliding, just without persistent-anchor stick memory).
-        const C = 0; // no target position error tracked yet; deltaLambda accumulates via warm start instead
-        let deltaLambda = -C / wSum;
-
         const lambdaBefore = isFirstAxis ? point.tangentLambda1 : point.tangentLambda2;
-        let newLambda = lambdaBefore + deltaLambda;
-        newLambda = Math.max(-maxFriction, Math.min(maxFriction, newLambda));
-        deltaLambda = newLambda - lambdaBefore;
+        let newLambda = lambdaBefore - slip / wSum;
+        // Coulomb disc cap on the COMBINED two-axis magnitude.
+        const other = isFirstAxis ? point.tangentLambda2 : point.tangentLambda1;
+        const maxFriction = this._currentMaxFriction;
+        const mag = Math.sqrt(newLambda * newLambda + other * other);
+        if (mag > maxFriction && mag > 0) newLambda *= maxFriction / mag;
+        const deltaLambda = newLambda - lambdaBefore;
         if (isFirstAxis) point.tangentLambda1 = newLambda; else point.tangentLambda2 = newLambda;
 
         this._applyPositionalCorrection(bodyA, bodyB, this._rA, this._rB, tx, ty, tz, deltaLambda);
+    }
+
+    // Tangential slip along `tangent` this substep: (dispB - dispA).tangent, where dispX is how far
+    // body X's contact anchor moved from substep start (prevPos/prevRot) to now. (B - A) ordering
+    // matches the normal constraint so the shared correction OPPOSES slip rather than reinforcing it
+    // (the opposite ordering turns friction into an accelerator). A static body has no prev entry and
+    // contributes zero displacement - correct, it did not move.
+    _contactSlipAlong(point, bodyA, bodyB, tangent) {
+        const dispA = this._anchorDisplacement(point.localAnchorA, bodyA, this._tmpDispA);
+        const dispB = this._anchorDisplacement(point.localAnchorB, bodyB, this._tmpDispB);
+        const dx = dispB.x - dispA.x, dy = dispB.y - dispA.y, dz = dispB.z - dispA.z;
+        return dx * tangent.x + dy * tangent.y + dz * tangent.z;
+    }
+
+    // World displacement of the point at `localAnchor` on `body` from substep start to now.
+    _anchorDisplacement(localAnchor, body, out) {
+        const prevPos = this._prevPos.get(body.id);
+        if (!prevPos) { out.set(0, 0, 0); return out; } // static/kinematic: did not move this substep
+        const prevRot = this._prevRot.get(body.id);
+        out.copy(localAnchor);
+        body.rotation.transformVectorInPlace(out);
+        out.addInPlace(body.position);
+        this._tmpPrev.copy(localAnchor);
+        prevRot.transformVectorInPlace(this._tmpPrev);
+        this._tmpPrev.addInPlace(prevPos);
+        out.subInPlace(this._tmpPrev);
+        return out;
     }
 
     // Two unit vectors spanning the plane perpendicular to `normal` - the friction directions.

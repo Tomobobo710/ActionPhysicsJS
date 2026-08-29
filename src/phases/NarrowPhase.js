@@ -97,7 +97,79 @@ class NarrowPhase {
         const dvy = bodyA.linear_velocity.y - bodyB.linear_velocity.y;
         const dvz = bodyA.linear_velocity.z - bodyB.linear_velocity.z;
         const relSpeed = Math.sqrt(dvx * dvx + dvy * dvy + dvz * dvz);
-        return NarrowPhase.SPECULATIVE_BASE + relSpeed * this._dt;
+        // Add each body's angular corner speed (|omega|*R): a contact FEATURE on a spinning body
+        // (a corner, an edge) approaches at up to this rate even when the centre barely moves, so a
+        // margin sized only from centre-relative linear speed reports the contact too late for a
+        // tipping body - the corner is already deep. Same reasoning as the broadphase AABB's angular
+        // sweep (RigidBody._recomputeBroadphaseAABB); both stages must look ahead by the same
+        // corner motion or broadphase surfaces the pair and narrowphase then drops it as "too far".
+        const angSpeed = NarrowPhase._angularCornerSpeed(bodyA) + NarrowPhase._angularCornerSpeed(bodyB);
+        return NarrowPhase.SPECULATIVE_BASE + (relSpeed + angSpeed) * this._dt;
+    }
+
+    // Upper bound on how fast any point on `body` moves purely from its rotation: |omega| times the
+    // body's bounding radius (farthest corner of its tight AABB from centre).
+    static _angularCornerSpeed(body) {
+        const w = body.angular_velocity;
+        const wMag = Math.sqrt(w.x * w.x + w.y * w.y + w.z * w.z);
+        if (wMag === 0) return 0;
+        const aabb = body.getAABB();
+        const ex = (aabb.max.x - aabb.min.x) * 0.5, ey = (aabb.max.y - aabb.min.y) * 0.5, ez = (aabb.max.z - aabb.min.z) * 0.5;
+        return wMag * Math.sqrt(ex * ex + ey * ey + ez * ez);
+    }
+
+    // Re-measures the GEOMETRY of the contact points already in each manifold against the bodies'
+    // CURRENT (predicted, mid-substep) transforms, in place. The solver calls this once per substep
+    // (see Solver.step's `refresh`), so a contact whose feature moves as a body rotates is solved
+    // against live geometry rather than a frozen tick-start normal/anchor - the fix for the
+    // rotational derived-velocity blow-up on corner contacts.
+    //
+    // This updates geometry ONLY. It never adds, removes, or re-matches points, and never touches
+    // the manifold's point SET or its warm-start lambda - that ownership stays with the manifold's
+    // once-per-tick update() (plan.md's rule against mid-tick manifold churn). A point whose contact
+    // has genuinely separated this substep simply gets a negative signed distance here and the
+    // solver's own C<=0 guard makes it inert; it is not culled mid-tick.
+    //
+    // Only primitive-vs-primitive body pairs are refreshed. A compound/mesh body's contact came
+    // from an expanded child/triangle whose identity this method does not track per point, so those
+    // manifolds keep their tick-start geometry (no regression - that is exactly today's behaviour
+    // for every contact). Re-expanding compounds/meshes per substep is a later optimisation if
+    // rotating compound bodies turn out to need it.
+    refreshManifoldGeometry(manifolds) {
+        for (const manifold of manifolds.values()) {
+            const bodyA = manifold.bodyA, bodyB = manifold.bodyB;
+            if (this._isCompoundOrMesh(bodyA.shape) || this._isCompoundOrMesh(bodyB.shape)) continue;
+
+            const placedA = { shape: bodyA.shape, position: bodyA.position, rotation: bodyA.rotation };
+            const placedB = { shape: bodyB.shape, position: bodyB.position, rotation: bodyB.rotation };
+            const fresh = this._testPrimitivePair(placedA, placedB); // one fresh contact for this pair
+
+            // Update the nearest existing point (in world space) with the fresh geometry, keeping
+            // its warm-start lambda and its persistent local anchors' IDENTITY - only the values
+            // the solver reads live (normal, and the anchors it recomputes C from) are refreshed.
+            let best = null, bestDistSq = Infinity;
+            for (let i = 0; i < manifold.points.length; i++) {
+                const p = manifold.points[i];
+                const dx = p.point.x - fresh.point.x, dy = p.point.y - fresh.point.y, dz = p.point.z - fresh.point.z;
+                const d = dx * dx + dy * dy + dz * dz;
+                if (d < bestDistSq) { bestDistSq = d; best = p; }
+            }
+            if (!best) continue;
+            best.point.copy(fresh.point);
+            best.pointOnA.copy(fresh.pointOnA);
+            best.pointOnB.copy(fresh.pointOnB);
+            best.normal.copy(fresh.normal);
+            best.signedDistance = fresh.signedDistance;
+            // Re-anchor to the CURRENT geometry so C is measured from where the feature is NOW - the
+            // whole point of refreshing. Persisting stale anchors would defeat it. Lambda is left
+            // untouched (warm start survives).
+            best.setLocalAnchors(bodyA, bodyB);
+        }
+    }
+
+    _isCompoundOrMesh(shape) {
+        return (typeof CompoundShape !== 'undefined' && shape instanceof CompoundShape) ||
+            (typeof MeshShape !== 'undefined' && shape instanceof MeshShape);
     }
 
     // Runs GJK (and EPA if overlapping) for one primitive-shape pair, returning a pooled

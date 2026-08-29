@@ -158,12 +158,29 @@ class RigidBody {
     _recomputeBroadphaseAABB(dt) {
         const m = RigidBody.SPECULATIVE_MARGIN;
         const sx = this.linear_velocity.x * dt, sy = this.linear_velocity.y * dt, sz = this.linear_velocity.z * dt;
-        this._broadphaseAABB.min.x = this._aabb.min.x - m - (sx < 0 ? -sx : 0);
-        this._broadphaseAABB.max.x = this._aabb.max.x + m + (sx > 0 ? sx : 0);
-        this._broadphaseAABB.min.y = this._aabb.min.y - m - (sy < 0 ? -sy : 0);
-        this._broadphaseAABB.max.y = this._aabb.max.y + m + (sy > 0 ? sy : 0);
-        this._broadphaseAABB.min.z = this._aabb.min.z - m - (sz < 0 ? -sz : 0);
-        this._broadphaseAABB.max.z = this._aabb.max.z + m + (sz > 0 ? sz : 0);
+        // Angular sweep: a point at the body's bounding radius R moves at up to |omega|*R, so a
+        // spinning body's far corner sweeps that far this tick even when the CENTER (which the
+        // linear sweep above tracks) barely moves. Missing this was a real bug: a box that tips
+        // onto one corner spins up to a few rad/s, its OPPOSITE corner then approaches the ground
+        // at |omega|*R (a couple of m/s) with the center's linear velocity pointing elsewhere, so
+        // the linear sweep never grew the box toward that corner - the corner slammed in undetected
+        // and the one-shot correction of the resulting deep overlap injected more spin, diverging.
+        // Angular motion has no clean per-axis direction, so this term is applied ISOTROPICALLY
+        // (all six faces) - the conservative honest choice, never an under-estimate. R is taken from
+        // the tight AABB's own half-extent (its farthest corner from center).
+        const ex = (this._aabb.max.x - this._aabb.min.x) * 0.5;
+        const ey = (this._aabb.max.y - this._aabb.min.y) * 0.5;
+        const ez = (this._aabb.max.z - this._aabb.min.z) * 0.5;
+        const R = Math.sqrt(ex * ex + ey * ey + ez * ez);
+        const wMag = Math.sqrt(this.angular_velocity.x * this.angular_velocity.x +
+            this.angular_velocity.y * this.angular_velocity.y + this.angular_velocity.z * this.angular_velocity.z);
+        const a = wMag * R * dt;
+        this._broadphaseAABB.min.x = this._aabb.min.x - m - a - (sx < 0 ? -sx : 0);
+        this._broadphaseAABB.max.x = this._aabb.max.x + m + a + (sx > 0 ? sx : 0);
+        this._broadphaseAABB.min.y = this._aabb.min.y - m - a - (sy < 0 ? -sy : 0);
+        this._broadphaseAABB.max.y = this._aabb.max.y + m + a + (sy > 0 ? sy : 0);
+        this._broadphaseAABB.min.z = this._aabb.min.z - m - a - (sz < 0 ? -sz : 0);
+        this._broadphaseAABB.max.z = this._aabb.max.z + m + a + (sz > 0 ? sz : 0);
     }
 
     _recomputeWorldInverseInertia() {

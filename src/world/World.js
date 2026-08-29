@@ -44,7 +44,13 @@ class World {
         const pairs = this.broadphase.computePairs();
         const manifolds = this.narrowphase.step(pairs, this.midphase, dt);
 
-        this.solver.step(this.bodies, manifolds, this.gravity, dt);
+        // Interleaved detect-then-solve: the solver re-measures contact geometry against each
+        // substep's predicted positions via this callback (see Solver.step and
+        // NarrowPhase.refreshManifoldGeometry), which is what keeps rotating/corner contacts stable.
+        const narrowphase = this.narrowphase;
+        this.solver.step(this.bodies, manifolds, this.gravity, dt, function (mans) {
+            narrowphase.refreshManifoldGeometry(mans);
+        });
 
         // The solver moved bodies; their derived state (AABB, world inertia) is stale until the
         // NEXT tick's pass above runs. Nothing within this tick reads it again after this point,

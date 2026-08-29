@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-24T04:26:53.474Z
+// ActionPhysics 0.1.0 — built 2026-08-24T06:03:00.586Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine.
@@ -3492,12 +3492,29 @@ class RigidBody {
     _recomputeBroadphaseAABB(dt) {
         const m = RigidBody.SPECULATIVE_MARGIN;
         const sx = this.linear_velocity.x * dt, sy = this.linear_velocity.y * dt, sz = this.linear_velocity.z * dt;
-        this._broadphaseAABB.min.x = this._aabb.min.x - m - (sx < 0 ? -sx : 0);
-        this._broadphaseAABB.max.x = this._aabb.max.x + m + (sx > 0 ? sx : 0);
-        this._broadphaseAABB.min.y = this._aabb.min.y - m - (sy < 0 ? -sy : 0);
-        this._broadphaseAABB.max.y = this._aabb.max.y + m + (sy > 0 ? sy : 0);
-        this._broadphaseAABB.min.z = this._aabb.min.z - m - (sz < 0 ? -sz : 0);
-        this._broadphaseAABB.max.z = this._aabb.max.z + m + (sz > 0 ? sz : 0);
+        // Angular sweep: a point at the body's bounding radius R moves at up to |omega|*R, so a
+        // spinning body's far corner sweeps that far this tick even when the CENTER (which the
+        // linear sweep above tracks) barely moves. Missing this was a real bug: a box that tips
+        // onto one corner spins up to a few rad/s, its OPPOSITE corner then approaches the ground
+        // at |omega|*R (a couple of m/s) with the center's linear velocity pointing elsewhere, so
+        // the linear sweep never grew the box toward that corner - the corner slammed in undetected
+        // and the one-shot correction of the resulting deep overlap injected more spin, diverging.
+        // Angular motion has no clean per-axis direction, so this term is applied ISOTROPICALLY
+        // (all six faces) - the conservative honest choice, never an under-estimate. R is taken from
+        // the tight AABB's own half-extent (its farthest corner from center).
+        const ex = (this._aabb.max.x - this._aabb.min.x) * 0.5;
+        const ey = (this._aabb.max.y - this._aabb.min.y) * 0.5;
+        const ez = (this._aabb.max.z - this._aabb.min.z) * 0.5;
+        const R = Math.sqrt(ex * ex + ey * ey + ez * ez);
+        const wMag = Math.sqrt(this.angular_velocity.x * this.angular_velocity.x +
+            this.angular_velocity.y * this.angular_velocity.y + this.angular_velocity.z * this.angular_velocity.z);
+        const a = wMag * R * dt;
+        this._broadphaseAABB.min.x = this._aabb.min.x - m - a - (sx < 0 ? -sx : 0);
+        this._broadphaseAABB.max.x = this._aabb.max.x + m + a + (sx > 0 ? sx : 0);
+        this._broadphaseAABB.min.y = this._aabb.min.y - m - a - (sy < 0 ? -sy : 0);
+        this._broadphaseAABB.max.y = this._aabb.max.y + m + a + (sy > 0 ? sy : 0);
+        this._broadphaseAABB.min.z = this._aabb.min.z - m - a - (sz < 0 ? -sz : 0);
+        this._broadphaseAABB.max.z = this._aabb.max.z + m + a + (sz > 0 ? sz : 0);
     }
 
     _recomputeWorldInverseInertia() {
@@ -5407,7 +5424,79 @@ class NarrowPhase {
         const dvy = bodyA.linear_velocity.y - bodyB.linear_velocity.y;
         const dvz = bodyA.linear_velocity.z - bodyB.linear_velocity.z;
         const relSpeed = Math.sqrt(dvx * dvx + dvy * dvy + dvz * dvz);
-        return NarrowPhase.SPECULATIVE_BASE + relSpeed * this._dt;
+        // Add each body's angular corner speed (|omega|*R): a contact FEATURE on a spinning body
+        // (a corner, an edge) approaches at up to this rate even when the centre barely moves, so a
+        // margin sized only from centre-relative linear speed reports the contact too late for a
+        // tipping body - the corner is already deep. Same reasoning as the broadphase AABB's angular
+        // sweep (RigidBody._recomputeBroadphaseAABB); both stages must look ahead by the same
+        // corner motion or broadphase surfaces the pair and narrowphase then drops it as "too far".
+        const angSpeed = NarrowPhase._angularCornerSpeed(bodyA) + NarrowPhase._angularCornerSpeed(bodyB);
+        return NarrowPhase.SPECULATIVE_BASE + (relSpeed + angSpeed) * this._dt;
+    }
+
+    // Upper bound on how fast any point on `body` moves purely from its rotation: |omega| times the
+    // body's bounding radius (farthest corner of its tight AABB from centre).
+    static _angularCornerSpeed(body) {
+        const w = body.angular_velocity;
+        const wMag = Math.sqrt(w.x * w.x + w.y * w.y + w.z * w.z);
+        if (wMag === 0) return 0;
+        const aabb = body.getAABB();
+        const ex = (aabb.max.x - aabb.min.x) * 0.5, ey = (aabb.max.y - aabb.min.y) * 0.5, ez = (aabb.max.z - aabb.min.z) * 0.5;
+        return wMag * Math.sqrt(ex * ex + ey * ey + ez * ez);
+    }
+
+    // Re-measures the GEOMETRY of the contact points already in each manifold against the bodies'
+    // CURRENT (predicted, mid-substep) transforms, in place. The solver calls this once per substep
+    // (see Solver.step's `refresh`), so a contact whose feature moves as a body rotates is solved
+    // against live geometry rather than a frozen tick-start normal/anchor - the fix for the
+    // rotational derived-velocity blow-up on corner contacts.
+    //
+    // This updates geometry ONLY. It never adds, removes, or re-matches points, and never touches
+    // the manifold's point SET or its warm-start lambda - that ownership stays with the manifold's
+    // once-per-tick update() (plan.md's rule against mid-tick manifold churn). A point whose contact
+    // has genuinely separated this substep simply gets a negative signed distance here and the
+    // solver's own C<=0 guard makes it inert; it is not culled mid-tick.
+    //
+    // Only primitive-vs-primitive body pairs are refreshed. A compound/mesh body's contact came
+    // from an expanded child/triangle whose identity this method does not track per point, so those
+    // manifolds keep their tick-start geometry (no regression - that is exactly today's behaviour
+    // for every contact). Re-expanding compounds/meshes per substep is a later optimisation if
+    // rotating compound bodies turn out to need it.
+    refreshManifoldGeometry(manifolds) {
+        for (const manifold of manifolds.values()) {
+            const bodyA = manifold.bodyA, bodyB = manifold.bodyB;
+            if (this._isCompoundOrMesh(bodyA.shape) || this._isCompoundOrMesh(bodyB.shape)) continue;
+
+            const placedA = { shape: bodyA.shape, position: bodyA.position, rotation: bodyA.rotation };
+            const placedB = { shape: bodyB.shape, position: bodyB.position, rotation: bodyB.rotation };
+            const fresh = this._testPrimitivePair(placedA, placedB); // one fresh contact for this pair
+
+            // Update the nearest existing point (in world space) with the fresh geometry, keeping
+            // its warm-start lambda and its persistent local anchors' IDENTITY - only the values
+            // the solver reads live (normal, and the anchors it recomputes C from) are refreshed.
+            let best = null, bestDistSq = Infinity;
+            for (let i = 0; i < manifold.points.length; i++) {
+                const p = manifold.points[i];
+                const dx = p.point.x - fresh.point.x, dy = p.point.y - fresh.point.y, dz = p.point.z - fresh.point.z;
+                const d = dx * dx + dy * dy + dz * dz;
+                if (d < bestDistSq) { bestDistSq = d; best = p; }
+            }
+            if (!best) continue;
+            best.point.copy(fresh.point);
+            best.pointOnA.copy(fresh.pointOnA);
+            best.pointOnB.copy(fresh.pointOnB);
+            best.normal.copy(fresh.normal);
+            best.signedDistance = fresh.signedDistance;
+            // Re-anchor to the CURRENT geometry so C is measured from where the feature is NOW - the
+            // whole point of refreshing. Persisting stale anchors would defeat it. Lambda is left
+            // untouched (warm start survives).
+            best.setLocalAnchors(bodyA, bodyB);
+        }
+    }
+
+    _isCompoundOrMesh(shape) {
+        return (typeof CompoundShape !== 'undefined' && shape instanceof CompoundShape) ||
+            (typeof MeshShape !== 'undefined' && shape instanceof MeshShape);
     }
 
     // Runs GJK (and EPA if overlapping) for one primitive-shape pair, returning a pooled
@@ -5471,6 +5560,7 @@ class Solver {
         this._impulse = new Vector3();
         this._tangent1 = new Vector3(); this._tangent2 = new Vector3();
         this._angularCorrA = new Vector3(); this._angularCorrB = new Vector3();
+        this._tmpDispA = new Vector3(); this._tmpDispB = new Vector3(); this._tmpPrev = new Vector3(); // friction slip scratch
         this._prevPos = new Map(); // bodyId -> Vector3, this substep's PRE-integration position
         this._prevRot = new Map(); // bodyId -> Quaternion, this substep's PRE-integration rotation
     }
@@ -5480,15 +5570,21 @@ class Solver {
      * (a ContactManifoldList). Gravity is `gravity` (a Vector3) unless a body overrides it via
      * RigidBody.gravity. May assume every contact's depth/normal is accurate (Rule 1) - never
      * re-checks or discounts a contact's own geometry.
+     *
+     * `refresh(manifolds)`, if given, re-measures each existing contact point's geometry (normal,
+     * anchors, depth) against the predicted positions once per substep, before the constraint
+     * solve - the interleaved detect-then-solve that makes rotating/corner contacts stable. It must
+     * only update existing points' geometry, never add/remove/re-match them (that is the manifold's
+     * once-per-tick job). Omitted -> tick-start geometry is reused every substep.
      */
-    step(bodies, manifolds, gravity, dt) {
+    step(bodies, manifolds, gravity, dt, refresh) {
         const h = dt / this.substeps;
         for (let s = 0; s < this.substeps; s++) {
-            this._substep(bodies, manifolds, gravity, h);
+            this._substep(bodies, manifolds, gravity, h, refresh);
         }
     }
 
-    _substep(bodies, manifolds, gravity, h) {
+    _substep(bodies, manifolds, gravity, h, refresh) {
         // 1. Integrate velocities (gravity/forces) and predict positions.
         for (let i = 0; i < bodies.length; i++) {
             const b = bodies[i];
@@ -5508,7 +5604,24 @@ class Solver {
 
             b.position.addScaledInPlace(b.linear_velocity, h);
             Solver._integrateRotation(b.rotation, b.angular_velocity, h);
+            // The world inverse inertia tensor depends on the rotation, which just changed - refresh
+            // it so _effectiveMass and _applyAngularCorrection this substep use the CURRENT
+            // orientation, not the tick-start one. Cheap (one 3x3 similarity transform) and keeps
+            // the angular math consistent with the per-substep geometry refresh below; a fast-
+            // rotating body would otherwise solve against an orientation several substeps stale.
+            b._recomputeWorldInverseInertia();
         }
+
+        // 1b. Re-measure contact geometry against the just-predicted positions. This is the
+        // interleaved detect-then-solve that keeps rotating/corner contacts stable: without it the
+        // contact's normal and anchors are frozen at tick-start, so a body that rotates fast enough
+        // for its contact CORNER to move between substeps gets solved against stale geometry, its
+        // far corner slams in undetected, and the one-shot correction of the resulting deep overlap
+        // injects a large derived angular velocity (which only grows as the substep shrinks - the
+        // rotational form of the derived-velocity problem). `refresh` re-measures geometry ONLY; it
+        // never adds/removes/re-matches points (that stays the manifold's once-per-tick job). See
+        // step()'s doc and World.step.
+        if (refresh) refresh(manifolds);
 
         // 2. Reset this substep's accumulated lambda to zero (XPBD's lambda is PER-SUBSTEP, reset
         // every substep, not carried across substeps within a tick - only carried across TICKS via
@@ -5730,27 +5843,39 @@ class Solver {
         Solver._integrateRotation(body.rotation, this._angularCorrA, 1); // h=1: this IS the delta, not a rate
     }
 
+    // Friction via a persistent anchor, scaled to match the normal constraint's per-substep units.
+    //
+    // The friction anchor is a material point coincident on both bodies when the contact last stuck.
+    // Its tangential separation NOW is the total slip to resist, but that raw separation grows every
+    // substep while the normal constraint's error C is a small per-substep penetration - solving the
+    // raw separation directly produces a lambda in different units from |normalLambda|, so the
+    // Coulomb cap (mu*|normalLambda|) is meaningless against it and friction either never bites or
+    // always saturates (the bug that made a box slide down a 15-degree slope it should stick on).
+    //
+    // The fix: this XPBD contact lambda scales with h^2 (deltaLambda = -C/wSum where the normal C is
+    // itself the h^2-order overlap). To keep friction commensurate, the tangential error is likewise
+    // taken as a per-substep quantity: the slip that occurred THIS substep (anchor separation minus
+    // what it was at substep start), not the accumulated total. That per-substep slip is the same
+    // order as the normal penetration, so mu*|normalLambda| caps it correctly - static stick when the
+    // slip stays within the cone, dynamic slide (anchor dragged) when it exceeds it.
     _solveFriction(point, bodyA, bodyB, h) {
         const friction = Math.sqrt(bodyA.friction * bodyB.friction); // combined friction, geometric mean (standard convention)
         if (friction <= 0) return;
-        // normalLambda is <= 0 in this file's sign convention (see _solvePoint) - the Coulomb cap is
-        // a magnitude, so take |normalLambda|. Skipping this abs was a latent bug: with a negative
-        // normalLambda the cap came out negative, the early-return below always fired, and friction
-        // silently never ran at all.
-        const maxFriction = friction * Math.abs(point.normalLambda);
+        const maxFriction = friction * Math.abs(point.normalLambda); // Coulomb cap magnitude (normalLambda <= 0 here)
         if (maxFriction <= 0) return;
 
         Solver._tangentBasis(point.normal, this._tangent1, this._tangent2);
-
-        this._solveFrictionAxis(point, bodyA, bodyB, this._tangent1, maxFriction, true);
-        this._solveFrictionAxis(point, bodyA, bodyB, this._tangent2, maxFriction, false);
+        this._currentMaxFriction = maxFriction;
+        this._solveFrictionAxis(point, bodyA, bodyB, this._tangent1, true);
+        this._solveFrictionAxis(point, bodyA, bodyB, this._tangent2, false);
     }
 
-    // rA/rB (center-relative offsets) are recomputed from the LIVE anchor positions here too -
-    // same reasoning as _solvePoint: point.pointOnA/pointOnB are a snapshot from this tick's
-    // narrowphase pass, stale after the normal constraint above has already moved the bodies this
-    // substep.
-    _solveFrictionAxis(point, bodyA, bodyB, tangent, maxFriction, isFirstAxis) {
+    // One tangent axis: resist THIS substep's tangential slip of the contact anchors, Coulomb-capped
+    // as a disc against the other axis (isotropic, so diagonal friction cannot exceed mu*N by
+    // sqrt(2)). The slip is measured from prevPos/prevRot (substep start) to now, so it is a
+    // per-substep quantity commensurate with the normal constraint - see _solveFriction's header.
+    _solveFrictionAxis(point, bodyA, bodyB, tangent, isFirstAxis) {
+        const slip = this._contactSlipAlong(point, bodyA, bodyB, tangent);
         point.currentAnchorAInto(this._rA, bodyA);
         point.currentAnchorBInto(this._rB, bodyB);
         Vector3.subInto(this._rA, this._rA, bodyA.position);
@@ -5759,21 +5884,44 @@ class Solver {
         const wSum = this._effectiveMass(bodyA, bodyB, this._rA, this._rB, tx, ty, tz);
         if (wSum < 1e-12) return;
 
-        // Tangential separation since this contact point was created is approximated here by the
-        // CURRENT relative position along the tangent (no separate anchor tracking yet - a static
-        // friction anchor for stick-vs-slip fidelity is a refinement, not a correctness
-        // requirement: this still produces Coulomb-capped tangential resistance every substep,
-        // which is what actually prevents sliding, just without persistent-anchor stick memory).
-        const C = 0; // no target position error tracked yet; deltaLambda accumulates via warm start instead
-        let deltaLambda = -C / wSum;
-
         const lambdaBefore = isFirstAxis ? point.tangentLambda1 : point.tangentLambda2;
-        let newLambda = lambdaBefore + deltaLambda;
-        newLambda = Math.max(-maxFriction, Math.min(maxFriction, newLambda));
-        deltaLambda = newLambda - lambdaBefore;
+        let newLambda = lambdaBefore - slip / wSum;
+        // Coulomb disc cap on the COMBINED two-axis magnitude.
+        const other = isFirstAxis ? point.tangentLambda2 : point.tangentLambda1;
+        const maxFriction = this._currentMaxFriction;
+        const mag = Math.sqrt(newLambda * newLambda + other * other);
+        if (mag > maxFriction && mag > 0) newLambda *= maxFriction / mag;
+        const deltaLambda = newLambda - lambdaBefore;
         if (isFirstAxis) point.tangentLambda1 = newLambda; else point.tangentLambda2 = newLambda;
 
         this._applyPositionalCorrection(bodyA, bodyB, this._rA, this._rB, tx, ty, tz, deltaLambda);
+    }
+
+    // Tangential slip along `tangent` this substep: (dispB - dispA).tangent, where dispX is how far
+    // body X's contact anchor moved from substep start (prevPos/prevRot) to now. (B - A) ordering
+    // matches the normal constraint so the shared correction OPPOSES slip rather than reinforcing it
+    // (the opposite ordering turns friction into an accelerator). A static body has no prev entry and
+    // contributes zero displacement - correct, it did not move.
+    _contactSlipAlong(point, bodyA, bodyB, tangent) {
+        const dispA = this._anchorDisplacement(point.localAnchorA, bodyA, this._tmpDispA);
+        const dispB = this._anchorDisplacement(point.localAnchorB, bodyB, this._tmpDispB);
+        const dx = dispB.x - dispA.x, dy = dispB.y - dispA.y, dz = dispB.z - dispA.z;
+        return dx * tangent.x + dy * tangent.y + dz * tangent.z;
+    }
+
+    // World displacement of the point at `localAnchor` on `body` from substep start to now.
+    _anchorDisplacement(localAnchor, body, out) {
+        const prevPos = this._prevPos.get(body.id);
+        if (!prevPos) { out.set(0, 0, 0); return out; } // static/kinematic: did not move this substep
+        const prevRot = this._prevRot.get(body.id);
+        out.copy(localAnchor);
+        body.rotation.transformVectorInPlace(out);
+        out.addInPlace(body.position);
+        this._tmpPrev.copy(localAnchor);
+        prevRot.transformVectorInPlace(this._tmpPrev);
+        this._tmpPrev.addInPlace(prevPos);
+        out.subInPlace(this._tmpPrev);
+        return out;
     }
 
     // Two unit vectors spanning the plane perpendicular to `normal` - the friction directions.
@@ -5833,7 +5981,13 @@ class World {
         const pairs = this.broadphase.computePairs();
         const manifolds = this.narrowphase.step(pairs, this.midphase, dt);
 
-        this.solver.step(this.bodies, manifolds, this.gravity, dt);
+        // Interleaved detect-then-solve: the solver re-measures contact geometry against each
+        // substep's predicted positions via this callback (see Solver.step and
+        // NarrowPhase.refreshManifoldGeometry), which is what keeps rotating/corner contacts stable.
+        const narrowphase = this.narrowphase;
+        this.solver.step(this.bodies, manifolds, this.gravity, dt, function (mans) {
+            narrowphase.refreshManifoldGeometry(mans);
+        });
 
         // The solver moved bodies; their derived state (AABB, world inertia) is stale until the
         // NEXT tick's pass above runs. Nothing within this tick reads it again after this point,
