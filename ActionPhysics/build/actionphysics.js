@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-26T00:26:13.948Z
+// ActionPhysics 0.1.0 — built 2026-08-26T00:38:34.617Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine.
@@ -6121,6 +6121,7 @@ class NarrowPhase {
         this._poolIndex = 0;
         this._axis = new Vector3(); // _addAxialLineContacts scratch
         this._apex = new Vector3(); this._rim = new Vector3(); // _addConeSlantContacts scratch
+        this._freshSet = []; // refreshManifoldGeometry's per-pair fresh contact set (primary + multi-point additions)
     }
 
     _nextPooledContact() {
@@ -6239,40 +6240,57 @@ class NarrowPhase {
     // for every contact). Re-expanding compounds/meshes per substep is a later optimisation if
     // rotating compound bodies turn out to need it.
     refreshManifoldGeometry(manifolds) {
+        // Fresh contacts here are throwaway (their values are copied into existing manifold points and
+        // then discarded), so lease pool slots from the current index and restore it after - the tick's
+        // own contacts, produced by step() before the solver ran, keep their slots untouched.
+        const savedPoolIndex = this._poolIndex;
         for (const manifold of manifolds.values()) {
             const bodyA = manifold.bodyA, bodyB = manifold.bodyB;
             if (this._isCompoundOrMesh(bodyA.shape) || this._isCompoundOrMesh(bodyB.shape)) continue;
 
             const placedA = { shape: bodyA.shape, position: bodyA.position, rotation: bodyA.rotation };
             const placedB = { shape: bodyB.shape, position: bodyB.position, rotation: bodyB.rotation };
-            const fresh = this._testPrimitivePair(placedA, placedB); // one fresh contact for this pair
 
-            // Update the nearest existing point (in world space) with the fresh geometry, keeping
-            // its warm-start lambda and its persistent local anchors' IDENTITY - only the values
-            // the solver reads live (normal, and the anchors it recomputes C from) are refreshed.
-            let best = null, bestDistSq = Infinity;
-            for (let i = 0; i < manifold.points.length; i++) {
-                const p = manifold.points[i];
-                const dx = p.point.x - fresh.point.x, dy = p.point.y - fresh.point.y, dz = p.point.z - fresh.point.z;
-                const d = dx * dx + dy * dy + dz * dz;
-                if (d < bestDistSq) { bestDistSq = d; best = p; }
+            // Regenerate the FULL fresh contact set for this pair against the live transforms - the
+            // primary GJK/EPA contact PLUS the same multi-point additions step() makes (axial-line
+            // brackets for a barrel, apex/mid/rim for a cone slant). Refreshing only the single GJK
+            // point starved a curved shape's OTHER points, leaving their geometry frozen at tick-start
+            // so they could not do their job (a cone's apex could not track the settle and the tip
+            // floated up). Each fresh point is matched to its nearest existing manifold point, so every
+            // point gets live geometry, not just the one nearest the primary.
+            this._freshSet.length = 0;
+            const fresh = this._testPrimitivePair(placedA, placedB);
+            this._freshSet.push(fresh);
+            this._addAxialLineContacts(fresh, placedA, placedB, this._freshSet, Infinity);
+            this._addConeSlantContacts(fresh, placedA, placedB, this._freshSet, Infinity);
+
+            // Match each existing manifold point to its nearest fresh point (world space) and refresh
+            // its live geometry in place, keeping warm-start lambda and anchor identity. Each fresh
+            // point may serve as the nearest for at most the points closest to it; a fresh point with
+            // no existing point near it is simply unused this substep (the manifold's once-per-tick
+            // update() owns adding/removing points, not this method).
+            for (let pi = 0; pi < manifold.points.length; pi++) {
+                const p = manifold.points[pi];
+                let best = null, bestDistSq = Infinity;
+                for (let fi = 0; fi < this._freshSet.length; fi++) {
+                    const fc = this._freshSet[fi];
+                    const dx = p.point.x - fc.point.x, dy = p.point.y - fc.point.y, dz = p.point.z - fc.point.z;
+                    const d = dx * dx + dy * dy + dz * dz;
+                    if (d < bestDistSq) { bestDistSq = d; best = fc; }
+                }
+                if (!best) continue;
+                p.point.copy(best.point);
+                p.pointOnA.copy(best.pointOnA);
+                p.pointOnB.copy(best.pointOnB);
+                p.signedDistance = best.signedDistance;
+                // Keep the ESTABLISHED normal through the exact-touch band, exactly as update() does -
+                // else the ambiguous diagonal GJK/EPA returns at signed-distance ~0 clobbers a good
+                // resting normal every substep (a flush sphere launched to y=200+ from that bug).
+                if (Math.abs(best.signedDistance) >= ContactManifold.EXACT_TOUCH_BAND) p.normal.copy(best.normal);
+                // Re-anchor to CURRENT geometry so C is measured from where the feature is NOW.
+                p.setLocalAnchors(bodyA, bodyB);
             }
-            if (!best) continue;
-            best.point.copy(fresh.point);
-            best.pointOnA.copy(fresh.pointOnA);
-            best.pointOnB.copy(fresh.pointOnB);
-            best.signedDistance = fresh.signedDistance;
-            // Keep the ESTABLISHED normal through the exact-touch band, exactly as the manifold's
-            // once-per-tick update() does (ContactManifold.EXACT_TOUCH_BAND) - the per-substep
-            // refresh MUST honour the same rule, or it silently clobbers a good resting normal with
-            // the ambiguous diagonal GJK/EPA returns at signed-distance ~0 every substep, which is
-            // the penetrate-then-launch bug the once-per-tick guard was added to prevent (it bit
-            // spheres hard: a flush sphere kept getting a (-0.71,0,0.71) normal and launched to y=200+).
-            if (Math.abs(fresh.signedDistance) >= ContactManifold.EXACT_TOUCH_BAND) best.normal.copy(fresh.normal);
-            // Re-anchor to the CURRENT geometry so C is measured from where the feature is NOW - the
-            // whole point of refreshing. Persisting stale anchors would defeat it. Lambda is left
-            // untouched (warm start survives).
-            best.setLocalAnchors(bodyA, bodyB);
+            this._poolIndex = savedPoolIndex; // release this pair's throwaway fresh contacts
         }
     }
 
