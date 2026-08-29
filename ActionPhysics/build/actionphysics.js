@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-25T12:44:30.374Z
+// ActionPhysics 0.1.0 — built 2026-08-25T13:48:50.764Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine.
@@ -3717,10 +3717,14 @@ class RigidBody {
         // Rolling resistance coefficient (metres): opposes a round shape's spin AT a contact by
         // capping the angular velocity component about the contact's tangent plane, the same way
         // Coulomb friction caps tangential slip - see Solver._solveContactVelocity's rolling pass.
-        // Defaults to 0, matching Goblin's own RigidBody.rolling_friction default and ActionEngineJS's
-        // MATERIAL_DEFAULTS (which has no rollingFriction field at all - it relies on angular_damping
-        // alone). Opt-in, not part of either upstream default material.
-        this.rolling_friction = 0;
+        // Was 0 (matching Goblin's own RigidBody.rolling_friction default and ActionEngineJS's
+        // MATERIAL_DEFAULTS, which has no rollingFriction field at all) - relying on angular_damping
+        // alone left round shapes (cylinder/cone/convex) with a small residual spin that never fully
+        // decayed to rest. Set to 0.02 per explicit instruction. Known tradeoff, not yet resolved:
+        // this value only partially converges the round-shape residual-spin tests (cone/cylinder
+        // still fall short of their 0.05 rad/s rest threshold) and destabilizes two previously-solid
+        // box-on-box stacking tests (box stacking's own corner/edge contacts use this same mechanism).
+        this.rolling_friction = 0.02;
 
         // ---- Filtering ----
         this.collision_mask = 0xFFFFFFFF;
