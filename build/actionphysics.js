@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-23T23:33:19.630Z
+// ActionPhysics 0.1.0 — built 2026-08-23T23:40:18.512Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine.
@@ -2521,6 +2521,814 @@ if (host.Transform) {
 
 }
 ActionPhysics.Transform = Transform;
+
+
+// ==== src/spatial/AABB.js ====
+/**
+ * Axis-aligned bounding box. min/max are Vector3 instances (in whichever precision the host
+ * math package uses), min <= max on every axis always holds outside of construction.
+ *
+ * Every method here is allocation-free — this type lives inside broadphase/BVH sweeps that
+ * run every tick over every body.
+ */
+class AABB {
+    constructor() {
+        this.min = new Vector3(Infinity, Infinity, Infinity);
+        this.max = new Vector3(-Infinity, -Infinity, -Infinity);
+    }
+
+    setEmpty() {
+        this.min.set(Infinity, Infinity, Infinity);
+        this.max.set(-Infinity, -Infinity, -Infinity);
+        return this;
+    }
+
+    setFromMinMax(minX, minY, minZ, maxX, maxY, maxZ) {
+        this.min.set(minX, minY, minZ);
+        this.max.set(maxX, maxY, maxZ);
+        return this;
+    }
+
+    copy(other) {
+        this.min.copy(other.min);
+        this.max.copy(other.max);
+        return this;
+    }
+
+    // this = the box around center +/- halfExtents, both Vector3.
+    setFromCenterHalfExtents(center, halfExtents) {
+        this.min.x = center.x - halfExtents.x;
+        this.min.y = center.y - halfExtents.y;
+        this.min.z = center.z - halfExtents.z;
+        this.max.x = center.x + halfExtents.x;
+        this.max.y = center.y + halfExtents.y;
+        this.max.z = center.z + halfExtents.z;
+        return this;
+    }
+
+    // Grow this box (in place) to also contain `other`.
+    combineInPlace(other) {
+        if (other.min.x < this.min.x) this.min.x = other.min.x;
+        if (other.min.y < this.min.y) this.min.y = other.min.y;
+        if (other.min.z < this.min.z) this.min.z = other.min.z;
+        if (other.max.x > this.max.x) this.max.x = other.max.x;
+        if (other.max.y > this.max.y) this.max.y = other.max.y;
+        if (other.max.z > this.max.z) this.max.z = other.max.z;
+        return this;
+    }
+
+    // this = union(a, b). Safe when this aliases a or b.
+    static combineInto(out, a, b) {
+        out.min.x = Math.min(a.min.x, b.min.x);
+        out.min.y = Math.min(a.min.y, b.min.y);
+        out.min.z = Math.min(a.min.z, b.min.z);
+        out.max.x = Math.max(a.max.x, b.max.x);
+        out.max.y = Math.max(a.max.y, b.max.y);
+        out.max.z = Math.max(a.max.z, b.max.z);
+        return out;
+    }
+
+    // Grow every face outward by `margin` (in place). Used for a speculative-contact skin, so a
+    // fast-moving body's broadphase box still catches a pair before penetration.
+    expandInPlace(margin) {
+        this.min.x -= margin; this.min.y -= margin; this.min.z -= margin;
+        this.max.x += margin; this.max.y += margin; this.max.z += margin;
+        return this;
+    }
+
+    intersects(other) {
+        return this.min.x <= other.max.x && this.max.x >= other.min.x &&
+               this.min.y <= other.max.y && this.max.y >= other.min.y &&
+               this.min.z <= other.max.z && this.max.z >= other.min.z;
+    }
+
+    containsPoint(p) {
+        return p.x >= this.min.x && p.x <= this.max.x &&
+               p.y >= this.min.y && p.y <= this.max.y &&
+               p.z >= this.min.z && p.z <= this.max.z;
+    }
+
+    containsAABB(other) {
+        return other.min.x >= this.min.x && other.max.x <= this.max.x &&
+               other.min.y >= this.min.y && other.max.y <= this.max.y &&
+               other.min.z >= this.min.z && other.max.z <= this.max.z;
+    }
+
+    // Half of the box's surface area (xy + yz + zx face pairs). A cheap, consistent BVH split
+    // heuristic — never called per-tick, only when the static tree is (re)built.
+    surfaceArea() {
+        const dx = this.max.x - this.min.x;
+        const dy = this.max.y - this.min.y;
+        const dz = this.max.z - this.min.z;
+        return dx * dy + dy * dz + dz * dx;
+    }
+
+    centerInto(out) {
+        out.x = (this.min.x + this.max.x) * 0.5;
+        out.y = (this.min.y + this.max.y) * 0.5;
+        out.z = (this.min.z + this.max.z) * 0.5;
+        return out;
+    }
+
+    isFinite() {
+        return this.min.isFinite() && this.max.isFinite();
+    }
+}
+
+ActionPhysics.AABB = AABB;
+
+
+// ==== src/shapes/Shape.js ====
+/**
+ * Shape contract. Every shape provides, in LOCAL space (unrotated, centered on its own origin):
+ *
+ *   supportInto(out, direction)   farthest point on the shape along `direction` (need not be
+ *                                 normalized). This is the ONLY primitive GJK/EPA require —
+ *                                 everything else here exists for AABBs, mass properties and
+ *                                 the visual bench, not collision.
+ *   localAABBInto(out)            tight local-space AABB.
+ *   computeMassData()             { mass, inertia: Matrix3, centerOfMass: Vector3 } for a shape
+ *                                 of density 1; RigidBody scales inertia by (mass / this.volume)
+ *                                 when the caller supplies its own mass.
+ *   volume()                      for the density scaling above.
+ *
+ * Shapes never allocate on the hot path: supportInto/localAABBInto write into caller-owned
+ * `out` arguments. computeMassData() runs once per body and may allocate.
+ */
+class Shape {
+    // A shape reports the CATEGORY of margin its narrowphase pair needs. Plane and Triangle are
+    // degenerate (infinite extent / zero thickness) and get special-cased at dispatch rather than
+    // patched inside GJK/EPA — see plan.md, Shapes section.
+    constructor(type) {
+        this.type = type;
+    }
+
+    supportInto(out, direction) {
+        throw new Error('Shape.supportInto not implemented for ' + this.type);
+    }
+
+    localAABBInto(out) {
+        throw new Error('Shape.localAABBInto not implemented for ' + this.type);
+    }
+
+    computeMassData() {
+        throw new Error('Shape.computeMassData not implemented for ' + this.type);
+    }
+
+    volume() {
+        throw new Error('Shape.volume not implemented for ' + this.type);
+    }
+}
+
+ActionPhysics.Shape = Shape;
+
+
+// ==== src/shapes/BoxShape.js ====
+// Every dimension is a half-extent (plan.md, Units and conventions) — matches AABB, matches
+// every other shape's convention. No shape silently uses a different one.
+class BoxShape extends Shape {
+    constructor(halfWidth, halfHeight, halfDepth) {
+        super('box');
+        this.halfWidth = halfWidth;
+        this.halfHeight = halfHeight;
+        this.halfDepth = halfDepth;
+    }
+
+    supportInto(out, direction) {
+        out.x = direction.x >= 0 ? this.halfWidth : -this.halfWidth;
+        out.y = direction.y >= 0 ? this.halfHeight : -this.halfHeight;
+        out.z = direction.z >= 0 ? this.halfDepth : -this.halfDepth;
+        return out;
+    }
+
+    localAABBInto(out) {
+        out.min.set(-this.halfWidth, -this.halfHeight, -this.halfDepth);
+        out.max.set(this.halfWidth, this.halfHeight, this.halfDepth);
+        return out;
+    }
+
+    volume() {
+        return 8 * this.halfWidth * this.halfHeight * this.halfDepth;
+    }
+
+    computeMassData() {
+        const w = 2 * this.halfWidth, h = 2 * this.halfHeight, d = 2 * this.halfDepth;
+        const mass = this.volume();
+        // Solid cuboid, density 1: I_xx = m(h^2+d^2)/12, cyclic.
+        const inertia = new Matrix3().setDiagonal(new Vector3(
+            mass * (h * h + d * d) / 12,
+            mass * (w * w + d * d) / 12,
+            mass * (w * w + h * h) / 12
+        ));
+        return { mass: mass, inertia: inertia, centerOfMass: new Vector3(0, 0, 0) };
+    }
+}
+
+ActionPhysics.BoxShape = BoxShape;
+
+
+// ==== src/shapes/SphereShape.js ====
+class SphereShape extends Shape {
+    constructor(radius) {
+        super('sphere');
+        this.radius = radius;
+    }
+
+    supportInto(out, direction) {
+        // Direction need not be unit length; normalize here so the support point sits exactly
+        // on the surface regardless of the caller's vector magnitude.
+        const lsq = direction.x * direction.x + direction.y * direction.y + direction.z * direction.z;
+        if (lsq === 0) { out.x = this.radius; out.y = 0; out.z = 0; return out; }
+        const s = this.radius / Math.sqrt(lsq);
+        out.x = direction.x * s; out.y = direction.y * s; out.z = direction.z * s;
+        return out;
+    }
+
+    localAABBInto(out) {
+        out.min.set(-this.radius, -this.radius, -this.radius);
+        out.max.set(this.radius, this.radius, this.radius);
+        return out;
+    }
+
+    volume() {
+        return (4 / 3) * Scalar.PI * this.radius * this.radius * this.radius;
+    }
+
+    computeMassData() {
+        const mass = this.volume();
+        const i = 0.4 * mass * this.radius * this.radius; // solid sphere, density 1: I = 2/5 m r^2
+        const inertia = new Matrix3().setDiagonal(new Vector3(i, i, i));
+        return { mass: mass, inertia: inertia, centerOfMass: new Vector3(0, 0, 0) };
+    }
+}
+
+ActionPhysics.SphereShape = SphereShape;
+
+
+// ==== src/shapes/CylinderShape.js ====
+// Axis is local Y. halfHeight is a half-extent (see plan.md, Units and conventions) — this is
+// the deliberate departure from the predecessor, whose capsule took total height and silently
+// broke callers written in half-extents everywhere else.
+class CylinderShape extends Shape {
+    constructor(radius, halfHeight) {
+        super('cylinder');
+        this.radius = radius;
+        this.halfHeight = halfHeight;
+    }
+
+    supportInto(out, direction) {
+        const sigma = Math.sqrt(direction.x * direction.x + direction.z * direction.z);
+        if (sigma > 0) {
+            const s = this.radius / sigma;
+            out.x = direction.x * s;
+            out.z = direction.z * s;
+        } else {
+            out.x = 0;
+            out.z = 0;
+        }
+        out.y = direction.y >= 0 ? this.halfHeight : -this.halfHeight;
+        return out;
+    }
+
+    localAABBInto(out) {
+        out.min.set(-this.radius, -this.halfHeight, -this.radius);
+        out.max.set(this.radius, this.halfHeight, this.radius);
+        return out;
+    }
+
+    volume() {
+        return Scalar.PI * this.radius * this.radius * (2 * this.halfHeight);
+    }
+
+    computeMassData() {
+        const r = this.radius, h = 2 * this.halfHeight;
+        const mass = this.volume();
+        const iAxis = 0.5 * mass * r * r;                                   // about Y
+        const iSide = mass * (3 * r * r + h * h) / 12;                       // about X and Z
+        const inertia = new Matrix3().setDiagonal(new Vector3(iSide, iAxis, iSide));
+        return { mass: mass, inertia: inertia, centerOfMass: new Vector3(0, 0, 0) };
+    }
+}
+
+ActionPhysics.CylinderShape = CylinderShape;
+
+
+// ==== src/shapes/ConeShape.js ====
+// Axis is local Y, apex at +halfHeight, base circle at -halfHeight. halfHeight is a half-extent.
+class ConeShape extends Shape {
+    constructor(radius, halfHeight) {
+        super('cone');
+        this.radius = radius;
+        this.halfHeight = halfHeight;
+    }
+
+    // Exact support of a cone is either the apex or a base-rim point, chosen by whichever the
+    // direction favors — no iteration needed, unlike a general convex hull.
+    supportInto(out, direction) {
+        const h = this.halfHeight;
+        const sigma = Math.sqrt(direction.x * direction.x + direction.z * direction.z);
+        // Base-rim candidate's projection onto `direction`, compared against the apex's.
+        const rimProjection = sigma * this.radius - direction.y * h;
+        const apexProjection = direction.y * h;
+        if (apexProjection >= rimProjection) {
+            out.x = 0; out.y = h; out.z = 0;
+            return out;
+        }
+        if (sigma > 0) {
+            const s = this.radius / sigma;
+            out.x = direction.x * s;
+            out.z = direction.z * s;
+        } else {
+            out.x = 0; out.z = 0;
+        }
+        out.y = -h;
+        return out;
+    }
+
+    localAABBInto(out) {
+        out.min.set(-this.radius, -this.halfHeight, -this.radius);
+        out.max.set(this.radius, this.halfHeight, this.radius);
+        return out;
+    }
+
+    volume() {
+        return Scalar.PI * this.radius * this.radius * (2 * this.halfHeight) / 3;
+    }
+
+    // Solid cone, density 1, apex up. Standard formulas are about the base; centerOfMass shifts
+    // the origin from local (0,0,0) — the geometric mid-height used for the AABB and support
+    // function — to that centroid, at h/4 above the base (i.e. -halfHeight + h/4).
+    computeMassData() {
+        const r = this.radius, h = 2 * this.halfHeight;
+        const mass = this.volume();
+        const iAxis = 0.3 * mass * r * r;                                    // about Y, apex frame
+        const iSideApex = mass * (3 * r * r + 2 * h * h) / 20;               // about X/Z through apex
+        // Parallel-axis shift from the apex-based formula to the centroid (h/4 below apex along axis).
+        const centroidOffset = h / 4;
+        const iSideCentroid = iSideApex - mass * centroidOffset * centroidOffset;
+        const inertia = new Matrix3().setDiagonal(new Vector3(iSideCentroid, iAxis, iSideCentroid));
+        return {
+            mass: mass,
+            inertia: inertia,
+            centerOfMass: new Vector3(0, -this.halfHeight + centroidOffset, 0)
+        };
+    }
+}
+
+ActionPhysics.ConeShape = ConeShape;
+
+
+// ==== src/shapes/CapsuleShape.js ====
+// Axis is local Y. Constructor takes TOTAL height, unlike every other shape here — noted
+// explicitly because it is the one deliberate exception to the half-extent rule (plan.md,
+// Units and conventions): a capsule's height already includes its hemispherical caps, so there
+// is no natural "half-extent" reading that isn't itself confusing. segmentHalfLength is the
+// half-length of the cylindrical core only (between sphere centers), derived once here.
+class CapsuleShape extends Shape {
+    constructor(radius, totalHeight) {
+        super('capsule');
+        if (totalHeight < 2 * radius) {
+            throw new Error('CapsuleShape: totalHeight must be >= 2 * radius');
+        }
+        this.radius = radius;
+        this.totalHeight = totalHeight;
+        this.segmentHalfLength = totalHeight / 2 - radius;
+    }
+
+    supportInto(out, direction) {
+        const centerY = direction.y >= 0 ? this.segmentHalfLength : -this.segmentHalfLength;
+        const lsq = direction.x * direction.x + direction.y * direction.y + direction.z * direction.z;
+        if (lsq === 0) { out.x = this.radius; out.y = centerY; out.z = 0; return out; }
+        const s = this.radius / Math.sqrt(lsq);
+        out.x = direction.x * s;
+        out.y = direction.y * s + centerY;
+        out.z = direction.z * s;
+        return out;
+    }
+
+    localAABBInto(out) {
+        const halfExtent = this.segmentHalfLength + this.radius;
+        out.min.set(-this.radius, -halfExtent, -this.radius);
+        out.max.set(this.radius, halfExtent, this.radius);
+        return out;
+    }
+
+    volume() {
+        const r = this.radius, hs = this.segmentHalfLength;
+        const cylinder = Scalar.PI * r * r * (2 * hs);
+        const sphere = (4 / 3) * Scalar.PI * r * r * r;
+        return cylinder + sphere;
+    }
+
+    // Composite of a cylindrical core plus two hemispherical caps, each contributing its own
+    // parallel-axis term. Standard closed forms; see e.g. Bullet/Rapier capsule inertia derivations.
+    computeMassData() {
+        const r = this.radius, hs = this.segmentHalfLength;
+        const cylinderVolume = Scalar.PI * r * r * (2 * hs);
+        const hemisphereVolume = (2 / 3) * Scalar.PI * r * r * r; // one hemisphere
+        const mass = cylinderVolume + 2 * hemisphereVolume;
+
+        const cylinderMass = cylinderVolume;   // density 1
+        const hemisphereMass = hemisphereVolume;
+
+        const iAxisCyl = 0.5 * cylinderMass * r * r;
+        const iSideCyl = cylinderMass * (3 * r * r + (2 * hs) * (2 * hs)) / 12;
+
+        // Solid hemisphere about its own flat-face centroid axis (through the sphere center, Y):
+        const iAxisHemi = 0.4 * hemisphereMass * r * r; // same coefficient as full sphere for the polar axis
+        // About an axis through the hemisphere's centroid perpendicular to the pole, then shifted
+        // by the parallel-axis theorem out to the capsule's cylinder-cap junction at y = hs.
+        const hemiCentroidOffset = (3 / 8) * r; // centroid distance from flat face along the axis
+        const iSideHemiAboutOwnCentroid = hemisphereMass * (83 / 320) * r * r;
+        const distFromCapsuleCenter = hs + hemiCentroidOffset;
+        const iSideHemiShifted = iSideHemiAboutOwnCentroid + hemisphereMass * distFromCapsuleCenter * distFromCapsuleCenter;
+
+        const iAxis = iAxisCyl + 2 * iAxisHemi;
+        const iSide = iSideCyl + 2 * iSideHemiShifted;
+
+        const inertia = new Matrix3().setDiagonal(new Vector3(iSide, iAxis, iSide));
+        return { mass: mass, inertia: inertia, centerOfMass: new Vector3(0, 0, 0) };
+    }
+}
+
+ActionPhysics.CapsuleShape = CapsuleShape;
+
+
+// ==== src/shapes/ConvexShape.js ====
+// Arbitrary convex hull from a point cloud. Points are LOCAL-space Vector3, taken as already
+// forming (or being reducible to) a convex hull — support/mass computation below do not verify
+// convexity, matching every other shape here trusting its constructor input.
+class ConvexShape extends Shape {
+    constructor(points) {
+        super('convex');
+        this.points = points;
+    }
+
+    // Brute-force max-dot scan. O(n) per query; fine for the hull sizes physics shapes use
+    // (tens of points), and simplicity here keeps GJK's one required primitive easy to trust.
+    supportInto(out, direction) {
+        const pts = this.points;
+        let bestDot = -Infinity, bestIndex = 0;
+        for (let i = 0; i < pts.length; i++) {
+            const d = pts[i].x * direction.x + pts[i].y * direction.y + pts[i].z * direction.z;
+            if (d > bestDot) { bestDot = d; bestIndex = i; }
+        }
+        out.x = pts[bestIndex].x; out.y = pts[bestIndex].y; out.z = pts[bestIndex].z;
+        return out;
+    }
+
+    localAABBInto(out) {
+        out.setEmpty();
+        const pts = this.points;
+        for (let i = 0; i < pts.length; i++) {
+            const p = pts[i];
+            if (p.x < out.min.x) out.min.x = p.x;
+            if (p.y < out.min.y) out.min.y = p.y;
+            if (p.z < out.min.z) out.min.z = p.z;
+            if (p.x > out.max.x) out.max.x = p.x;
+            if (p.y > out.max.y) out.max.y = p.y;
+            if (p.z > out.max.z) out.max.z = p.z;
+        }
+        return out;
+    }
+
+    // No closed-form volume/inertia for an arbitrary hull without its face list (which this
+    // shape does not carry — see plan.md's component list: Convex is a GJK/EPA support shape,
+    // not a tessellated mesh). Approximated as the equivalent-volume sphere from the AABB's
+    // bounding radius; a caller needing exact mass properties for a hull supplies its own via
+    // a MeshShape (has faces) instead.
+    volume() {
+        const aabb = new AABB();
+        this.localAABBInto(aabb);
+        const c = new Vector3();
+        aabb.centerInto(c);
+        let r = 0;
+        for (let i = 0; i < this.points.length; i++) {
+            const d = this.points[i].distanceTo(c);
+            if (d > r) r = d;
+        }
+        this._boundingRadius = r;
+        return (4 / 3) * Scalar.PI * r * r * r;
+    }
+
+    computeMassData() {
+        const mass = this.volume();
+        const r = this._boundingRadius;
+        const i = 0.4 * mass * r * r;
+        const inertia = new Matrix3().setDiagonal(new Vector3(i, i, i));
+        return { mass: mass, inertia: inertia, centerOfMass: new Vector3(0, 0, 0) };
+    }
+}
+
+ActionPhysics.ConvexShape = ConvexShape;
+
+
+// ==== src/shapes/PlaneShape.js ====
+// A finite plane: a flat rectangle with zero thickness. Degenerate by construction — special-
+// cased explicitly rather than patched into GJK/EPA later (plan.md, Shapes: "Plane and Triangle
+// are degenerate and are special-cased explicitly at the shape level, not patched later").
+//
+// orientation selects which local axis is the normal: 'x', 'y', or 'z'. halfW/halfL extend along
+// the other two axes, in the cyclic order (y,z) for 'x', (z,x) for 'y', (x,y) for 'z' — i.e. the
+// same convention Vector3.cross uses, so normal x axis1 = axis2 always holds.
+class PlaneShape extends Shape {
+    constructor(orientation, halfW, halfL) {
+        super('plane');
+        this.orientation = orientation;
+        this.halfW = halfW;
+        this.halfL = halfL;
+    }
+
+    // Zero thickness means the support point always lies exactly on the plane, regardless of
+    // the direction's component along the normal.
+    supportInto(out, direction) {
+        if (this.orientation === 'x') {
+            out.x = 0;
+            out.y = direction.y >= 0 ? this.halfW : -this.halfW;
+            out.z = direction.z >= 0 ? this.halfL : -this.halfL;
+        } else if (this.orientation === 'y') {
+            out.x = direction.x >= 0 ? this.halfL : -this.halfL;
+            out.y = 0;
+            out.z = direction.z >= 0 ? this.halfW : -this.halfW;
+        } else {
+            out.x = direction.x >= 0 ? this.halfW : -this.halfW;
+            out.y = direction.y >= 0 ? this.halfL : -this.halfL;
+            out.z = 0;
+        }
+        return out;
+    }
+
+    localAABBInto(out) {
+        if (this.orientation === 'x') out.setFromMinMax(0, -this.halfW, -this.halfL, 0, this.halfW, this.halfL);
+        else if (this.orientation === 'y') out.setFromMinMax(-this.halfL, 0, -this.halfW, this.halfL, 0, this.halfW);
+        else out.setFromMinMax(-this.halfW, -this.halfL, 0, this.halfW, this.halfL, 0);
+        return out;
+    }
+
+    // A plane is meant for static/kinematic use (infinite-mass equivalent geometry); it carries
+    // zero volume and zero-mass data rather than pretending to a solid it is not.
+    volume() { return 0; }
+
+    computeMassData() {
+        return { mass: 0, inertia: new Matrix3().zero(), centerOfMass: new Vector3(0, 0, 0) };
+    }
+}
+
+ActionPhysics.PlaneShape = PlaneShape;
+
+
+// ==== src/shapes/TriangleShape.js ====
+// A single zero-thickness triangle in local space. Degenerate like PlaneShape, for the same
+// reason — see PlaneShape's header. Used both standalone and as the per-triangle shape a
+// MeshShape's midphase dispatches into (plan.md: "midphase — which triangles of a mesh?").
+class TriangleShape extends Shape {
+    constructor(a, b, c) {
+        super('triangle');
+        this.a = a; this.b = b; this.c = c;
+    }
+
+    supportInto(out, direction) {
+        const a = this.a, b = this.b, c = this.c;
+        const da = a.x * direction.x + a.y * direction.y + a.z * direction.z;
+        const db = b.x * direction.x + b.y * direction.y + b.z * direction.z;
+        const dc = c.x * direction.x + c.y * direction.y + c.z * direction.z;
+        const best = (da >= db && da >= dc) ? a : (db >= dc ? b : c);
+        out.x = best.x; out.y = best.y; out.z = best.z;
+        return out;
+    }
+
+    localAABBInto(out) {
+        out.setEmpty();
+        const pts = [this.a, this.b, this.c];
+        for (let i = 0; i < 3; i++) {
+            const p = pts[i];
+            if (p.x < out.min.x) out.min.x = p.x;
+            if (p.y < out.min.y) out.min.y = p.y;
+            if (p.z < out.min.z) out.min.z = p.z;
+            if (p.x > out.max.x) out.max.x = p.x;
+            if (p.y > out.max.y) out.max.y = p.y;
+            if (p.z > out.max.z) out.max.z = p.z;
+        }
+        return out;
+    }
+
+    volume() { return 0; }
+
+    computeMassData() {
+        return { mass: 0, inertia: new Matrix3().zero(), centerOfMass: new Vector3(0, 0, 0) };
+    }
+}
+
+ActionPhysics.TriangleShape = TriangleShape;
+
+
+// ==== src/shapes/MeshShape.js ====
+// Static triangle mesh: a vertex list plus flat index triples. Zero mass by construction — a
+// mesh is a static/kinematic-only shape (plan.md: BVH is "built once for static geometry").
+// The midphase BVH over these triangles is built lazily by whatever consumes this shape
+// (plan.md, Spatial: "one BVH implementation, three call sites"); this class only owns geometry.
+class MeshShape extends Shape {
+    constructor(vertices, indices) {
+        super('mesh');
+        this.vertices = vertices;   // Vector3[]
+        this.indices = indices;     // flat Uint32Array-able index triples
+        this.triangleCount = (indices.length / 3) | 0;
+    }
+
+    triangleAt(i, outA, outB, outC) {
+        const base = i * 3;
+        const va = this.vertices[this.indices[base]];
+        const vb = this.vertices[this.indices[base + 1]];
+        const vc = this.vertices[this.indices[base + 2]];
+        outA.copy(va); outB.copy(vb); outC.copy(vc);
+    }
+
+    // A mesh has no single well-defined support point (it's a shell, not a solid convex body) —
+    // narrowphase dispatches per-triangle via TriangleShape instead of calling this directly.
+    supportInto(out, direction) {
+        throw new Error('MeshShape.supportInto: dispatch per-triangle, a mesh is not itself convex');
+    }
+
+    localAABBInto(out) {
+        out.setEmpty();
+        const verts = this.vertices;
+        for (let i = 0; i < verts.length; i++) {
+            const p = verts[i];
+            if (p.x < out.min.x) out.min.x = p.x;
+            if (p.y < out.min.y) out.min.y = p.y;
+            if (p.z < out.min.z) out.min.z = p.z;
+            if (p.x > out.max.x) out.max.x = p.x;
+            if (p.y > out.max.y) out.max.y = p.y;
+            if (p.z > out.max.z) out.max.z = p.z;
+        }
+        return out;
+    }
+
+    volume() { return 0; }
+
+    computeMassData() {
+        return { mass: 0, inertia: new Matrix3().zero(), centerOfMass: new Vector3(0, 0, 0) };
+    }
+}
+
+ActionPhysics.MeshShape = MeshShape;
+
+
+// ==== src/shapes/CompoundShape.js ====
+// A CompoundShapeChild is a leaf shape at a fixed local offset/orientation within a compound.
+// Plain data — the compound's owning body drives everything else.
+class CompoundShapeChild {
+    constructor(shape, localPosition, localRotation) {
+        this.shape = shape;
+        this.localPosition = localPosition;       // Vector3
+        this.localRotation = localRotation;        // Quaternion
+    }
+}
+
+// A rigid union of child shapes, each at its own local offset. Mass properties combine via the
+// parallel-axis theorem per child; the midphase BVH over children is built by whatever consumes
+// this shape, same division of ownership as MeshShape.
+class CompoundShape extends Shape {
+    constructor(children) {
+        super('compound');
+        this.children = children || []; // CompoundShapeChild[]
+    }
+
+    addChild(shape, localPosition, localRotation) {
+        this.children.push(new CompoundShapeChild(shape, localPosition, localRotation));
+        return this;
+    }
+
+    // Not itself convex — narrowphase dispatches per-child, same reasoning as MeshShape.
+    supportInto(out, direction) {
+        throw new Error('CompoundShape.supportInto: dispatch per-child, a compound is not itself convex');
+    }
+
+    localAABBInto(out) {
+        out.setEmpty();
+        const childAABB = new AABB();
+        const rotMat = new Matrix3();
+        const corner = new Vector3();
+        for (let i = 0; i < this.children.length; i++) {
+            const child = this.children[i];
+            child.shape.localAABBInto(childAABB);
+            rotMat.fromQuaternion(child.localRotation);
+            // Rotate the child's local AABB conservatively: transform all 8 corners.
+            for (let cx = 0; cx < 2; cx++) for (let cy = 0; cy < 2; cy++) for (let cz = 0; cz < 2; cz++) {
+                corner.x = cx ? childAABB.max.x : childAABB.min.x;
+                corner.y = cy ? childAABB.max.y : childAABB.min.y;
+                corner.z = cz ? childAABB.max.z : childAABB.min.z;
+                rotMat.transformVector3(corner);
+                corner.addInPlace(child.localPosition);
+                if (corner.x < out.min.x) out.min.x = corner.x;
+                if (corner.y < out.min.y) out.min.y = corner.y;
+                if (corner.z < out.min.z) out.min.z = corner.z;
+                if (corner.x > out.max.x) out.max.x = corner.x;
+                if (corner.y > out.max.y) out.max.y = corner.y;
+                if (corner.z > out.max.z) out.max.z = corner.z;
+            }
+        }
+        return out;
+    }
+
+    volume() {
+        let v = 0;
+        for (let i = 0; i < this.children.length; i++) v += this.children[i].shape.volume();
+        return v;
+    }
+
+    // Combines child mass data about the compound's own local origin, via the parallel-axis
+    // theorem: a child's inertia about the compound origin is its own local inertia (rotated into
+    // the compound frame) plus m * (translation contribution from the offset).
+    computeMassData() {
+        let totalMass = 0;
+        const centerOfMass = new Vector3(0, 0, 0);
+        const childData = [];
+        for (let i = 0; i < this.children.length; i++) {
+            const child = this.children[i];
+            const data = child.shape.computeMassData();
+            childData.push(data);
+            totalMass += data.mass;
+            centerOfMass.addScaledInPlace(child.localPosition, data.mass);
+        }
+        if (totalMass > 0) centerOfMass.scaleInPlace(1 / totalMass);
+
+        const inertia = new Matrix3().zero();
+        const rotMat = new Matrix3();
+        const rotated = new Matrix3();
+        const rotatedT = new Matrix3();
+        for (let i = 0; i < this.children.length; i++) {
+            const child = this.children[i];
+            const data = childData[i];
+            rotMat.fromQuaternion(child.localRotation);
+            // rotated = R * I_local * R^T — child's local inertia expressed in the compound frame.
+            rotated.multiplyFrom(rotMat, data.inertia);
+            rotatedT.transposeInto(rotMat);
+            rotated.multiply(rotatedT);
+
+            // Parallel-axis shift from the child's own centroid to the compound's centerOfMass.
+            const dx = child.localPosition.x + data.centerOfMass.x - centerOfMass.x;
+            const dy = child.localPosition.y + data.centerOfMass.y - centerOfMass.y;
+            const dz = child.localPosition.z + data.centerOfMass.z - centerOfMass.z;
+            const d2 = dx * dx + dy * dy + dz * dz;
+            const m = data.mass;
+
+            inertia.e00 += rotated.e00 + m * (d2 - dx * dx);
+            inertia.e01 += rotated.e01 + m * (-dx * dy);
+            inertia.e02 += rotated.e02 + m * (-dx * dz);
+            inertia.e10 += rotated.e10 + m * (-dy * dx);
+            inertia.e11 += rotated.e11 + m * (d2 - dy * dy);
+            inertia.e12 += rotated.e12 + m * (-dy * dz);
+            inertia.e20 += rotated.e20 + m * (-dz * dx);
+            inertia.e21 += rotated.e21 + m * (-dz * dy);
+            inertia.e22 += rotated.e22 + m * (d2 - dz * dz);
+        }
+
+        return { mass: totalMass, inertia: inertia, centerOfMass: centerOfMass };
+    }
+}
+
+ActionPhysics.CompoundShapeChild = CompoundShapeChild;
+ActionPhysics.CompoundShape = CompoundShape;
+
+
+// ==== src/shapes/LineSweptShape.js ====
+// A shape swept along a line segment: the Minkowski sum of `shape` with the segment from
+// -halfLength to +halfLength along local Y. Used for continuous-collision / swept queries
+// (plan.md, component 11: Queries — ray casting, shape sweeps) without a dedicated CCD solver:
+// the query just asks "does this swept volume touch anything", which is a support function away
+// once the base shape has one.
+class LineSweptShape extends Shape {
+    constructor(shape, halfLength) {
+        super('lineswept');
+        this.shape = shape;
+        this.halfLength = halfLength;
+    }
+
+    // Minkowski sum with a segment: support(d) = shape.support(d) + endpoint(d), where the
+    // endpoint chosen is whichever end of the segment is farther along d.
+    supportInto(out, direction) {
+        this.shape.supportInto(out, direction);
+        out.y += direction.y >= 0 ? this.halfLength : -this.halfLength;
+        return out;
+    }
+
+    localAABBInto(out) {
+        this.shape.localAABBInto(out);
+        out.min.y -= this.halfLength;
+        out.max.y += this.halfLength;
+        return out;
+    }
+
+    // A sweep is a query tool, not a body shape — it carries no mass properties of its own.
+    volume() { return 0; }
+
+    computeMassData() {
+        return { mass: 0, inertia: new Matrix3().zero(), centerOfMass: new Vector3(0, 0, 0) };
+    }
+}
+
+ActionPhysics.LineSweptShape = LineSweptShape;
 
 
 // ==== src/outro.js ====

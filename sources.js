@@ -20,5 +20,23 @@ module.exports = [
     'src/math/Quaternion.js',
     'src/math/Transform.js',
 
+    // Spatial - AABB has no dependency beyond Vector3.
+    'src/spatial/AABB.js',
+
+    // Shapes - Shape base first, then concrete shapes. ConvexShape/CompoundShape reference
+    // AABB; CompoundShape references Matrix3.
+    'src/shapes/Shape.js',
+    'src/shapes/BoxShape.js',
+    'src/shapes/SphereShape.js',
+    'src/shapes/CylinderShape.js',
+    'src/shapes/ConeShape.js',
+    'src/shapes/CapsuleShape.js',
+    'src/shapes/ConvexShape.js',
+    'src/shapes/PlaneShape.js',
+    'src/shapes/TriangleShape.js',
+    'src/shapes/MeshShape.js',
+    'src/shapes/CompoundShape.js',
+    'src/shapes/LineSweptShape.js',
+
     'src/outro.js'
 ];
