@@ -43,6 +43,13 @@ class ContactDetails {
         // fraction of the speed the body was APPROACHING at, which is gone by the time the solve
         // finishes. Written each substep by the solver; not warm-start state.
         this._preSolveNormalVel = 0;
+
+        // True for exactly the one substep NarrowPhase.refreshManifoldGeometry re-anchors this point
+        // to a genuinely different world position (see that method's own comment) - re-picking a
+        // point on a degenerate line/face contact changes the position solve's lever arm on its own,
+        // producing a rotation this substep that has nothing to do with the body's real motion. The
+        // solver checks this once (Solver.js step 4) then clears it.
+        this._anchorJustMoved = false;
     }
 
     // Derives localAnchorA/localAnchorB from the CURRENT pointOnA/pointOnB and the given bodies'

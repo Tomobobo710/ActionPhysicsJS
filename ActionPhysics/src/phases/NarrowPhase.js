@@ -199,6 +199,24 @@ class NarrowPhase {
                 // the whole point of refreshing, for a contact that has actually moved. Persisting a
                 // stale anchor through a real migration would defeat this mechanism entirely (see its
                 // own comment above - a fast-rotating body's far corner slamming in undetected).
+                //
+                // MARK this substep's re-anchor so the solver can exclude the ONE substep's resulting
+                // rotation from derived angular velocity (see Solver._substep step 4) - re-anchoring a
+                // still-genuinely-touching contact to a different point ALONG THE SAME degenerate
+                // surface changes the position solve's lever arm, and that lever-arm change alone
+                // produces a real rotation this substep with nothing to do with the body's actual
+                // motion. Traced directly: a cylinder resting with a residual w this small
+                // (~0.0000001 rad/s) still, over ~1300 ticks, accumulates enough real rotation for the
+                // anchor to legitimately cross ANCHOR_REFRESH_MIN_MOVE and re-pick - and each re-pick's
+                // lever-arm jump injects a fresh kick (measured: w jumping from ~0 to 0.07+ in two
+                // ticks), which is itself enough motion to trigger ANOTHER re-pick soon after,
+                // self-sustaining forever instead of ever fully damping. This is not extra physical
+                // motion, it is bookkeeping noise from the anchor's own re-selection - excluding just
+                // this one substep's rotation delta from derived velocity removes the kick at its
+                // source without touching every other correction (unconditional bias-everywhere was
+                // tried and is a real, confirmed regression: it broke ordinary resting bodies' derived
+                // velocity across the board, not just this one degenerate case).
+                best._anchorJustMoved = true;
                 best.setLocalAnchors(bodyA, bodyB);
             }
         }

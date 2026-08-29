@@ -63,6 +63,16 @@ class Solver {
     // the outcome there at all).
     static EXPLAINABLE_MARGIN = 3;
 
+    // Below this relative angular speed (rad/s), rolling resistance fully stops it outright instead
+    // of clamping to the Coulomb budget - see _solveRollingResistance's own comment.
+    static ROLLING_FULL_STOP_THRESHOLD = 0.15;
+
+    // See Solver.js step 4's own comment. A body already near rest (angular speed below this) whose
+    // contact anchor just re-picked skips angular derivation for that one substep. Set below any
+    // genuine tumbling motion but above the largest re-pick kick actually measured (traced: a resting
+    // cylinder's kicks ranged roughly 0.005-0.08 rad/s before this fix existed at all).
+    static ANCHOR_REPICK_REST_THRESHOLD = 0.2;
+
 
     /**
      * Advances every dynamic body in `bodies` by `dt`, resolving the contacts in `manifolds`
@@ -181,6 +191,24 @@ class Solver {
             }
         }
 
+        // Bodies whose contact anchor just re-picked this substep (see NarrowPhase.
+        // refreshManifoldGeometry's own comment) - a re-pick changes the position solve's lever arm
+        // on its own, producing a rotation this substep unrelated to the body's real motion. Scanned
+        // once here (cheap - only ever a handful of points touch a re-pick per substep) rather than
+        // per-point in the hot solve loops.
+        this._anchorMovedBodies = this._anchorMovedBodies || new Set();
+        this._anchorMovedBodies.clear();
+        for (const manifold of manifolds.values()) {
+            for (let i = 0; i < manifold.points.length; i++) {
+                const p = manifold.points[i];
+                if (p._anchorJustMoved) {
+                    this._anchorMovedBodies.add(manifold.bodyA.id);
+                    this._anchorMovedBodies.add(manifold.bodyB.id);
+                    p._anchorJustMoved = false;
+                }
+            }
+        }
+
         // 4. Derive velocity from the position change - RAW, no clamp (see class header), EXCLUDING
         // any bias-only correction this substep applied (see _solvePoint's own comment: whatever part
         // of a correction the body's own real closing velocity could not explain is bias, not real
@@ -190,6 +218,20 @@ class Solver {
         // still counts, exactly as before (this still captures the normal solve's stopping effect on
         // a real impact - a stopped body has ~zero normal velocity here, unchanged for ordinary
         // shallow contacts, where the correction is small enough to be fully explainable anyway).
+        //
+        // ANGULAR velocity is skipped for a body whose contact anchor just re-picked this substep -
+        // see the scan just above and NarrowPhase's own comment - keeping the value the VELOCITY-PASS
+        // constraints (step 5, e.g. rolling resistance) already converged it toward, rather than
+        // re-deriving from a rotation delta corrupted by the lever-arm jump. This must be scoped to a
+        // body genuinely near rest, not blanket-applied: suppressing derivation during REAL tumbling
+        // motion (a bouncing box's corner contact re-picking mid-flight, an ordinary and frequent
+        // event) silently drops real angular velocity for that substep and reads as fabricated energy
+        // once a later substep "catches up" all at once - a real, confirmed regression (a corner-drop
+        // bounce test measured its apex GROWING instead of only decaying). The re-pick artifact this
+        // exists for only ever matters once a body has settled enough for its own residual spin to be
+        // this small in the first place - a body still genuinely tumbling has real angular velocity
+        // far above this scale, so gating on the body's OWN current speed excludes exactly the
+        // resting case without touching active motion at all.
         for (let i = 0; i < bodies.length; i++) {
             const b = bodies[i];
             if (b.bodyType !== RigidBody.DYNAMIC) continue;
@@ -199,7 +241,15 @@ class Solver {
             b.linear_velocity.x = (b.position.x - prevPos.x - bias.x) / h;
             b.linear_velocity.y = (b.position.y - prevPos.y - bias.y) / h;
             b.linear_velocity.z = (b.position.z - prevPos.z - bias.z) / h;
-            Solver._deriveAngularVelocity(b.angular_velocity, prevRot, b.rotation, h);
+            const w = b.angular_velocity;
+            const wMagSq = w.x * w.x + w.y * w.y + w.z * w.z;
+            if (this._anchorMovedBodies.has(b.id) && wMagSq < Solver.ANCHOR_REPICK_REST_THRESHOLD * Solver.ANCHOR_REPICK_REST_THRESHOLD) {
+                // Near rest and this substep's anchor re-pick is the only thing that would have moved
+                // angular velocity - leave it as step 5 (velocity-pass constraints) already converged
+                // it, not re-derived from a corrupted rotation delta.
+            } else {
+                Solver._deriveAngularVelocity(b.angular_velocity, prevRot, b.rotation, h);
+            }
         }
 
         // 5. Friction + restitution, applied in the VELOCITY pass (Muller et al. 2020 sec 3.6). This
@@ -637,7 +687,10 @@ class Solver {
         const maxImpulse = Math.max(rollingFriction * Math.abs(point.normalLambda) / h, staticFloor);
         if (maxImpulse <= 0) return;
         let j = relWMag / wSum; // impulse to fully zero the relative angular velocity
-        if (j > maxImpulse) j = maxImpulse;
+        // Below Solver.ROLLING_FULL_STOP_THRESHOLD, always fully stop instead of clamping to the
+        // budget. A settled round shape's residual spin sits in this tiny band; clamping it to a
+        // small fraction every substep never lets it reach exact zero, it only ever shrinks it.
+        if (relWMag > Solver.ROLLING_FULL_STOP_THRESHOLD && j > maxImpulse) j = maxImpulse;
 
         if (bodyA._massInverted > 0) {
             const IA = bodyA._worldInverseInertiaTensor;
