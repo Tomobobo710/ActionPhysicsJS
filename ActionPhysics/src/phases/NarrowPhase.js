@@ -42,6 +42,7 @@ class NarrowPhase {
         this._contactPool = []; // reused ContactDetails objects, grown as needed, never shrunk
         this._poolIndex = 0;
         this._axis = new Vector3(); // _addAxialLineContacts scratch
+        this._apex = new Vector3(); this._rim = new Vector3(); // _addConeSlantContacts scratch
     }
 
     _nextPooledContact() {
@@ -88,6 +89,13 @@ class NarrowPhase {
                 // line and the points' torques cancel by construction. Real surface geometry, each an
                 // independent impulse-carrying contact (NOT snapshot 24's synthesized mirror).
                 this._addAxialLineContacts(contact, primitivePairs[i].a, primitivePairs[i].b, list, margin);
+                // A cone resting on its slant touches along the apex-to-down-rim edge. Add those two
+                // real endpoints as their own contacts, each with its OWN true depth to the contact
+                // plane - an endpoint lifted off the surface (e.g. the apex while the cone is still
+                // tip-up mid-settle) gets a negative depth and is culled, so this only ever engages the
+                // endpoints that are genuinely in contact, and does not fabricate a contact that would
+                // fight the cone's settling into flush.
+                this._addConeSlantContacts(contact, primitivePairs[i].a, primitivePairs[i].b, list, margin);
             }
 
             // Ensure a manifold exists for this pair even if this tick found zero contacts for it
@@ -274,6 +282,80 @@ class NarrowPhase {
             if (extra.signedDistance >= -margin) list.push(extra);
         }
     }
+
+    // A cone resting on its slant touches the surface along the apex-to-down-rim edge. Those two
+    // endpoints - apex on the axis at local (0,+hh,0), and the down-side base-rim point - are the true
+    // contact line. Unlike a cylinder's barrel they are asymmetric about the COM, so the axial
+    // bracketing does not apply; they are added here at their real positions, each with its own depth.
+    _addConeSlantContacts(primary, placedA, placedB, list, margin) {
+        let cone = null;
+        if (placedA.shape.type === 'cone') cone = placedA;
+        else if (placedB.shape.type === 'cone') cone = placedB;
+        if (!cone) return;
+        const R = cone.shape.radius, hh = cone.shape.halfHeight;
+
+        // Slant contact only. A cone resting flush on its slant has its axis tilted UP from horizontal
+        // by exactly its own half-angle (atan(R / 2*hh)), so axis . normal = sin(halfAngle) at rest -
+        // NOT ~0 the way a cylinder's horizontal axis is. Gating a cone with the cylinder's
+        // near-perpendicular threshold wrongly rejects it (a fat cone's sin(halfAngle) exceeds 0.17).
+        // The correct discriminant is: is this the SLANT (axis . normal ~ +sin(halfAngle), apex up) or
+        // an END CAP (base-down: axis . normal ~ +1; tip-down: ~ -1)? Accept a band around the slant
+        // value and reject the caps.
+        this._axis.set(0, 1, 0);
+        cone.rotation.transformVectorInPlace(this._axis);
+        const nx = primary.normal.x, ny = primary.normal.y, nz = primary.normal.z;
+        const axisDotN = this._axis.x * nx + this._axis.y * ny + this._axis.z * nz;
+        const halfAngle = Scalar.atan2(R, 2 * hh);
+        const slantDot = Scalar.sin(halfAngle); // |axis . normal| when resting flush on the slant
+        // Reject unless within a tolerance of the slant orientation (excludes both end caps, where
+        // |axisDotN| ~ 1, and a barrel-like near-0 which a cone does not have).
+        if (Math.abs(Math.abs(axisDotN) - slantDot) > 0.25) return;
+
+        // Down-side rim direction: -normal brought into the cone's local frame, projected off the axis
+        // onto the base plane (local x/z). That is the base-circle direction whose rim point is lowest
+        // against the contact normal - the one that actually touches.
+        this._rim.set(-nx, -ny, -nz);
+        NarrowPhase._invRot.copy(cone.rotation).invert().transformVectorInPlace(this._rim);
+        let dx = this._rim.x, dz = this._rim.z;
+        const dlen = Math.sqrt(dx * dx + dz * dz);
+        if (dlen < 1e-6) return; // -normal along the axis: end-cap, not a slant
+        dx /= dlen; dz /= dlen;
+
+        // Apex and down-rim in world space.
+        this._apex.set(0, hh, 0);
+        cone.rotation.transformVectorInPlace(this._apex); this._apex.addInPlace(cone.position);
+        this._rim.set(dx * R, -hh, dz * R);
+        cone.rotation.transformVectorInPlace(this._rim); this._rim.addInPlace(cone.position);
+
+        this._addConeEndpoint(this._apex, primary, margin, list);
+        this._addConeEndpoint(this._rim, primary, margin, list);
+    }
+
+    // Adds one cone endpoint as a contact, with its OWN depth relative to the primary contact plane.
+    // The plane passes through primary.point with the primary normal (which points from B to A). A
+    // point DEEPER on the penetrating side than the primary has a larger signed distance; a point
+    // lifted off the surface has a smaller (eventually negative) one and is culled past the margin -
+    // which is exactly what keeps a not-yet-flush cone's airborne apex from being a fabricated contact.
+    _addConeEndpoint(worldPoint, primary, margin, list) {
+        const nx = primary.normal.x, ny = primary.normal.y, nz = primary.normal.z;
+        const ox = worldPoint.x - primary.point.x, oy = worldPoint.y - primary.point.y, oz = worldPoint.z - primary.point.z;
+        // normal points B->A (out of the flat body toward the cone); a point further along +normal is
+        // LESS penetrating, so depth relative to the primary is +(offset . normal) below... verified
+        // against the flush cone: normal is (0,-1,0), a lower endpoint (offset.y<0) must read DEEPER,
+        // and (offset . normal) = -offset.y > 0 for that endpoint - so this sign is correct.
+        const deeperBy = ox * nx + oy * ny + oz * nz;
+        const sd = primary.signedDistance + deeperBy;
+        if (sd < -margin) return; // lifted off past the speculative margin - not a contact
+        const extra = this._nextPooledContact();
+        extra.normal.set(nx, ny, nz);
+        extra.signedDistance = sd;
+        extra.point.copy(worldPoint);
+        extra.pointOnA.copy(worldPoint);
+        extra.pointOnB.copy(worldPoint);
+        list.push(extra);
+    }
 }
+
+NarrowPhase._invRot = new Quaternion();
 
 ActionPhysics.NarrowPhase = NarrowPhase;
