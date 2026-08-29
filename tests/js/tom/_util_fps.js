@@ -203,16 +203,16 @@
 	// bracket ordering a real game loop would use (mover.tick(dt) before world.step()).
 	function drive(t, controller, cmdFor, movers) {
 		var tick = 0;
-		// Tint the controller's body by its live movement sub-mode so state is readable in the viewer:
-		//   green = sliding, orange = slip (too-steep, no footing), base red = walk/normal.
-		// Set on controller.body every tick because a crouch/scale rebuild swaps the body instance.
-		function tintByState() {
-			var b = controller.body;
-			if (!b) { return; }
-			if (controller.sliding) { b._color = '#3fb950'; }
-			else if (controller._isSlipSurface(controller.groundNormal)) { b._color = '#e08a2b'; }
-			else { b._color = CONTROLLER_COLOR; }
-		}
+	// Tint the controller's body by its live movement sub-mode so state is readable in the viewer:
+	//   green = sliding, orange = slip (too-steep, no footing), base red = walk/normal.
+	// Set on controller.body every tick because a crouch/scale rebuild swaps the body instance.
+	function tintByState() {
+		var b = controller.body;
+		if (!b) { return; }
+		if (controller.sliding) { b._color = '#3fb950'; }
+		else if (controller._isSlipSurface(controller.groundNormal)) { b._color = '#e08a2b'; }
+		else { b._color = CONTROLLER_COLOR; }
+	}
 		t.stepWorld = function (world) {
 			tick++;
 			if (movers) movers.forEach(function (m) { m.tick(DT); });
