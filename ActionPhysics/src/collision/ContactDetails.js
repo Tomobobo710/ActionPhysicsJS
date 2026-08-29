@@ -26,6 +26,19 @@ class ContactDetails {
         this.tangentLambda1 = 0;
         this.tangentLambda2 = 0;
 
+        // Persistent VELOCITY-space accumulated impulses for this contact point, warm-started across
+        // ticks by the manifold's point-matching (like normalLambda above, but for the velocity solve
+        // rather than the position solve). These are the contact's own memory of the impulse it has
+        // been sustaining: a box held under load carries a steady, nonzero normalImpulse tick after
+        // tick, which is what lets "held under load" be told apart from "actually closing" as STATE
+        // rather than re-inferred from an instantaneous relative-velocity heuristic every substep.
+        // Distinct from normalLambda/tangentLambda (position-space XPBD multipliers) on purpose: this
+        // is the foundation the velocity solve accumulates into. Owned entirely by the solver; carried
+        // here only so the manifold can persist it across the point-matching step, same as the lambdas.
+        this.normalImpulse = 0;
+        this.frictionImpulse1 = 0;
+        this.frictionImpulse2 = 0;
+
         // Body-LOCAL anchor offsets for pointOnA/pointOnB, set once by the manifold when this
         // point is created (ContactManifold._addPoint / update()'s new-point path) - NOT
         // recomputed by copy()/setFromGJKSeparated/setFromEPA, which only carry the world-space

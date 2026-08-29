@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-25T23:01:20.819Z
+// ActionPhysics 0.1.0 — built 2026-08-25T23:02:01.525Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine.
@@ -5634,6 +5634,19 @@ class ContactDetails {
         this.tangentLambda1 = 0;
         this.tangentLambda2 = 0;
 
+        // Persistent VELOCITY-space accumulated impulses for this contact point, warm-started across
+        // ticks by the manifold's point-matching (like normalLambda above, but for the velocity solve
+        // rather than the position solve). These are the contact's own memory of the impulse it has
+        // been sustaining: a box held under load carries a steady, nonzero normalImpulse tick after
+        // tick, which is what lets "held under load" be told apart from "actually closing" as STATE
+        // rather than re-inferred from an instantaneous relative-velocity heuristic every substep.
+        // Distinct from normalLambda/tangentLambda (position-space XPBD multipliers) on purpose: this
+        // is the foundation the velocity solve accumulates into. Owned entirely by the solver; carried
+        // here only so the manifold can persist it across the point-matching step, same as the lambdas.
+        this.normalImpulse = 0;
+        this.frictionImpulse1 = 0;
+        this.frictionImpulse2 = 0;
+
         // Body-LOCAL anchor offsets for pointOnA/pointOnB, set once by the manifold when this
         // point is created (ContactManifold._addPoint / update()'s new-point path) - NOT
         // recomputed by copy()/setFromGJKSeparated/setFromEPA, which only carry the world-space
@@ -5836,6 +5849,12 @@ class ContactManifold {
             const keepNormalLambda = existing.normalLambda;
             const keepTangentLambda1 = existing.tangentLambda1;
             const keepTangentLambda2 = existing.tangentLambda2;
+            // Same warm-start persistence for the velocity-space impulses (see ContactDetails) - a
+            // fresh narrowphase contact has zero impulse history, so carry the matched point's own
+            // accumulated impulse forward across the tick boundary, exactly as the lambdas are.
+            const keepNormalImpulse = existing.normalImpulse;
+            const keepFrictionImpulse1 = existing.frictionImpulse1;
+            const keepFrictionImpulse2 = existing.frictionImpulse2;
             // Preserve the ESTABLISHED contact normal across an exact-touch refresh. At a signed
             // distance within EXACT_TOUCH_BAND of zero (shapes touching flush, neither clearly
             // separated nor clearly overlapping), GJK/EPA's normal is genuinely ambiguous - the
@@ -5857,6 +5876,9 @@ class ContactManifold {
             existing.normalLambda = keepNormalLambda; // warm start restored
             existing.tangentLambda1 = keepTangentLambda1;
             existing.tangentLambda2 = keepTangentLambda2;
+            existing.normalImpulse = keepNormalImpulse; // velocity-space warm start restored
+            existing.frictionImpulse1 = keepFrictionImpulse1;
+            existing.frictionImpulse2 = keepFrictionImpulse2;
             if (keepNormal) existing.normal.copy(keepNormal); // established normal kept through the ambiguous band
             this._localAnchors[i] = ContactManifold._toLocal(this.bodyA, existing.pointOnA);
             if (!wasOverlapping && existing.signedDistance >= 0) this._emitBoth('contact', existing);
@@ -5893,6 +5915,7 @@ class ContactManifold {
     _addPoint(contact) {
         const point = contact.clone();
         point.normalLambda = 0; point.tangentLambda1 = 0; point.tangentLambda2 = 0; // fresh point: no warm-start data yet
+        point.normalImpulse = 0; point.frictionImpulse1 = 0; point.frictionImpulse2 = 0; // same: velocity-space impulses start empty on a genuinely new contact
         // Local anchors are set ONCE here, at creation - see ContactDetails.setLocalAnchors and
         // Solver.js's class header for why the solver needs these (recomputing the contact's
         // CURRENT gap every substep) rather than reusing the single signedDistance this tick's
