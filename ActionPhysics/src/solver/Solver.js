@@ -23,6 +23,7 @@ class Solver {
         this._prevRot = new Map();
         this._preGravityVel = new Map();
         this._biasDelta = new Map(); // per-body bias-only correction this substep; excluded from derived velocity
+        this._deferredRotation = new Map(); // per-body accumulated small-angle rotation for a multi-point manifold pass
     }
 
     // Margin widening what counts as "explainable by the body's own velocity" in _solvePoint's
@@ -78,9 +79,21 @@ class Solver {
 
     _solveManifold(manifold, h) {
         const bodyA = manifold.bodyA, bodyB = manifold.bodyB;
-        for (let i = 0; i < manifold.points.length; i++) {
-            this._solvePoint(manifold.points[i], bodyA, bodyB, h);
+        const n = manifold.points.length;
+        if (n <= 1) {
+            if (n === 1) this._solvePoint(manifold.points[0], bodyA, bodyB, h);
+            return;
         }
+        // Multiple points: defer each point's angular correction (see _applyAngularCorrection).
+        // Quaternion composition doesn't commute, so several small rotations applied one at a time
+        // don't cancel out even when their axis-angle vectors sum to zero by symmetry - summing
+        // first and applying once removes that.
+        const defer = this._deferredRotation;
+        for (let i = 0; i < n; i++) {
+            this._solvePoint(manifold.points[i], bodyA, bodyB, h, defer, true);
+        }
+        this._flushDeferredRotation(bodyA, defer);
+        this._flushDeferredRotation(bodyB, defer);
     }
 
     _solveContactVelocities(manifolds, gravity, h) {
@@ -109,5 +122,11 @@ class Solver {
 // the floor at 0.31 m/s, a genuine restitution-worthy impact, and got fully suppressed under a
 // flat 0.5 m/s cutoff).
 Solver.RESTITUTION_SLOP_FACTOR = 8;
+
+// Largest single-point penetration (C) a multi-point manifold's position-solve resolves in one
+// substep (see PositionSolve.js's cappedC; never applied to a single-point manifold). The
+// remainder is real, live-measured penetration, picked up on the next substep instead of all at
+// once - keeps one point's correction from moving the body before its manifold siblings are read.
+Solver.MAX_PENETRATION_PER_SUBSTEP = 0.005;
 
 ActionPhysics.Solver = Solver;

@@ -92,7 +92,7 @@
 		// perfectly flat drop - any nonzero steady-state spin here is a geometry bug, not noise.
 		var TICKS = 240;
 		var w = t.makeWorld({ gravity: -9.8 });
-		t.box(w, 20, 0.5, 20, 0, { pos: [0, -0.5, 0], color: '#243B2A' });
+		t.box(w, 20, 0.5, 20, 0, { pos: [0, -0.5, 0], restitution: 0, color: '#243B2A' });
 		var box = t.box(w, 0.5, 0.5, 0.5, 1, { pos: [0, 3, 0], color: '#4af' });
 		var tracker = makeTracker(t, [{ body: box, x0: 0, y0: 0.5, z0: 0 }], TICKS, -0.5);
 
@@ -132,7 +132,7 @@
 		// means the resting manifold itself is injecting force/torque, not that a landing was rough.
 		var TICKS = 180;
 		var w = t.makeWorld({ gravity: -9.8 });
-		t.box(w, 20, 0.5, 20, 0, { pos: [0, -0.5, 0], color: '#243B2A' });
+		t.box(w, 20, 0.5, 20, 0, { pos: [0, -0.5, 0], restitution: 0, color: '#243B2A' });
 		var b0 = t.box(w, 0.5, 0.5, 0.5, 1, { pos: [0, 0.5, 0], color: '#4af' });
 		var b1 = t.box(w, 0.5, 0.5, 0.5, 1, { pos: [0, 1.5, 0], color: '#f84' });
 		var tracker = makeTracker(t, [{ body: b0, x0: 0, y0: 0.5, z0: 0 }, { body: b1, x0: 0, y0: 1.5, z0: 0 }], TICKS, -0.5);
@@ -176,7 +176,7 @@
 		// collapsing what should be a 4-point manifold into 1 stray point and torquing the bridge over.
 		var TICKS = 400;
 		var w = t.makeWorld({ gravity: -9.8 });
-		t.box(w, 20, 0.5, 20, 0, { pos: [0, -0.5, 0], color: '#243B2A' });
+		t.box(w, 20, 0.5, 20, 0, { pos: [0, -0.5, 0], restitution: 0, color: '#243B2A' });
 		t.box(w, 1, 1, 1, 1, { pos: [-1.3, 1, 0], color: '#4af' });
 		t.box(w, 1, 1, 1, 1, { pos: [1.3, 1, 0], color: '#4af' });
 		var bridge = t.box(w, 1, 1, 1, 1, { pos: [0, 3.2, 0], color: '#f84' });
@@ -228,7 +228,7 @@
 		// slice of one.
 		var TICKS = 500;
 		var w = t.makeWorld({ gravity: -9.8 });
-		t.box(w, 20, 0.5, 20, 0, { pos: [0, -0.5, 0], color: '#243B2A' });
+		t.box(w, 20, 0.5, 20, 0, { pos: [0, -0.5, 0], restitution: 0, color: '#243B2A' });
 
 		var boxes = [];
 		var LAYERS = 4, GAP = 2.2, INSET = 0.3;
@@ -307,7 +307,7 @@
 		var rot = AP.Quaternion.multiply(qx2, AP.Quaternion.multiply(qz, qx)).normalize();
 
 		var w = t.makeWorld({ gravity: -9.8 });
-		t.box(w, 20, 0.5, 20, 0, { pos: [0, -0.5, 0], color: '#243B2A' });
+		t.box(w, 20, 0.5, 20, 0, { pos: [0, -0.5, 0], restitution: 0, color: '#243B2A' });
 		var box = t.box(w, 0.5, 0.5, 0.5, 1, {
 			pos: [0, 3, 0], rot: [rot.x, rot.y, rot.z, rot.w],
 			friction: 0.5, restitution: 0, color: '#4af'
@@ -350,7 +350,7 @@
 		// point standing in for what should be all 4 corners together.
 		var TICKS = 200;
 		var w = t.makeWorld({ gravity: -9.8 });
-		t.box(w, 20, 0.5, 20, 0, { pos: [0, -0.5, 0], color: '#243B2A' });
+		t.box(w, 20, 0.5, 20, 0, { pos: [0, -0.5, 0], restitution: 0, color: '#243B2A' });
 		var box = t.box(w, 0.5, 0.5, 0.5, 1, { pos: [0, 3, 0], vel: [0, -15, 0], friction: 0.5, restitution: 0, color: '#4af' });
 
 		var worstLateralV = 0, worstSpin = 0, landed = false, minY = Infinity, tick0 = 0;
@@ -396,7 +396,7 @@
 		// axis could hide behind entirely.
 		var TICKS = 1000;
 		var w = t.makeWorld({ gravity: -9.8 });
-		t.box(w, 20, 0.5, 20, 0, { pos: [0, -0.5, 0], color: '#243B2A' });
+		t.box(w, 20, 0.5, 20, 0, { pos: [0, -0.5, 0], restitution: 0, color: '#243B2A' });
 
 		var boxes = [];
 		var LAYERS = 3, GAP = 2.2, INSET = 0.3;

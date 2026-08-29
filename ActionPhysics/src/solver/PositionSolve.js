@@ -1,11 +1,8 @@
 // Phase 2: position-level XPBD constraint solve for a single contact point, plus the effective-mass
-// and positional-correction helpers it uses. Speculative contacts, restitution capture, and the
-// bias/velocity split all live here - see the inline comments at each step for the specific bug
-// each one fixes (kept because they document non-obvious physical reasoning, not because they're
-// load-bearing narration).
+// and positional-correction helpers it uses.
 var proto = Solver.prototype;
 
-proto._solvePoint = function (point, bodyA, bodyB, h) {
+proto._solvePoint = function (point, bodyA, bodyB, h, deferRotation, capPenetration) {
     point.currentAnchorAInto(this._rA, bodyA);
     point.currentAnchorBInto(this._rB, bodyB);
     const nx = point.normal.x, ny = point.normal.y, nz = point.normal.z;
@@ -28,10 +25,14 @@ proto._solvePoint = function (point, bodyA, bodyB, h) {
     const wSum = this._effectiveMass(bodyA, bodyB, this._rA, this._rB, nx, ny, nz);
     if (wSum < 1e-12) return; // both bodies immovable along this normal
 
+    // capPenetration is only passed true for a multi-point manifold (see Solver.MAX_PENETRATION_PER_SUBSTEP) -
+    // a single-point manifold always resolves C fully in one substep.
+    const cappedC = capPenetration ? Math.min(C, Solver.MAX_PENETRATION_PER_SUBSTEP) : C;
+
     // Rigid (compliance-free) contact: deltaLambda = -C/wSum. normalLambda accumulates <= 0
     // (a contact can push apart, never pull together).
     const oldLambda = point.normalLambda;
-    let newLambda = oldLambda - C / wSum;
+    let newLambda = oldLambda - cappedC / wSum;
     if (newLambda > 0) newLambda = 0;
     const deltaLambda = newLambda - oldLambda;
     point.normalLambda = newLambda;
@@ -43,12 +44,12 @@ proto._solvePoint = function (point, bodyA, bodyB, h) {
     // fabricated kinetic energy.
     const liveRelVel = this._contactRelativeNormalVelocity(point, bodyA, bodyB);
     const explainableBySubstep = Math.max(liveRelVel, 0) * h * Solver.EXPLAINABLE_MARGIN;
-    let velocityC = C;
+    let velocityC = cappedC;
     if (velocityC > explainableBySubstep) velocityC = explainableBySubstep;
     const velocityDelta = -velocityC / wSum;
     const biasDelta = deltaLambda - velocityDelta;
-    this._applyPositionalCorrection(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, velocityDelta, false);
-    this._applyPositionalCorrection(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, biasDelta, true);
+    this._applyPositionalCorrection(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, velocityDelta, false, deferRotation);
+    this._applyPositionalCorrection(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, biasDelta, true, deferRotation);
 };
 
 // Generalized inverse mass along direction (dx,dy,dz): linear + angular contribution from both bodies.
@@ -80,7 +81,9 @@ proto._effectiveMass = function (bodyA, bodyB, rA, rB, dx, dy, dz) {
 // `bias`: true for the non-explainable share of a split correction - the body still moves (so the
 // next substep measures a smaller overlap), but the movement is also recorded into this._biasDelta
 // for step 4 to subtract back out.
-proto._applyPositionalCorrection = function (bodyA, bodyB, rA, rB, nx, ny, nz, dLambda, bias) {
+// `deferRotation` (optional): accumulates the angular delta instead of composing it into
+// body.rotation immediately - see _applyAngularCorrection / _flushDeferredRotation.
+proto._applyPositionalCorrection = function (bodyA, bodyB, rA, rB, nx, ny, nz, dLambda, bias, deferRotation) {
     const px = nx * dLambda, py = ny * dLambda, pz = nz * dLambda;
 
     if (bodyA._massInverted > 0) {
@@ -92,7 +95,7 @@ proto._applyPositionalCorrection = function (bodyA, bodyB, rA, rB, nx, ny, nz, d
             const b = this._biasDelta.get(bodyA.id);
             if (b) { b.x += dx; b.y += dy; b.z += dz; }
         }
-        this._applyAngularCorrection(bodyA, rA, -px, -py, -pz);
+        this._applyAngularCorrection(bodyA, rA, -px, -py, -pz, deferRotation);
     }
     if (bodyB._massInverted > 0) {
         const dx = px * bodyB._massInverted * bodyB.linear_factor.x;
@@ -103,17 +106,34 @@ proto._applyPositionalCorrection = function (bodyA, bodyB, rA, rB, nx, ny, nz, d
             const b = this._biasDelta.get(bodyB.id);
             if (b) { b.x += dx; b.y += dy; b.z += dz; }
         }
-        this._applyAngularCorrection(bodyB, rB, px, py, pz);
+        this._applyAngularCorrection(bodyB, rB, px, py, pz, deferRotation);
     }
 };
 
 // Small-angle PBD angular update from a linear positional impulse p at offset r: I^-1*(r x p)*0.5.
-proto._applyAngularCorrection = function (body, r, px, py, pz) {
+// With `deferRotation` supplied, adds the small-angle delta into its per-body accumulator instead
+// of composing it into body.rotation immediately - see _applyPositionalCorrection / _flushDeferredRotation.
+proto._applyAngularCorrection = function (body, r, px, py, pz, deferRotation) {
     const torqueX = r.y * pz - r.z * py, torqueY = r.z * px - r.x * pz, torqueZ = r.x * py - r.y * px;
     const I = body._worldInverseInertiaTensor;
     const wx = I.e00 * torqueX + I.e01 * torqueY + I.e02 * torqueZ;
     const wy = I.e10 * torqueX + I.e11 * torqueY + I.e12 * torqueZ;
     const wz = I.e20 * torqueX + I.e21 * torqueY + I.e22 * torqueZ;
-    this._angularCorrA.set(wx * body.angular_factor.x, wy * body.angular_factor.y, wz * body.angular_factor.z);
+    const ax = wx * body.angular_factor.x, ay = wy * body.angular_factor.y, az = wz * body.angular_factor.z;
+    if (deferRotation) {
+        const acc = deferRotation.get(body.id);
+        if (acc) { acc.x += ax; acc.y += ay; acc.z += az; return; }
+    }
+    this._angularCorrA.set(ax, ay, az);
     Solver._integrateRotation(body.rotation, this._angularCorrA, 1); // h=1: this IS the delta, not a rate
+};
+
+// Applies one body's accumulated deferred small-angle rotation (summed across every point in the
+// manifold's pass) as a single quaternion update, then clears the accumulator.
+proto._flushDeferredRotation = function (body, deferRotation) {
+    const acc = deferRotation.get(body.id);
+    if (!acc || (acc.x === 0 && acc.y === 0 && acc.z === 0)) return;
+    this._angularCorrA.set(acc.x, acc.y, acc.z);
+    Solver._integrateRotation(body.rotation, this._angularCorrA, 1);
+    acc.x = 0; acc.y = 0; acc.z = 0;
 };
