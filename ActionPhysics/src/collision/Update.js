@@ -16,7 +16,7 @@ proto.update = function (newContacts, dt) {
         let bestJ = -1, bestDistSq = matchDist * matchDist;
         for (let j = 0; j < newContacts.length; j++) {
             if (matched[j]) continue;
-            const localCandidate = ContactManifold._toLocal(this.bodyA, newContacts[j].pointOnA);
+            const localCandidate = ContactManifold._toLocal(this.bodyA, newContacts[j].pointOnA, ContactManifold._scratchLocal);
             const dx = localCandidate.x - existingLocal.x, dy = localCandidate.y - existingLocal.y, dz = localCandidate.z - existingLocal.z;
             const distSq = dx * dx + dy * dy + dz * dz;
             if (distSq < bestDistSq) { bestDistSq = distSq; bestJ = j; }
@@ -50,7 +50,7 @@ proto.update = function (newContacts, dt) {
         existing.tangentLambda1 = keepTangentLambda1;
         existing.tangentLambda2 = keepTangentLambda2;
         if (keepNormal) existing.normal.copy(keepNormal);
-        this._localAnchors[i] = ContactManifold._toLocal(this.bodyA, existing.pointOnA);
+        ContactManifold._toLocal(this.bodyA, existing.pointOnA, existingLocal);
         if (!wasOverlapping && existing.signedDistance >= 0) this._emitBoth('contact', existing);
     }
 
@@ -107,10 +107,12 @@ proto._emitBoth = function (event, contact) {
     this.bodyB.emit(event, { contact: contact, other: this.bodyA });
 };
 
-// World point -> bodyA-local space, for next-tick matching.
-ContactManifold._toLocal = function (bodyA, worldPoint) {
-    const rel = Vector3.subInto(new Vector3(), worldPoint, bodyA.position);
-    const invRot = new Quaternion().copy(bodyA.rotation).invert();
-    invRot.transformVectorInPlace(rel);
-    return rel;
+// World point -> bodyA-local space, for next-tick matching. Writes into `out` (caller-owned - pass
+// a scratch Vector3 for a transient comparison, or a fresh one to store long-term, e.g. into
+// this._localAnchors).
+ContactManifold._toLocal = function (bodyA, worldPoint, out) {
+    Vector3.subInto(out, worldPoint, bodyA.position);
+    ContactManifold._scratchInvRot.copy(bodyA.rotation).invert();
+    ContactManifold._scratchInvRot.transformVectorInPlace(out);
+    return out;
 };

@@ -12,6 +12,9 @@ class NarrowPhase {
         // one at a time, never interleaved.
         this._gjk = new GJK();
         this._epa = new EPA();
+        // Reused across every GJK/EPA-fallback pair this tick, rebound per pair via setSides() -
+        // see PairTest.js.
+        this._support = new MinkowskiSupport({ shape: null, position: new Vector3(), rotation: new Quaternion() }, { shape: null, position: new Vector3(), rotation: new Quaternion() });
         this._contactPool = []; // reused ContactDetails, grown as needed, never shrunk
         this._poolIndex = 0;
         this._pairResultScratch = []; // reused per-pair contact list, see PairTest.js

@@ -7,7 +7,7 @@ proto._addPoint = function (contact) {
     const point = contact.clone();
     point.normalLambda = 0; point.tangentLambda1 = 0; point.tangentLambda2 = 0; // fresh: no warm-start data
     point.setLocalAnchors(this.bodyA, this.bodyB);
-    const local = ContactManifold._toLocal(this.bodyA, point.pointOnA);
+    const local = ContactManifold._toLocal(this.bodyA, point.pointOnA, new Vector3());
 
     if (this.points.length < ContactManifold.MAX_POINTS) {
         this.points.push(point);

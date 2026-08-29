@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-26T21:04:33.751Z
+// ActionPhysics 0.1.0 — built 2026-08-26T21:32:08.498Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine.
@@ -3605,7 +3605,7 @@ class RigidBody {
         // against this engine should behave the same as one built through that wrapper.
         // angular_damping is not 0: Coulomb friction opposes tangential SLIP, and a cleanly rolling
         // shape has ~zero slip at the contact by construction, so without angular damping a rolling
-        // body never stops on friction alone (see rolling_friction below and Contacts.js).
+        // body never stops on friction alone (see rolling_friction below and VelocitySolve.js).
         this.friction = 3.0;
         this.restitution = 0.33;
         this.linear_damping = 0.1;
@@ -4289,6 +4289,14 @@ class MinkowskiSupport {
         this._invRotA.copy(this.a.rotation).invert();
         this._invRotB.copy(this.b.rotation).invert();
         return this;
+    }
+
+    // Rebinds this instance to a different pair (e.g. reused across pairs within one tick) and
+    // re-derives the cached inverse rotations for the new sides.
+    setSides(placedA, placedB) {
+        this.a = placedA;
+        this.b = placedB;
+        return this.refresh();
     }
 
     // World-space support of one placed side along world direction `dir`.
@@ -5272,6 +5280,9 @@ ContactManifold.EXACT_TOUCH_BAND = 0.001;
 ContactManifold._scratchNormal = new Vector3();
 ContactManifold._scratchRA = new Vector3();
 ContactManifold._scratchRB = new Vector3();
+ContactManifold._scratchInvRot = new Quaternion();
+// Transient-comparison scratch for _toLocal - see Update.js's matching loop.
+ContactManifold._scratchLocal = new Vector3();
 
 ActionPhysics.ContactManifold = ContactManifold;
 
@@ -5295,7 +5306,7 @@ proto.update = function (newContacts, dt) {
         let bestJ = -1, bestDistSq = matchDist * matchDist;
         for (let j = 0; j < newContacts.length; j++) {
             if (matched[j]) continue;
-            const localCandidate = ContactManifold._toLocal(this.bodyA, newContacts[j].pointOnA);
+            const localCandidate = ContactManifold._toLocal(this.bodyA, newContacts[j].pointOnA, ContactManifold._scratchLocal);
             const dx = localCandidate.x - existingLocal.x, dy = localCandidate.y - existingLocal.y, dz = localCandidate.z - existingLocal.z;
             const distSq = dx * dx + dy * dy + dz * dz;
             if (distSq < bestDistSq) { bestDistSq = distSq; bestJ = j; }
@@ -5329,7 +5340,7 @@ proto.update = function (newContacts, dt) {
         existing.tangentLambda1 = keepTangentLambda1;
         existing.tangentLambda2 = keepTangentLambda2;
         if (keepNormal) existing.normal.copy(keepNormal);
-        this._localAnchors[i] = ContactManifold._toLocal(this.bodyA, existing.pointOnA);
+        ContactManifold._toLocal(this.bodyA, existing.pointOnA, existingLocal);
         if (!wasOverlapping && existing.signedDistance >= 0) this._emitBoth('contact', existing);
     }
 
@@ -5386,12 +5397,14 @@ proto._emitBoth = function (event, contact) {
     this.bodyB.emit(event, { contact: contact, other: this.bodyA });
 };
 
-// World point -> bodyA-local space, for next-tick matching.
-ContactManifold._toLocal = function (bodyA, worldPoint) {
-    const rel = Vector3.subInto(new Vector3(), worldPoint, bodyA.position);
-    const invRot = new Quaternion().copy(bodyA.rotation).invert();
-    invRot.transformVectorInPlace(rel);
-    return rel;
+// World point -> bodyA-local space, for next-tick matching. Writes into `out` (caller-owned - pass
+// a scratch Vector3 for a transient comparison, or a fresh one to store long-term, e.g. into
+// this._localAnchors).
+ContactManifold._toLocal = function (bodyA, worldPoint, out) {
+    Vector3.subInto(out, worldPoint, bodyA.position);
+    ContactManifold._scratchInvRot.copy(bodyA.rotation).invert();
+    ContactManifold._scratchInvRot.transformVectorInPlace(out);
+    return out;
 };
 
 
@@ -5405,7 +5418,7 @@ proto._addPoint = function (contact) {
     const point = contact.clone();
     point.normalLambda = 0; point.tangentLambda1 = 0; point.tangentLambda2 = 0; // fresh: no warm-start data
     point.setLocalAnchors(this.bodyA, this.bodyB);
-    const local = ContactManifold._toLocal(this.bodyA, point.pointOnA);
+    const local = ContactManifold._toLocal(this.bodyA, point.pointOnA, new Vector3());
 
     if (this.points.length < ContactManifold.MAX_POINTS) {
         this.points.push(point);
@@ -5522,6 +5535,9 @@ class NarrowPhase {
         // one at a time, never interleaved.
         this._gjk = new GJK();
         this._epa = new EPA();
+        // Reused across every GJK/EPA-fallback pair this tick, rebound per pair via setSides() -
+        // see PairTest.js.
+        this._support = new MinkowskiSupport({ shape: null, position: new Vector3(), rotation: new Quaternion() }, { shape: null, position: new Vector3(), rotation: new Quaternion() });
         this._contactPool = []; // reused ContactDetails, grown as needed, never shrunk
         this._poolIndex = 0;
         this._pairResultScratch = []; // reused per-pair contact list, see PairTest.js
@@ -6153,7 +6169,7 @@ proto._testPrimitivePair = function (placedA, placedB) {
     }
 
     const contact = this._nextPooledContact();
-    const support = new MinkowskiSupport(placedA, placedB);
+    const support = this._support.setSides(placedA, placedB);
     const gjkResult = this._gjk.run(support);
     if (gjkResult.overlapping) {
         const epaResult = this._epa.run(support, gjkResult.simplex);
@@ -6348,7 +6364,7 @@ class Solver {
             }
             if (manifold.points.length > 0) {
                 // Reference point for rolling resistance: the most-engaged one (largest |normalLambda|),
-                // not always points[0] - see Contacts.js._solveRollingResistance.
+                // not always points[0] - see VelocitySolve.js._solveRollingResistance.
                 let ref = manifold.points[0];
                 for (let i = 1; i < manifold.points.length; i++) {
                     if (Math.abs(manifold.points[i].normalLambda) > Math.abs(ref.normalLambda)) ref = manifold.points[i];

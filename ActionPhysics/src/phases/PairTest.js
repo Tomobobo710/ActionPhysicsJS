@@ -67,7 +67,7 @@ proto._testPrimitivePair = function (placedA, placedB) {
     }
 
     const contact = this._nextPooledContact();
-    const support = new MinkowskiSupport(placedA, placedB);
+    const support = this._support.setSides(placedA, placedB);
     const gjkResult = this._gjk.run(support);
     if (gjkResult.overlapping) {
         const epaResult = this._epa.run(support, gjkResult.simplex);

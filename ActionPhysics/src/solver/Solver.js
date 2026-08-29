@@ -97,7 +97,7 @@ class Solver {
             }
             if (manifold.points.length > 0) {
                 // Reference point for rolling resistance: the most-engaged one (largest |normalLambda|),
-                // not always points[0] - see Contacts.js._solveRollingResistance.
+                // not always points[0] - see VelocitySolve.js._solveRollingResistance.
                 let ref = manifold.points[0];
                 for (let i = 1; i < manifold.points.length; i++) {
                     if (Math.abs(manifold.points[i].normalLambda) > Math.abs(ref.normalLambda)) ref = manifold.points[i];

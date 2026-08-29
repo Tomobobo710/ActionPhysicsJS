@@ -23,6 +23,14 @@ class MinkowskiSupport {
         return this;
     }
 
+    // Rebinds this instance to a different pair (e.g. reused across pairs within one tick) and
+    // re-derives the cached inverse rotations for the new sides.
+    setSides(placedA, placedB) {
+        this.a = placedA;
+        this.b = placedB;
+        return this.refresh();
+    }
+
     // World-space support of one placed side along world direction `dir`.
     static supportOfInto(out, placed, invRot, dir, scratchDir) {
         invRot.transformVectorInto(dir, scratchDir);

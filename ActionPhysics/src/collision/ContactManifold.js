@@ -38,5 +38,8 @@ ContactManifold.EXACT_TOUCH_BAND = 0.001;
 ContactManifold._scratchNormal = new Vector3();
 ContactManifold._scratchRA = new Vector3();
 ContactManifold._scratchRB = new Vector3();
+ContactManifold._scratchInvRot = new Quaternion();
+// Transient-comparison scratch for _toLocal - see Update.js's matching loop.
+ContactManifold._scratchLocal = new Vector3();
 
 ActionPhysics.ContactManifold = ContactManifold;
