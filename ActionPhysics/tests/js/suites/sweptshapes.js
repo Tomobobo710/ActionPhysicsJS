@@ -1,15 +1,10 @@
-// Ported from Goblin's tests/js/chandler/sweptshapes.js. A LineSweptShape is a base shape (a box,
-// a sphere) dragged along a line segment - the volume it sweeps out, used for continuous/swept
-// collision. Checks its bounding box and its support points.
 (function (Runner) {
 	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;
 	var V = AP.Vector3;
 	var EPS = 1e-9;
-	var DESC = "A swept shape is a base shape (a box, a sphere) dragged along a line segment - the " +
-		"volume it sweeps out. It's how continuous collision avoids a fast object tunnelling through a " +
-		"wall. These check two fundamentals of the swept shape: its axis-aligned bounding box (min/max " +
-		"corners) and its support points (farthest point in a direction) are computed exactly.";
+	var DESC = "A swept shape is a base shape dragged along a line segment - the volume it sweeps " +
+		"out, used for swept collision. These check its bounding box and its support points.";
 
 	function sweptBox() { return new AP.LineSweptShape(new AP.BoxShape(1, 1, 1), new V(0, -2, 3), new V(5, 0, 0)); }
 	function sweptSphere() { return new AP.LineSweptShape(new AP.SphereShape(2), new V(-2, 0, 3), new V(-2, 1, -1)); }

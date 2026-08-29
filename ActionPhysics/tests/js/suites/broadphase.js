@@ -1,7 +1,3 @@
-// SAPBroadphase: candidate-pair generation over AABBs. Produces "which pairs MIGHT touch" -
-// plan.md's contract is no false negatives, and this suite checks exactly that boundary: pairs
-// that must appear, pairs that must not, and the filters (static-static, collision mask/group)
-// that remove a pair before midphase ever sees it.
 (function (Runner) {
 	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;

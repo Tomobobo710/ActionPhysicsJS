@@ -1,6 +1,3 @@
-// Deterministic transcendentals. Two properties matter and are tested separately: ACCURACY against
-// Math.*, and EXACT SYMMETRY — sin(-x) === -sin(x) bit-for-bit, because an asymmetric sine biases
-// everything that rotates and that integrates into visible drift.
 (function (Runner) {
 	Runner.suite('math');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;

@@ -1,6 +1,3 @@
-// Matrix3 (inertia tensors) and Matrix4 (rigid transforms). The load-bearing tests are the round-trips:
-// a matrix that inverts wrongly, or disagrees with the quaternion it was built from, produces bodies
-// that drift or spin for no visible reason.
 (function (Runner) {
 	Runner.suite('math');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;

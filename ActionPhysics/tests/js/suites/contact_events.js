@@ -1,6 +1,3 @@
-// Ported from Goblin's tests/js/chandler/contact-events.js. A static sphere and a dynamic sphere
-// fired straight down at it, gravity off. Listens for speculativeContact (preventable by returning
-// false), contact, and endContact on the static body as the dynamic one falls in and separates.
 (function (Runner) {
 	Runner.suite('collision');
 	var DESC = "The engine reports contact lifecycle events on a body: a predicted 'speculativeContact' " +

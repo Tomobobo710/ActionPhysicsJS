@@ -1,29 +1,8 @@
-// Friction and restitution (plan.md build step 7), plus the sphere-vs-large-box GJK/EPA robustness
-// fix these exercised.
+// Friction, restitution, and the sphere-vs-large-box GJK/EPA robustness regressions.
 //
-// FRICTION is a velocity-pass contact constraint (Muller et al. 2020 sec 3.6): after the position
-// solve sets velocities, the tangential contact-relative velocity is driven toward zero, capped by
-// the Coulomb limit mu*|normal impulse|/h. Below the cap the contact sticks (a box holds on a slope
-// shallower than its friction angle); at the cap it slides. This is NOT the derived-velocity clamp
-// plan.md forbids - that governed a whole body's velocity to hide a detection bug; this acts only on
-// the contact-relative tangential velocity, which is what friction physically IS.
-//
-// RESTITUTION is the normal half of the same pass: the contact-relative approach speed is captured
-// before the position solve zeroes it, and a fraction e of it is restored as a separating velocity.
-// e=0 is inelastic (no bounce), e=1 returns all the energy (rebounds to the drop height).
-//
-// The sphere tests are regressions for a real GJK/EPA bug these surfaced: a small sphere shallowly
-// penetrating a much larger box was mis-classified by GJK as separated (its seed tetrahedra could
-// not enclose the origin for that size ratio, and the incremental walk then stalled at the contact
-// face), so EPA never ran and the penetration went uncorrected until the body launched. GJK now
-// disambiguates a boundary-origin case with an explicit strict-interior probe, and EPA completes a
-// degenerate (<4-point) simplex into a real tetrahedron instead of reading past its vertex count.
-//
-// Every dynamics test here is built through the shared harness (t.makeWorld/t.box/t.sphere) and
-// asserts LIVE against the ticking world via t.expect + t.simulate, and is marked visual so it's
-// watchable (a slide-to-stop, a slope hold/slide, a bounce). The two GJK/EPA depth-classification
-// tests are static geometry queries with no motion (same category as the AABB tests elsewhere) - no
-// t.simulate for those, but the shapes are still drawn via t.loneBody so the configuration is visible.
+// Restitution is asserted as exit speed = e * approach speed AT THE CONTACT, captured from the live
+// solver - not via rebound height, whose tick-crossing slop is wide enough to average a real
+// energy-conservation bug into a pass.
 (function (Runner) {
 	Runner.suite('friction_restitution');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;
@@ -89,44 +68,28 @@
 	slopeTest(35, 0.5, false);
 	slopeTest(45, 0.5, false);
 
-	// ---- restitution: THE EXACT PHYSICAL INVARIANT, not a rebound-height proxy ----
+	// ---- restitution: the exact physical invariant, not a rebound-height proxy ----
 	//
-	// What restitution actually means: exit speed = e * approach speed, at the CONTACT ITSELF. A
-	// rebound-height check is a proxy for this - it also depends on exactly which tick the ball
-	// happens to cross y=0.55 on, so a discrete solver's real bounce-height comparison always carries
-	// slop that has NOTHING to do with restitution being correct. That slop is exactly what let a
-	// real bug through here before: e=1 was accepting maxRebound anywhere in [2.5, 3.2] - a band wide
-	// enough that the actual bug (e=1 measured 101.19% of impact speed, not 100%) landed comfortably
-	// inside "pass" (plan.md, Bug reference: restitution energy gain at e=1). A softball band did not
-	// catch the bug it existed to catch; a wide tolerance and a genuine physical bug are
-	// indistinguishable from the outside, which is the whole reason to assert the invariant directly
-	// instead of a proxy for it.
-	//
-	// This test hooks the world's own solver internals (the real Solver instance, not a copy) to
-	// capture the EXACT approach speed (this._preSolveNormalVel, pre-gravity, on the substep
-	// restitution actually applies) and the exact resulting separating speed, then asserts their
-	// ratio against e to a tight epsilon - not a rebound height, not a wide band.
+	// Rebound height depends on which tick the ball crosses the sensor line, so its tolerance slop
+	// can average a real energy-conservation bug into a pass. Exit speed = e * approach speed at the
+	// CONTACT is asserted directly against the live solver instead.
 	function restitutionTest(e, label) {
 		visualTest('restitution', 'restitution e=' + e + ': ' + label, function (t) {
 			var world = t.makeWorld();
 			t.box(world, 20, 0.5, 20, 0, { pos: [0, -0.5, 0], restitution: e, color: '#556' });
 			var ball = t.sphere(world, 0.5, 1, { pos: [0, 3, 0], restitution: e, color: '#f84' });
 
-			// Capture the exact approach/exit speed the solver itself computes for the FIRST bounce,
-			// by wrapping the solver's own _solveContactVelocity - same object the world actually
-			// steps with, not a reimplementation that could disagree with the real one.
+			// Wraps the world's REAL solver instance (not a copy) to capture the exact approach/exit
+			// speeds of the FIRST bounce.
 			var solver = world.solver;
 			var origSolveContactVelocity = solver._solveContactVelocity.bind(solver);
 			var approachSpeed = null, exitSpeed = null;
 			solver._solveContactVelocity = function (point, bodyA, bodyB, h) {
 				var preLambda = point.normalLambda;
 				origSolveContactVelocity(point, bodyA, bodyB, h);
-				// Only the substep where restitution ITSELF actually fires is the real bounce event
-				// (restitution's own gate: e>0 and approach speed above the rest-jitter threshold -
-				// Solver.RESTITUTION_THRESHOLD). Gating on that exact condition, not just "the normal
-				// solve pushed," matters specifically for e=0: with no restitution to correct it, the
-				// ball can satisfy preLambda<0 on more than one substep while still settling, and the
-				// first such substep is not necessarily the true final-contact one.
+				// Only the substep where restitution ITSELF fires (e>0 and approach speed above the
+				// rest-jitter threshold) is the true bounce event; with e=0 the ball can satisfy
+				// preLambda<0 on several substeps while settling, and the first is not the bounce.
 				var fires = preLambda < 0 && e > 0 && point._preSolveNormalVel > AP.Solver.RESTITUTION_THRESHOLD;
 				if (approachSpeed === null && fires) {
 					approachSpeed = point._preSolveNormalVel;
@@ -138,16 +101,15 @@
 				? 'the exact contact-relative exit speed equals e * approach speed, to 1e-6 (not a rebound-height proxy)'
 				: 'no restitution event ever fires at e=0 (the ball simply stops, nothing to bounce)', function () {
 				if (e === 0) {
-					// e=0 has no restitution branch to check by construction (Solver.js gates on
-					// restitution>0) - the physical claim here is just that it never fires.
+					// Solver gates restitution on e>0, so nothing should ever fire here.
 					return { ok: approachSpeed === null, detail: approachSpeed === null ? 'no restitution event fired, correct' : 'restitution unexpectedly fired at e=0' };
 				}
 				if (approachSpeed === null) return false;
-				var expected = e * approachSpeed;
-				var err = Math.abs(exitSpeed - expected);
-				return {
-					ok: err < 1e-6,
-					detail: 'approach=' + approachSpeed.toFixed(6) + ' exit=' + exitSpeed.toFixed(6) +
+			var expected = e * approachSpeed;
+			var err = Math.abs(exitSpeed - expected);
+			return {
+				ok: err < 1e-6,
+				detail: 'approach=' + approachSpeed.toFixed(6) + ' exit=' + exitSpeed.toFixed(6) +
 						' expected=' + expected.toFixed(6) + ' err=' + err.toExponential(3)
 				};
 			});
@@ -159,10 +121,8 @@
 	restitutionTest(0.8, 'exit speed is exactly 80% of the approach speed');
 	restitutionTest(1.0, 'exit speed exactly EQUALS approach speed - full energy back, not more, not less');
 
-	// ---- Goblin's own restitution.js, ported directly (plan.md names this file specifically as the
-	// "not softball" standard: exact tight epsilon, live per-tick predicates, several genuinely
-	// different scenarios including dynamic-vs-dynamic, physically-named assertions). Four sub-tests
-	// share ONE world (gravity off), laid out along x, exactly as Goblin's own version does. ----
+	// ---- four restitution sub-tests sharing ONE world (gravity off), laid out along x:
+	// dynamic-vs-static wall, soft bounce, and two dynamic-vs-dynamic transfers ----
 
 	visualTest('restitution', 'four restitution sub-tests (shared world)', function (t) {
 		var world = t.makeWorld({ gravity: 0 });
@@ -212,8 +172,7 @@
 	}, 400);
 
 	staticTest('sphere', 'GJK reports a shallow sphere-in-large-box penetration as overlapping with correct depth, in both operand orders', function (t) {
-		// The exact bug: order-dependent mis-classification. Assert both orders now agree and give the
-		// true penetration depth (sphere radius 0.5, center at y, ground top at 0 -> pen = 0.5 - y).
+		// Both operand orders must agree; box-first was the order that used to mis-classify.
 		var y = 0.45; // pen = 0.05
 		var sph = t.loneBody(new AP.SphereShape(0.5), { pos: [0, y, 0], color: '#4af' });
 		var box = t.loneBody(new AP.BoxShape(20, 0.5, 20), { pos: [0, -0.5, 0], color: '#556' });

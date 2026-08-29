@@ -1,5 +1,3 @@
-// Ported from Goblin's tests/js/chandler/support-points.js. findSupportPoint(direction, out) for
-// every shape in base, translated, rotated, and translated+rotated configs. EPSILON 0.01.
 (function (Runner) {
 	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;
@@ -13,12 +11,8 @@
 			case 'cylinder': return new AP.CylinderShape(3, 2.5);
 			case 'cone':     return new AP.ConeShape(3, 2.5);
 			case 'plane_x':  return new AP.PlaneShape('x', 5, 10);
-			// ActionPhysics's own halfW/halfL axis convention is cyclic (y,z)/(z,x)/(x,y) per
-			// orientation - documented directly in PlaneShape.js - which for 'y' swaps which extent
-			// maps to X vs Z relative to Goblin's own PlaneShape(orientation, halfW, halfL) for the
-			// same axis. halfW/halfL swapped here (10, 5 instead of 5, 10) so the resulting shape
-			// matches Goblin's actual geometry (extent 5 on X, extent 10 on Z), not just its argument
-			// order - a real, deliberate convention difference, not a bug in either engine.
+			// PlaneShape's halfW/halfL axis convention is cyclic per orientation (see PlaneShape.js);
+			// (10, 5) here gives extent 5 on X, 10 on Z.
 			case 'plane_y':  return new AP.PlaneShape('y', 10, 5);
 			case 'plane_z':  return new AP.PlaneShape('z', 5, 10);
 		}

@@ -1,6 +1,3 @@
-// Vector3. Two properties get dedicated tests because breaking them is invisible in a spot check:
-// ALIASING (crossInto(out,a,b) must be right when out IS a — the solver reuses scratch vectors), and
-// the ALLOCATION split (shared methods allocate to match the shared API; the additions never do).
 (function (Runner) {
 	Runner.suite('math');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;

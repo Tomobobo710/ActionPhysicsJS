@@ -1,9 +1,7 @@
-// Ported from Goblin's tests/js/chandler/gjk_boxes.js and gjk_spheres.js. Concrete box/sphere
-// collision configurations checked against known-correct penetration depth and normal direction
-// (Goblin's own verified geometry, EPSILON 0.01). Contact-point assertions were dropped for the
-// box configs, which use a degenerate zero-width box (BoxShape(0, 0.5, 0.5)) - a flat plate with
-// an ambiguous contact point along its zero-thickness axis, where two independently-correct EPA
-// implementations can legitimately report different (but equally valid) witness points.
+// Concrete box/sphere collision configs checked against known-correct penetration depth and
+// normal direction. Contact-point assertions are omitted for the box configs, which use a
+// degenerate zero-width plate (BoxShape(0, 0.5, 0.5)) - the witness point along its zero-thickness
+// axis is ambiguous and any correct EPA may pick a different valid one.
 (function (Runner) {
 	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;
@@ -21,11 +19,7 @@
 		return { shape: shape, position: pos || new V(0, 0, 0), rotation: rot || new Q(0, 0, 0, 1) };
 	}
 
-	// NOTE on normal sign: ActionPhysics's GJK/EPA normal points from B to A (GJK.js's own
-	// documented convention, matching the Narrowphase contract) - the OPPOSITE of Goblin's own
-	// contact_normal convention for the equivalent A/B argument order. `normalDir`/`dotExp` below
-	// are given in ActionPhysics's own (correct-for-this-engine) convention, not copied blind from
-	// Goblin's expected values.
+	// Normal sign: GJK/EPA normals point B to A (see GJK.js); normalDir/dotExp follow that.
 	function collide(t, shapeA, posA, rotA, shapeB, posB, rotB, depth, normalDir, dotExp) {
 		var a = placed(shapeA, new V(posA[0], posA[1], posA[2]), rotA && new Q(rotA[0], rotA[1], rotA[2], rotA[3]).normalize());
 		var b = placed(shapeB, new V(posB[0], posB[1], posB[2]), rotB && new Q(rotB[0], rotB[1], rotB[2], rotB[3]).normalize());

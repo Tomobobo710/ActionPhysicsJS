@@ -1,5 +1,3 @@
-// Ported from Goblin's tests/js/chandler/sphere-sphere.js. Two low-restitution spheres collide
-// head-on; they should rebound apart at 20% of the closing speed.
 (function (Runner) {
 	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;

@@ -1,7 +1,5 @@
-// Damping: nine cases (gravity/impulse/spin x none/moderate/strong), ported from Goblin's own
-// tests/js/chandler/damping.js. Expected values are derived from ActionPhysics's own per-substep
-// integration formulas, not copied from Goblin's numbers (different substep counts and integration
-// order produce different discrete results for the same continuous physics).
+// Expected values are derived from the engine's own per-substep integration formulas - different
+// substep counts and integration order produce different discrete results for the same physics.
 (function (Runner) {
 	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;

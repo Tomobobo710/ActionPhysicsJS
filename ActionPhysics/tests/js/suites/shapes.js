@@ -1,7 +1,7 @@
 // Shapes: support functions, local AABBs, and mass properties (volume, inertia, center of mass).
-// Support-function correctness matters more here than anywhere else downstream - it is GJK's ONLY
-// required primitive (plan.md, Shape contract), so every shape gets support checked along its
-// cardinal axes plus at least one off-axis direction.
+// Support-function correctness matters more here than anywhere else downstream - it is GJK's only
+// required primitive, so every shape gets support checked along its cardinal axes plus at least one
+// off-axis direction.
 (function (Runner) {
 	Runner.suite('shapes');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;
@@ -21,11 +21,8 @@
 		t.check(v.z, z, eps, label + '.z');
 	}
 
-	// Support-function tests are geometry, not simulation - no World/RigidBody exists yet (that's a
-	// later stage). Draw a bare {shape, position, rotation} the adapter can read structurally, plus
-	// ctx.support so the bench shows the query direction (arrow) and the resulting point (red dot)
-	// against the shape itself. This is the STATIC-diagram path in render.js (steps===0, no bodies
-	// simulated) - not the live/animated one.
+	// Support tests are static geometry: draw a bare {shape, position, rotation}, plus ctx.support
+	// so the bench shows the query direction (arrow) and the resulting point (red dot).
 	function drawSupport(t, shape, direction) {
 		var out = new V();
 		shape.supportInto(out, direction);

@@ -1,11 +1,3 @@
-// RigidBody: identity/transform/mass fields, updateDerived() (world AABB + world inverse inertia),
-// and the static/kinematic/dynamic body-type split. Motion/Forces/Material fields are plain data
-// at this stage - nothing reads them yet (the solver does) - so they're exercised here only as
-// far as "constructed with the right defaults", not behaviourally.
-//
-// Tests that construct a real shape draw it via t.loneBody (a static snapshot - there's no motion to
-// step, but the geometry is real and worth seeing). Pure field-logic tests (listener delivery, id
-// allocation) have nothing visual to show and stay as plain assertions.
 (function (Runner) {
 	Runner.suite('shapes'); // bodies sit alongside shapes until the collision suite exists
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;

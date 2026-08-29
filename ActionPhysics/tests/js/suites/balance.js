@@ -1,5 +1,3 @@
-// Ported from Goblin's tests/js/chandler/balance.js. A static sphere at the origin with two dynamic
-// spheres dropped straight down onto it - they should stack into a 3-ball column.
 (function (Runner) {
 	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;

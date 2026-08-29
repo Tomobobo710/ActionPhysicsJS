@@ -1,8 +1,4 @@
-// Ported from Goblin's tests/js/chandler/gravity.js. Four bodies of different mass, free-falling
-// under constant gravity g=-10 - after 2 seconds every body reaches vy=-20 regardless of mass
-// (confirmed to match ActionPhysics's own integration exactly: g=-10 integrates to a round number
-// at 120 ticks/60fps, unlike -9.81 which does not - see friction_restitution.js's own damping
-// derivation for why a non-round gravity value would need engine-derived, not copied, expectations).
+// g=-10 rather than -9.81: two seconds of fall must land exactly on vy=-20 at integer ticks.
 (function (Runner) {
 	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;

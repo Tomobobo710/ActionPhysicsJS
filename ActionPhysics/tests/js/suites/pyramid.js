@@ -1,17 +1,8 @@
-// The 385-box pyramid — plan.md's real stress target (Testing section, "the one test in this
-// document explicitly named as the real stress target"). Ported from Goblin's own
-// tests/js/chandler/stack.js (consulted directly for this port, per the user's explicit
-// instruction to check Goblin's real test rather than rebuild from memory after this file was
-// accidentally deleted) - same 10x10 pyramid geometry, same tolerances, same twelve assertions,
-// translated to this project's t.box/t.expect/t.onTick harness idiom. A pyramid resting on solid
-// ground is a stable equilibrium, so it must stay a pyramid: no interpenetration, no upward
-// extrusion, no creep, no tipping, and fully at rest by the end, at true engine-default solver
-// settings (no substep/iteration overrides - see plan.md's engine-defaults-discipline rule).
+// The 385-box pyramid - the real stability stress target.
 //
-// This is a HARD scene and, as of the last full run, LEGITIMATELY FAILS several of these
-// assertions (see plan.md's Status/Bug reference entries on the 385-box pyramid: drift, spin, no
-// settling by tick 1200). That failure is real, useful signal about engine stability at scale, not
-// a test bug — do not "fix" this file to make it pass; fix the engine, or record why it doesn't yet.
+// This is a HARD scene and legitimately FAILS several assertions as of the last full run (drift,
+// spin, no settling by tick 1200). Real signal, not a test bug - do not soften this file or raise
+// solver settings to pass it; fix the engine, or record why it doesn't yet.
 (function (Runner) {
 	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;
@@ -39,8 +30,7 @@
 
 	Runner.test('collision/pyramid', 'a 385-box pyramid on a ground plane stays a pyramid (1200 ticks, engine defaults)', function (t) {
 		var w = t.makeWorld({ gravity: -9.8 });
-		// A wide, thin static box stands in for Goblin's infinite PlaneShape (no ground plane on the
-		// pyramid's own scale is needed here - the pyramid never travels far enough to matter).
+		// Wide thin static box as ground - the pile never travels far enough to need an infinite plane.
 		t.box(w, 20, 0.5, 20, 0, { pos: [0, -0.5, 0], color: '#243B2A' });
 
 		var boxes = [];
@@ -50,9 +40,7 @@
 					var x = 2 * j * 1.3 - SIZE + i * 1.2,
 						y = i * LAYER_GAP + 1,
 						z = 2 * k * 1.3 - SIZE + i * 1.2;
-					// friction left at the engine default (no override) - plan.md's engine-defaults
-					// rule: a bare "does the pyramid hold" scene isn't a friction sweep, so it uses
-					// whatever the engine ships with, not a value chosen to make this test pass.
+					// Engine-default materials throughout - a bare does-it-hold scene, not a sweep.
 					var b = t.box(w, 1, 1, 1, 1, { pos: [x, y, z], color: '#B08968' });
 					boxes.push({ body: b, layer: i, x0: x, y0: y, z0: z });
 				}
@@ -353,12 +341,10 @@
 	}, {
 		visual: true, steps: TICKS, page: 'pyramid',
 		description:
-			"The 385-box pyramid, ported directly from Goblin's own tests/js/chandler/stack.js (plan.md's " +
-			"real stress target - not the 10-box toy in speculative.js, which only isolates a friction " +
-			"regression). A pyramid on solid ground is a stable equilibrium: layers must hold their " +
-			"heights, boxes must neither sink into each other nor get extruded upward, nothing may creep " +
-			"or tip, no upper-layer box may reach the floor, and the whole pile must be at rest by tick " +
-			"1200, all at true engine-default solver settings."
+			"The 385-box pyramid at true engine defaults. A pyramid on solid ground is a stable equilibrium: " +
+			"layers must hold their heights, boxes must neither sink into each other nor get extruded " +
+			"upward, nothing may creep or tip, no upper-layer box may reach the floor, and the whole pile " +
+			"must be at rest by tick 1200."
 	});
 
 }(typeof module !== 'undefined' && module.exports ? require('../runner.js') : window.APRunner));

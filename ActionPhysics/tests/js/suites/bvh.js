@@ -1,6 +1,3 @@
-// BVH: static tree over a fixed leaf set, built once from an index -> AABB callback. Used for
-// compound children, mesh triangles, and swept queries (plan.md, Spatial) - this suite tests the
-// tree itself, generic over what a "leaf" represents.
 (function (Runner) {
 	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;

@@ -26,15 +26,9 @@ if (!fs.existsSync(buildFile)) {
 var stampLine = fs.readFileSync(buildFile, 'utf8').split(/\r?\n/)[0];
 console.log(stampLine.replace(/^\/\/\s*/, '=== ') + ' ===');
 
-// TEMP (per user request, while restitution/friction test coverage is being built out): skip the
-// 385-box pyramid for headless runs - it is slow (1200 ticks x 385 bodies) and its one real,
-// documented failure (plan.md, Status/Bug reference) would otherwise dominate every run's signal
-// while unrelated test work is in progress. Not a test edit and not a verdict on the failure - the
-// file is untouched, just unloaded here. Ported from Goblin's own run_headless.js, which uses the
-// exact same whole-file skip pattern (SKIP_FILES) for the same reason (perf-iteration runs staying
-// signal-only). Remove this entry (or run `node tests/run_headless.js --suite=collision pyramid`
-// directly, which bypasses this list entirely since it loads via suite.html separately) once ready
-// to fold the pyramid back into every run.
+// Skipped from headless runs: the 385-box pyramid (1200 ticks x 385 bodies) is slow and would
+// dominate every run's signal during perf iteration. The file is untouched, just unloaded here;
+// remove the entry to fold it back into every run.
 var SKIP_FILES = { 'pyramid.js': true };
 
 // Suite files. A leading _ marks a shared helper, loaded first and never treated as a suite.

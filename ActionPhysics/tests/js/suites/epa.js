@@ -1,8 +1,3 @@
-// EPA: penetration depth, normal, and witness points from a GJK simplex that already encloses
-// the origin. GJK proves overlap; EPA measures how deep. The hard case this suite exists to pin
-// down is the predecessor's own EPA bug (plan.md, Bug reference): the closest-face tracking must
-// read the LIVE polytope's actual closest surviving face, never a value cached from an earlier
-// iteration whose face has since been proven wrong and replaced by expansion.
 (function (Runner) {
 	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;

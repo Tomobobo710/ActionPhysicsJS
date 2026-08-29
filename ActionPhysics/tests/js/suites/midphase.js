@@ -1,8 +1,3 @@
-// Midphase: expands a broadphase body pair into candidate PRIMITIVE-shape pairs, each carrying a
-// world position/rotation. A primitive body is itself the one candidate; a Compound expands to its
-// overlapping children; a Mesh expands to its overlapping triangles (wrapped as TriangleShape).
-// Never computes contact data (plan.md, Midphase) - these tests check WHICH primitives are
-// produced, never how deep or where they touch.
 (function (Runner) {
 	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;

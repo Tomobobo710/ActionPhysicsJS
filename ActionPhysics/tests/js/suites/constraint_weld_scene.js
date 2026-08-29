@@ -1,5 +1,3 @@
-// Ported from Goblin's tests/js/chandler/constraint-weld.js. Two stacked boxes welded face-to-face,
-// falling onto a ground plane as one rigid unit.
 (function (Runner) {
 	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;

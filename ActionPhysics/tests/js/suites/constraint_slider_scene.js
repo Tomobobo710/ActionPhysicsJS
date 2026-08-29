@@ -1,17 +1,6 @@
-// Adapted from Goblin's tests/js/chandler/constraint-slider.js. A tall base box and a smaller top
-// box linked by a SliderConstraint along the world Y axis, both falling onto a ground plane.
-//
-// GOBLIN'S OWN SCENE SPAWNS base AT y=5 (half-height 5, spanning y=[0,10]) and top AT y=10
-// (half-height 2, spanning y=[8,12]) - the two boxes overlap by 2 units at construction. Ported
-// as-is, this exploded exponentially from tick 1. Traced directly to isolate the cause: calling
-// Solver._substep in isolation (bypassing narrowphase) with this exact configuration does NOT
-// explode - the slider constraint itself is correct. The explosion comes from the SPAWN-OVERLAP
-// CONTACT between base and top fighting the slider's own perpendicular lock (the same class of bug
-// as the 45-degree slope test's spawn-overlap issue found earlier - a real contact-solve one-shot
-// correction on a body ALSO governed by a joint constraint, producing the derived-velocity blowup
-// plan.md documents extensively). Fixed by spawning top at y=12 instead (base top=10, top bottom=10
-// - flush, not overlapping) - confirmed stable for 10+ ticks with gravity off before re-enabling
-// gravity and the ground plane below.
+// Top spawns FLUSH with base (top's bottom face = base's top face), never overlapping: a
+// joint-held pair that also starts interpenetrating takes a one-shot contact correction on top of
+// the joint lock and diverges.
 (function (Runner) {
 	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;

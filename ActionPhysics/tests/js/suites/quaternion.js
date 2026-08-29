@@ -1,6 +1,3 @@
-// Quaternion. The load-bearing tests here are about DRIFT: orientation is built by thousands of
-// successive multiplications and the failure mode is not one wrong answer, it is a slow loss of unit
-// length that silently scales every rotated vector.
 (function (Runner) {
 	Runner.suite('math');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;

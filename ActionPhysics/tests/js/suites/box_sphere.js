@@ -1,5 +1,3 @@
-// Ported from Goblin's tests/js/chandler/box-sphere.js. A sphere dropped onto a static box should
-// come to rest with its center at box-top + radius.
 (function (Runner) {
 	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;

@@ -1,11 +1,9 @@
 // GJK: distance/overlap test between two placed convex shapes via their Minkowski difference.
 // Two outcomes: OVERLAPPING (hands its simplex to EPA) or SEPARATED (exact distance, witness
-// points, normal). The hard case this suite exists to pin down is EXACT TOUCHING (plan.md's
-// flush-contact bug) - two shapes with zero gap and zero penetration must report SEPARATED at
-// distance 0, never NaN and never a false OVERLAP, while genuinely overlapping shapes - even ones
-// whose Minkowski difference passes through the touching plane on the way to enclosing the origin
-// - must still report OVERLAPPING. See GJK.js's class header for why this is a genuinely hard
-// case and how it's resolved (multiple diverse-direction seed tetrahedra).
+// points, normal). The hard case pinned down here is EXACT TOUCHING - zero gap, zero penetration -
+// which must report SEPARATED at distance 0, never NaN and never a false OVERLAP, while genuine
+// overlaps still report OVERLAPPING. See GJK.js's class header for why this is hard (multiple
+// diverse-direction seed tetrahedra).
 (function (Runner) {
 	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;

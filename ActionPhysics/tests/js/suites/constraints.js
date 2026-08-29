@@ -1,21 +1,13 @@
-// Constraints (joints): PointConstraint so far (Hinge/Slider/Weld to follow). Rebuilt as XPBD
-// position constraints (plan.md, Constraint.js's own header) - a joint computes its own position
-// error and applies a correction via the same generalized-inverse-mass machinery the contact solver
-// uses, promoted to a 3x3 coupled system for a point constraint's 3 simultaneous DOF.
-//
-// Standard for these tests (plan.md, Testing section, "these rewritten tests should have taken
-// their standard from Goblin's own suite"): exact tight tolerances, not wide bands; live per-tick
-// predicates (t.expect), not a post-hoc max/min read; more than one physical scenario per concept,
-// including dynamic-vs-dynamic; assertion labels that state the physical claim.
+// Joint constraints as XPBD position constraints: a joint computes its own position error and
+// applies a correction via the same generalized-inverse-mass machinery the contact solver uses.
+// Tight tolerances, live per-tick predicates, dynamic-vs-dynamic scenarios, physically-named claims.
 (function (Runner) {
-	Runner.suite('collision'); // constraints sit with the rest of the dynamics-heavy suites
+	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;
 	var V = AP.Vector3;
-	var DESC = "PointConstraint: pins a local anchor on bodyA to a local anchor on bodyB (or a fixed " +
-		"world point when bodyB is null) - a ball/socket joint, 3 translational DOF removed, all " +
-		"rotation free. Solved as one coupled 3x3 XPBD position constraint (not three independent " +
-		"scalar passes), so it converges to the anchor exactly in a single solve given a consistent " +
-		"initial condition.";
+	var DESC = "PointConstraint pins a local anchor on bodyA to a local anchor on bodyB (or a fixed " +
+		"world point when bodyB is null): 3 translational DOF removed, all rotation free. Solved as " +
+		"one coupled 3x3 XPBD position constraint, not three independent scalar passes.";
 	function test(group, name, fn, steps) {
 		Runner.test(group, name, fn, { page: 'constraints', description: DESC, visual: true, steps: steps || 0 });
 	}
@@ -67,16 +59,14 @@
 		t.simulate(world, 300);
 	}, 300);
 
-	// ---- two DYNAMIC bodies pinned together: distance between anchors must stay exact, and it is
-	// the joint - not gravity cancelling out - holding them, checked from a scenario gravity alone
-	// could not fake (they start moving APART) ----
+	// ---- two DYNAMIC bodies pinned together, starting APART - gravity cannot fake holding them ----
 
 	test('constraints/point', 'two dynamic bodies pinned together stay pinned even when they start flying apart', function (t) {
 		var world = mkWorld();
 		world.gravity.set(0, 0, 0); // isolate the joint - no gravity to coincidentally hold them together
 		var a = t.box(world, 0.2, 0.2, 0.2, 1, { pos: [-0.5, 0, 0], vel: [-3, 0, 0], color: '#4af' });
 		var b = t.box(world, 0.2, 0.2, 0.2, 1, { pos: [0.5, 0, 0], vel: [3, 0, 0], color: '#f84' }); // moving AWAY from a
-		var localA = new V(0.5, 0, 0), localB = new V(-0.5, 0, 0); // each body's anchor faces the other - both anchors coincide at world (0,0,0) at t=0
+		var localA = new V(0.5, 0, 0), localB = new V(-0.5, 0, 0); // anchors coincide at world origin at t=0
 		var joint = new AP.PointConstraint(a, b, localA, localB);
 		world.addConstraint(joint);
 
@@ -91,8 +81,7 @@
 			return { ok: maxAnchorGap < 1e-5, detail: 'max anchor gap=' + maxAnchorGap.toExponential(3) };
 		});
 		t.expect('equal mass: the pair settles on a shared point roughly midway between their starts', function () {
-			// Not asserting an exact number (the joint conserves momentum, not position) - just that
-			// neither body ran away unbounded, which a broken/no-op constraint would allow.
+			// Not an exact number - the joint conserves momentum, not position; just no runaway.
 			var dist = Math.hypot(a.position.x - b.position.x, a.position.y - b.position.y, a.position.z - b.position.z);
 			return { ok: dist < 1.5, detail: 'body separation=' + dist.toFixed(3) };
 		});

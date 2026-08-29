@@ -1,7 +1,3 @@
-// Ported from Goblin's tests/js/chandler/constraint-point.js. An 11-plank bridge linked end-to-end
-// by paired PointConstraints (front + back), anchored at both ends, over a ground plane. A sphere
-// is dropped onto it every 60 ticks. Watch-only scene (matching Goblin's own), strengthened here to
-// check the bridge stays numerically stable for the whole run.
 (function (Runner) {
 	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;

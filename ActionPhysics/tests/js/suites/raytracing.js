@@ -1,8 +1,3 @@
-// Ported from Goblin's tests/js/chandler/raytracing.js. rayIntersect(start, stop) for every shape,
-// checking the first hit point. EPSILON 0.01. Compound configs dispatch per child in Queries.js
-// (CompoundShape has no single support function - CompoundShape.supportInto throws by design,
-// "dispatch per-child, a compound is not itself convex" - so raycasting one now expands to its
-// children, same discipline Midphase already uses for compound bodies in the main pipeline).
 (function (Runner) {
 	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;
@@ -33,15 +28,10 @@
 	var R = [
 		['Sphere','Base Sphere 1','sphere',[-4,0,0],[4,0,0],[-2,0,0],null,null],
 		['Sphere','Base Sphere 2','sphere',[0,2,2],[0,-2,-2],[0,S2,S2],null,null],
-		// Goblin's own SphereShape.rayIntersect (src/classes/Shapes/SphereShape.js) walks to the FAR
-		// exit point when the ray starts inside the sphere (t<0 for the entry root falls through to
-		// the +sqrt root). ActionPhysics's own convention (established consistently across every
-		// other test in this suite - see queries.js's own "ray from inside" test) reports the hit
-		// immediately at fraction 0 instead, matching how a starting-inside overlap is reported
-		// everywhere else in this engine. These two rows' expected points are ActionPhysics's own
-		// entry-point convention (the ray's own start, since it's already inside), not Goblin's exit.
-		['Sphere','Base Sphere 3 (starts at center - ActionPhysics reports entry, not Goblin\'s exit)','sphere',[0,0,0],[2,0,-2],[0,0,0],null,null],
-		['Sphere','Translated Sphere 1 (starts at center - ActionPhysics reports entry, not Goblin\'s exit)','sphere',[2,3,0],[2,1,0],[2,3,0],[2,3,0],null],
+		// A ray starting inside reports its entry point at fraction 0 (the start itself),
+		// consistently with how starting-inside overlap is reported everywhere else.
+		['Sphere','Base Sphere 3 (starts inside - reports entry at fraction 0)','sphere',[0,0,0],[2,0,-2],[0,0,0],null,null],
+		['Sphere','Translated Sphere 1 (starts inside - reports entry at fraction 0)','sphere',[2,3,0],[2,1,0],[2,3,0],[2,3,0],null],
 		['Sphere','Translated Sphere 2','sphere',[0,5,0],[4,5,0],[2,5,0],[2,3,0],null],
 		['Sphere','Rotated Sphere 1','sphere',[-4,0,0],[4,0,0],[-2,0,0],[0,0,0],[1,0,0,1]],
 		['Sphere','Rotated Sphere 2','sphere',[0,2,2],[0,-2,-2],[0,S2,S2],[0,0,0],[0,1,0,1]],

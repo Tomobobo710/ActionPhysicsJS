@@ -1,5 +1,3 @@
-// Ported from Goblin's tests/js/chandler/spheres.js. A 5x5 static sphere base with 4x4/3x3/2x2
-// dynamic levels stacked above, then a heavy sphere dropped from above with a downward impulse.
 (function (Runner) {
 	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;

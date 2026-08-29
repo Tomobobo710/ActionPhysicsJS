@@ -1,25 +1,16 @@
-// Contacts: ContactDetails (normalizes GJK/EPA output into one signed-distance convention),
-// ContactManifold (owns point lifetime across ticks - the ONE thing plan.md's Contact management
-// bug reference is about), ContactManifoldList (the set of active manifolds, keyed by body pair).
 (function (Runner) {
 	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;
 	var V = AP.Vector3, Q = AP.Quaternion;
 	var DESC = "ContactDetails normalizes GJK's separated result and EPA's overlapping result into " +
-		"one signed distance (negative = separated, positive = overlapping, per plan.md). " +
-		"ContactManifold owns point lifetime entirely - detection only ever adds or refreshes; only " +
-		"the manifold itself removes a point, and only once per TICK, never mid-substep (this is " +
-		"the exact bug plan.md's Contact management bug reference describes in the predecessor).";
+		"one signed distance (negative = separated, positive = overlapping). ContactManifold owns " +
+		"point lifetime entirely - detection only adds or refreshes; only the manifold removes a " +
+		"point, and only once per TICK, never mid-substep.";
 	function test(group, name, fn, opts) {
 		opts = opts || {};
-		// Every test here builds real shapes via mkBody (below), which draws them - so visual
-		// defaults to true unless a test explicitly opts out (none currently do; mkFlatContact-only
-		// tests still construct the two bodies a manifold is keyed to, so they draw too).
 		Runner.test(group, name, fn, { page: 'contacts', description: DESC, visual: opts.visual !== false, steps: 0 });
 	}
 
-	// Builds a real body AND draws it (via t.loneBody), so every contacts test - which all construct
-	// shapes to test against - is watchable, not just asserted.
 	function mkBody(t, shape, mass, pos) {
 		return t.loneBody(shape, { mass: mass, pos: pos, color: pos && pos[0] < 0 ? '#4af' : '#f84' });
 	}
@@ -51,14 +42,14 @@
 		var a = mkBody(t, new AP.SphereShape(1), 1, [0, 0, 0]);
 		var b = mkBody(t, new AP.SphereShape(1), 1, [5, 0, 0]);
 		var cd = contactFor(a, b);
-		t.check(cd.signedDistance, -3, 1e-6, 'negative = separated, per plan.md');
+		t.check(cd.signedDistance, -3, 1e-6, 'negative = separated');
 	});
 
 	test('collision/contacts', 'an overlapping pair produces a positive signed distance', function (t) {
 		var a = mkBody(t, new AP.BoxShape(1, 1, 1), 1, [0, 0, 0]);
 		var b = mkBody(t, new AP.BoxShape(1, 1, 1), 1, [1.5, 0, 0]);
 		var cd = contactFor(a, b);
-		t.check(cd.signedDistance, 0.5, 1e-6, 'positive = overlapping, per plan.md');
+		t.check(cd.signedDistance, 0.5, 1e-6, 'positive = overlapping');
 	});
 
 	test('collision/contacts', 'point is the midpoint of the two witness points', function (t) {
@@ -105,13 +96,9 @@
 	});
 
 	test('collision/contacts', 'calling update() with the SAME contacts repeatedly never drops points mid-sequence', function (t) {
-		// This is the actual bug-reference scenario in miniature: a point that is genuinely still
-		// in contact must survive being "refreshed" over and over, the way a solver's own
-		// substeps would call update() if it were (wrongly) run per-substep instead of per-tick.
-		// ContactManifold.update() is documented as tick-only; this proves calling it repeatedly
-		// with an unchanged, still-valid contact is itself safe and idempotent - the ACTUAL fix is
-		// architectural (the solver never calls update() at all), but this pins down that the data
-		// structure doesn't compound the mistake if it were.
+		// update() is tick-only by contract. Repeated refreshes of an unchanged valid contact must
+		// be idempotent - the solver never calls this per-substep, but the data structure must not
+		// compound the mistake if it were.
 		var a = mkBody(t, new AP.BoxShape(1, 1, 1), 1, [0, 0, 0]);
 		var b = mkBody(t, new AP.BoxShape(1, 1, 1), 1, [1.5, 0, 0]);
 		var manifold = new AP.ContactManifold(a, b);

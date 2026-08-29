@@ -1,6 +1,3 @@
-// Ported from Goblin's tests/js/chandler/convexshape.js. ConvexShape volume / center of mass /
-// support points for a unit cube and a pyramid, built from ActionPhysics's own real 3D convex hull
-// and divergence-theorem mass integration (not an approximation).
 (function (Runner) {
 	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;
@@ -50,10 +47,7 @@
 	}
 
 	supportTest('box: support point (corner)', BOX, '#45B7D1', [-1, -1, -1], [-1, -1, -1], 'support toward a corner');
-	// Goblin's expected [1,-1,1] is one of 4 tied-max-dot vertices on this face; ActionPhysics's own
-	// brute-force scan (first max wins, in point-array order) picks [1,-1,-1] instead - a real,
-	// deliberate tie-break difference, not a bug in either engine (see support_points.js's own
-	// established discipline for the same class of tie).
+	// Tied max-dot support: first max in point-array order wins, not any particular tied vertex.
 	supportTest('box: support point (face)', BOX, '#45B7D1', [1, 0, 0], [1, -1, -1], 'support toward a face (first tied max in point order)');
 	supportTest('box: support point (edge)', BOX, '#45B7D1', [0, 1, 1], [1, 1, 1], 'support toward an edge');
 	supportTest('pyramid: support point (corner)', PYR, '#F4D35E', [-1, -1, -1], [-1, -1, -1], 'support toward a base corner');

@@ -1,31 +1,15 @@
-// Solver: XPBD position-constraint solve, substepping, derived velocity. Tests here verify the
-// CORE MECHANIC in isolation - a single position correction resolves a known overlap exactly, warm
-// start carries lambda across ticks, velocity derives correctly from the position delta.
+// XPBD solver core mechanic in isolation: a single position correction resolves a known overlap
+// exactly, warm start carries lambda across ticks, velocity derives from the position delta.
 //
-// WHAT THIS SUITE DELIBERATELY DOES NOT CLAIM: full-scene stability (a body falling from a real
-// height and settling) is NOT yet correct, and is not tested here as if it were. Plan.md's own
-// design says derived velocity is used RAW with no clamp, and that speculative contacts (detecting
-// against a PREDICTED end-of-substep position, not the current one) are what keeps that safe -
-// speculative detection does not exist yet (narrowphase still queries current position only). A
-// real, non-speculative contact resolved by an uncapped one-shot XPBD correction produces a large
-// derived velocity with nothing to damp it - verified directly here as a KNOWN, EXPECTED
-// characteristic (not a bug to be silently tested around), matching plan.md's own extended
-// writeup of the identical failure mode in the predecessor before speculative contacts existed.
-//
-// Every test here is a SINGLE world.step() call - one tick, checking an exact numeric outcome, not
-// a settling trajectory (that's what speculative.js's tests are for). There's no multi-second
-// animation to watch because there's no multi-tick motion to show: this is the mechanism caught in
-// the act of one correction, not a scene playing out. Still built through the shared harness
-// (t.makeWorld/t.box) so the before/after IS drawn - you see the box positioned at the start, the
-// solver runs, and the console shows exactly what moved and by how much.
+// Deliberately NOT claimed here: full-scene settling stability. A body SPAWNED deep in overlap gets
+// the full undamped one-shot correction (velocity = delta/h, no clamp by design); speculative
+// contacts prevent ARRIVING deep, they do not rescue an embedded spawn. Every test is one tick.
 (function (Runner) {
 	Runner.suite('solver');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;
 	var DESC = "XPBD solver: substepped position-constraint solve for contacts, with velocity " +
-		"DERIVED from the position delta and used raw (no clamp, per plan.md's central design " +
-		"rule). Verified here: single-correction exactness, warm-start persistence, velocity " +
-		"derivation. NOT yet verified (and not expected to hold): full-scene settling stability, " +
-		"which requires speculative contacts - a distinct, not-yet-built increment.";
+		"DERIVED from the position delta and used raw (no clamp). Verified here: single-correction " +
+		"exactness, warm-start persistence, velocity derivation.";
 	function test(group, name, fn) {
 		Runner.test(group, name, fn, { page: 'solver', description: DESC, visual: true, steps: 1 });
 	}
@@ -75,11 +59,8 @@
 	// ---- normal direction / sign convention (the actual bug found and fixed while building this) ----
 
 	test('solver/core', 'a box resting on top of the ground is pushed UP, never down through it', function (t) {
-		// This pins down the exact bug found while building the solver: EPA's normal convention
-		// did not match GJK's own (verified separately in the EPA suite), and independently the
-		// solver's own constraint-gradient sign was paired incorrectly with which body gets +n vs
-		// -n. Either mistake alone sends an overlapping box THROUGH the ground instead of pushing
-		// it back out - this test is the end-to-end symptom both bugs produced.
+		// Pins the GJK/EPA normal-sign convention end-to-end: either half signed backwards sends
+		// the box THROUGH the ground instead of out of it.
 		var world = t.makeWorld({ gravity: 0 }); world.solver.substeps = 1;
 		t.box(world, 10, 0.5, 10, 0, { pos: [0, -0.5, 0], color: '#556' });
 		var box = t.box(world, 0.5, 0.5, 0.5, 1, { pos: [0, 0.3, 0], color: '#4af' }); // overlapping by 0.2
@@ -100,8 +81,7 @@
 		var box = t.sphere(world, 0.5, 1, { pos: [0, 10, 0], color: '#4af' }); // far from anything, no contacts to solve
 
 		var dt = 1 / 60;
-		// No contacts: position integrates as x + v*h with v updated by gravity first (see
-		// Solver._substep step 1) - v_new = 0 + g*h, x_new = x + v_new*h.
+		// No contacts: v_new = v_old + g*h first, then x_new = x + v_new*h (Solver._substep order).
 		var expectedV = -10 * dt;
 		var expectedY = 10 + expectedV * dt;
 		t.expect('velocity after one free-falling substep matches g*h', function () {
@@ -120,10 +100,8 @@
 		t.box(world, 10, 0.5, 10, 0, { pos: [0, -0.5, 0], color: '#556' });
 		t.box(world, 0.5, 0.5, 0.5, 1, { pos: [0, 0.5, 0], color: '#4af' }); // exactly resting, no correction needed
 
-		// At exactly resting (C <= 0 by the live-anchor measurement), no correction runs and lambda
-		// for that substep is legitimately 0 - this checks only that the manifold/point machinery
-		// survives a full world.step() call without erroring or losing its single point, which is
-		// what a real warm start depends on structurally.
+		// At exactly resting height C <= 0, so no correction runs; this checks only that manifold
+		// machinery survives a full step without losing its point - what warm start depends on.
 		t.expect('a manifold exists for the resting pair, with exactly one contact point', function () {
 			var manifold = Array.from(world.narrowphase.manifolds.values())[0];
 			return { ok: !!manifold && manifold.pointCount === 1, detail: manifold ? ('pointCount=' + manifold.pointCount) : 'no manifold' };
@@ -134,14 +112,10 @@
 	// ---- the known, expected instability without speculative contacts ----
 
 	test('solver/core', 'a body SPAWNED already deep in overlap gets the full undamped one-shot correction', function (t) {
-		// The box here STARTS overlapping by 0.1 - it did not approach and get caught by speculative
-		// detection, it was placed inside the ground. Speculative contacts (now built) prevent a
-		// body from ARRIVING deep by detecting the contact before overlap; they do not retroactively
-		// soften an overlap a body was spawned into. So this pre-embedded case still resolves in a
-		// single undamped correction, velocity = Δx/h, exactly per the central no-clamp rule. This
-		// is correct and documented: the derived-velocity fix is about the approach, not about
-		// rescuing a body teleported into solid geometry. (Contrast the speculative suite, where a
-		// box that FALLS onto the ground settles with no such kick.)
+		// Placed inside the ground, not arrived there: speculative detection cannot retroactively
+		// soften an embedded spawn, so this resolves as one undamped correction, v = delta/h,
+		// exactly per the no-clamp rule. (Contrast the speculative suite, where a FALLING box
+		// settles with no such kick.)
 		var world = t.makeWorld({ gravity: 0 }); world.solver.substeps = 1;
 		t.box(world, 10, 0.5, 10, 0, { pos: [0, -0.5, 0], color: '#556' });
 		var box = t.box(world, 0.5, 0.5, 0.5, 1, { pos: [0, 0.4, 0], color: '#f55' }); // overlapping by 0.1
