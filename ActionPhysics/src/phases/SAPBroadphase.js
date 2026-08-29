@@ -1,7 +1,7 @@
 /**
  * Sweep-and-prune broadphase over AABBs, sorted along a single axis.
  *
- * Produces: candidate body pairs, no false negatives (plan.md, Broadphase). May assume AABBs are
+ * Produces: candidate body pairs, no false negatives. May assume AABBs are
  * current - it never recomputes one, only reads body.getBroadphaseAABB() (the fattened, speculative-
  * margin variant, so a pair surfaces the tick before overlap). Must never test actual shapes;
  * the only thing this file knows about a body is its AABB.

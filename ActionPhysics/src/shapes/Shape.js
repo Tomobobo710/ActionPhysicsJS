@@ -17,7 +17,7 @@
 class Shape {
     // A shape reports the CATEGORY of margin its narrowphase pair needs. Plane and Triangle are
     // degenerate (infinite extent / zero thickness) and get special-cased at dispatch rather than
-    // patched inside GJK/EPA — see plan.md, Shapes section.
+    // patched inside GJK/EPA.
     constructor(type) {
         this.type = type;
     }

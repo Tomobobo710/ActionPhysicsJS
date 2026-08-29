@@ -2,7 +2,7 @@
  * NarrowPhase: dispatch layer tying Midphase's primitive-shape pairs through GJK/EPA into
  * ContactDetails, and routing them into the right ContactManifold.
  *
- * Produces: contacts with accurate point, normal, signed distance (plan.md, Narrowphase contract).
+ * Produces: contacts with accurate point, normal, signed distance.
  * May assume the pair is worth testing (a broadphase/midphase candidate). Must never cull contacts
  * for staleness, clamp depth, or second-guess its own math - that discipline lives entirely in
  * GJK/EPA/ContactDetails already; this file only wires them together and routes results into
@@ -14,8 +14,8 @@
 class NarrowPhase {
     // Base speculative margin (metres): a contact is reported once its signed distance is within
     // this of touching, even while still SEPARATED, so a manifold point exists BEFORE overlap
-    // occurs. This is the whole mechanism of speculative contacts (plan.md, "Continuous collision /
-    // speculative contacts" and the derived-velocity fix): the solver's non-penetration constraint,
+    // occurs. This is the whole mechanism of speculative contacts and the derived-velocity fix):
+    // the solver's non-penetration constraint,
     // evaluated every substep against the body's PREDICTED position, needs a point already present
     // to stop the body AT touch instead of first letting it dig in and then digging it back out
     // (the deep-correction -> large derived velocity failure the base margin prevents). Per-pair,
@@ -28,7 +28,7 @@ class NarrowPhase {
         this._dt = 1 / 60; // set each tick by step(); the fallback only matters if step() is never called
         // Scratch GJK/EPA instances, reused across every pair tested this tick. Safe because
         // narrowphase runs pairs one at a time (never two GJK.run() calls interleaved) - see
-        // plan.md's scratch-memory rule: per-stage arena, not a global shared across unrelated
+        // Scratch arena owned by this stage, not shared across unrelated
         // algorithms. These belong to NarrowPhase alone.
         this._gjk = new GJK();
         this._epa = new EPA();
@@ -59,8 +59,8 @@ class NarrowPhase {
 
             for (let i = 0; i < primitivePairs.length; i++) {
                 const contact = this._testPrimitivePair(primitivePairs[i].a, primitivePairs[i].b);
-                // signedDistance: positive = overlapping, negative = separated by that gap (plan.md
-                // convention). Report the contact while overlapping OR within the speculative
+                // signedDistance: positive = overlapping, negative = separated by that gap. Report
+                // the contact while overlapping OR within the speculative
                 // margin of touching; drop it only once the gap exceeds the margin - too far this
                 // tick for the pair to reach, so no manifold point is warranted. This is the ONE
                 // place narrowphase decides a pair is "not worth a manifold entry" (see
@@ -126,7 +126,7 @@ class NarrowPhase {
     //
     // This updates geometry ONLY. It never adds, removes, or re-matches points, and never touches
     // the manifold's point SET or its warm-start lambda - that ownership stays with the manifold's
-    // once-per-tick update() (plan.md's rule against mid-tick manifold churn). A point whose contact
+    // once-per-tick update() (the rule against mid-tick manifold churn). A point whose contact
     // has genuinely separated this substep simply gets a negative signed distance here and the
     // solver's own C<=0 guard makes it inert; it is not culled mid-tick.
     //

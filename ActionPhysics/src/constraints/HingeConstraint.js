@@ -2,12 +2,10 @@
  * HingeConstraint: two bodies (or one body and the world) rotate about a shared axis and pivot
  * point, like a door hinge - 3 translational DOF removed at the pivot (same as PointConstraint) plus
  * 2 of the 3 rotational DOF removed (only rotation about the shared hinge axis is free). No swing
- * limit or motor yet (plan.md's Constraint base/limit/motor layer, item 8, is a later increment - see
- * plan.md's Not-started list; a hinge with no limit/motor is still a complete, correct hinge, just an
- * unbounded/unpowered one).
+ * limit or motor yet - a hinge with no limit/motor is still a complete, correct hinge, just an
+ * unbounded/unpowered one.
  *
- * REBUILT AS TWO STACKED XPBD POSITION CONSTRAINTS (plan.md, "This is a rebuild, not a port" -
- * Constraint.js's own header explains why Goblin's ConstraintRow/Jacobian shape is not carried over).
+ * Built as two stacked XPBD position constraints.
  * The pivot uses exactly PointConstraint's own 3x3 coupled solve (composition, not duplication - see
  * _solvePivot below, which shares PointConstraint's math via the same effective-mass helper). The
  * angular lock uses the standard XPBD relative-rotation trick (Muller et al. 2020 sec 3.4): each
@@ -30,10 +28,8 @@ class HingeConstraint extends Constraint {
         this.localPivotA = new Vector3().copy(pivotA);
         this.localPivotB = new Vector3().copy(pivotB || new Vector3());
         // bodyB's local hinge axis: derived from bodyA's world axis at construction time so the two
-        // bodies start co-axial (matching Goblin's own initial_quaternion capture, but derived
-        // directly here rather than stored as an initial relative rotation - this engine needs only
-        // the axis, not the free rotation about it, since there is no swing limit yet to measure
-        // against an initial reference angle).
+        // bodies start co-axial. Only the axis is captured, not an initial relative rotation - there
+        // is no swing limit yet to measure against an initial reference angle.
         this.localAxisB = new Vector3();
         if (bodyB) {
             const worldAxis = HingeConstraint._scratchV1.copy(this.localAxisA);
@@ -70,9 +66,7 @@ class HingeConstraint extends Constraint {
         }
 
         // limit: { min, max } angle in radians about the hinge axis (right-hand rule), or null for
-        // unbounded. set(min, max) below is the caller's entry point (matches Goblin's own
-        // constraint.limit.set(min, max) call shape, since that is simply "an angle range", not an
-        // implementation detail worth diverging from).
+        // unbounded. set(min, max) below is the caller's entry point - it is simply "an angle range".
         this.limit = { min: null, max: null, set: function (min, max) { this.min = min; this.max = max; return this; } };
         // motor: drives the hinge toward `targetVelocity` (rad/s about the axis) up to `maxTorque`
         // (world torque units) of effort per substep. maxTorque = 0 means no motor (the default).

@@ -1,6 +1,6 @@
 // A single zero-thickness triangle in local space. Degenerate like PlaneShape, for the same
 // reason — see PlaneShape's header. Used both standalone and as the per-triangle shape a
-// MeshShape's midphase dispatches into (plan.md: "midphase — which triangles of a mesh?").
+// MeshShape's midphase dispatches into.
 class TriangleShape extends Shape {
     constructor(a, b, c) {
         super('triangle');

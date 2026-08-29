@@ -1,6 +1,6 @@
 /**
  * ContactDetails: one contact point between a specific pair of primitive shapes, in the sign
- * convention plan.md establishes for the whole narrowphase: signed distance NEGATIVE when
+ * convention used across the whole narrowphase: signed distance NEGATIVE when
  * separated, POSITIVE when overlapping. GJK's separated result and EPA's overlapping result both
  * report a non-negative magnitude of their own (gap vs. depth) - normalizing the sign here is the
  * one place that distinction gets collapsed into a single number the rest of the pipeline can
@@ -18,8 +18,7 @@ class ContactDetails {
         this.pointOnB = new Vector3();
         this.normal = new Vector3();
         this.signedDistance = 0;
-        // Set by the manifold once matched against a previous tick's point (warm-start data -
-        // see plan.md's component list: "ContactManifold (4-point cap, dedup, warm-start data)").
+        // Set by the manifold once matched against a previous tick's point (warm-start data).
         // ContactDetails itself never reads or writes this; it exists here purely as a place to
         // carry the value across the manifold's point-matching step without a second parallel
         // array. Owned entirely by the solver once it exists (Rule 2: one owner per concern).
@@ -79,7 +78,7 @@ class ContactDetails {
     }
 
     // Fills this from a GJK separated result (`{distance, normal, pointA, pointB}`, distance is a
-    // non-negative GAP). signedDistance becomes negative - separated, per plan.md's convention.
+    // non-negative GAP). signedDistance becomes negative - separated, per the pipeline convention.
     setFromGJKSeparated(gjkResult) {
         this.pointOnA.copy(gjkResult.pointA);
         this.pointOnB.copy(gjkResult.pointB);

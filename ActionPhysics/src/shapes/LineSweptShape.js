@@ -1,6 +1,6 @@
 // A shape swept along a line segment from `start` to `end` (LOCAL-space points): the Minkowski sum
-// of `shape` with that segment. Used for continuous-collision / swept queries (plan.md, component
-// 11: Queries — ray casting, shape sweeps) without a dedicated CCD solver: the query just asks
+// of `shape` with that segment. Used for continuous-collision / swept queries
+// without a dedicated CCD solver: the query just asks
 // "does this swept volume touch anything", which is a support function away once the base shape
 // has one.
 class LineSweptShape extends Shape {

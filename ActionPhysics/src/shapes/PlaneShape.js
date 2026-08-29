@@ -1,6 +1,5 @@
 // A finite plane: a flat rectangle with zero thickness. Degenerate by construction — special-
-// cased explicitly rather than patched into GJK/EPA later (plan.md, Shapes: "Plane and Triangle
-// are degenerate and are special-cased explicitly at the shape level, not patched later").
+// cased explicitly at the shape level rather than patched into GJK/EPA later.
 //
 // orientation selects which local axis is the normal: 'x', 'y', or 'z'. halfW/halfL extend along
 // the other two axes, in the cyclic order (y,z) for 'x', (z,x) for 'y', (x,y) for 'z' — i.e. the

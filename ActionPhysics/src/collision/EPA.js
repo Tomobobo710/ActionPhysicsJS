@@ -3,9 +3,7 @@
  * simplex that already encloses the origin. GJK proves overlap; EPA measures how deep.
  *
  * Written from the algorithm (van den Bergen, "Collision Detection in Interactive 3D
- * Environments"; the standard EPA formulation), not from a prior implementation - same reasoning
- * as GJK.js: narrowphase is the highest-risk component, and the one place a structural anchor to
- * the predecessor would be worst to carry over.
+ * Environments"; the standard EPA formulation).
  *
  * Produces: signed distance (always >= 0 here — a positive PENETRATION depth, matching the
  * Narrowphase contract's convention where positive = overlapping), a world-space normal pointing
@@ -13,15 +11,11 @@
  * genuine tetrahedron (4 points) that encloses the origin - GJK.run() only ever returns
  * `overlapping: true` from its `_simplexTetrahedron` path, which never produces anything else.
  *
- * BUG FIX CARRIED FROM THE PREDECESSOR (plan.md, Bug reference / Collision detection):
- * "EPA accepted garbage on the iteration cap." Its stable-exit test required
- * `closest_face_distance > EPSILON`, but a resting/shallow contact sits BELOW epsilon, so it never
- * exited early, ran to the iteration cap, and returned whatever the LAST iteration's polytope
- * state happened to be - not the best one found. The fix here is structural: the closest face
- * found across every iteration is tracked independently of the loop's current state, and the
- * final return always reads from that tracked best - never from "whatever the polytope looks like
- * when the loop happens to end." A resting contact (depth near zero) converges immediately because
- * there is nothing left to expand, not because of a lucky exit-epsilon comparison.
+ * ITERATION-CAP DISCIPLINE: the result must never be "whatever the polytope looks like when the
+ * loop happens to end." The final return always re-queries the LIVE polytope's closest alive face,
+ * whether the loop converged cleanly or hit the iteration cap - a face's distance value is only
+ * meaningful while it is still alive. A resting contact (depth near zero) converges immediately
+ * because there is nothing left to expand, not because of a lucky exit-epsilon comparison.
  */
 class EPA {
     constructor() {
@@ -125,12 +119,12 @@ class EPA {
      * enclose the origin) into the true penetration depth and normal.
      *
      * Returns { distance, normal, pointA, pointB } - distance is a non-negative penetration depth
-     * (plan.md's positive = overlapping convention), normal points from B to A (same convention
+     * (positive = overlapping convention), normal points from B to A (same convention
      * GJK's separated result uses), pointA/pointB are witness points on each shape's own surface
      * recovered from the winning face's barycentric weights.
      *
-     * maxIterations guards non-convergence on pathological input. Per the header's bug-fix note,
-     * hitting the cap returns the best (closest-to-origin) face tracked across the WHOLE run, not
+     * maxIterations guards non-convergence on pathological input. Hitting the cap returns the
+     * live polytope's closest (closest-to-origin) alive face, not
      * whatever face is live when the loop happens to stop.
      */
     // Completes a full, non-degenerate tetrahedron (4 points, real volume) in this._wx.. from the
@@ -278,8 +272,8 @@ class EPA {
 
             // Converged: the new support point does not extend past the closest face's own plane
             // by more than a small margin. This is checked against the closest face's distance
-            // DIRECTLY (not a fixed epsilon independent of scale) - see the header's bug-fix note:
-            // the predecessor's bug was exactly a fixed-epsilon exit test failing for shallow
+            // DIRECTLY (not a fixed epsilon independent of scale) - a fixed-epsilon exit test
+            // fails for shallow
             // contacts. Comparing the new point's extent to the face's own already-converged
             // distance means a resting contact (whose closest face sits near-zero) still detects
             // "no more progress" correctly, because both sides of the comparison scale together.
@@ -289,8 +283,8 @@ class EPA {
         }
 
         // The closest ALIVE face, read fresh right here rather than tracked across iterations.
-        // This IS the actual fix for the predecessor's bug (plan.md, Bug reference: "returned
-        // whatever the final iteration produced" instead of the converged answer) - a face's own
+        // This IS the "return the converged result, never the last one" rule, applied correctly:
+        // a face's own
         // distance value is only meaningful while it is still alive; a face expansion replaces
         // wrong-but-smaller-looking faces with new ones as the polytope refines toward the true
         // surface, so tracking "smallest distance ever seen across iterations" (tried and reverted

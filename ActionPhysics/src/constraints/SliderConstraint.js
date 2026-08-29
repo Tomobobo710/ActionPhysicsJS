@@ -4,11 +4,8 @@
  * own rotation lock, reused directly below - one owner, Rule 2) plus 2 of the 3 translational DOF
  * locked (position perpendicular to the slide axis; motion ALONG the axis stays free).
  *
- * Goblin's own SliderConstraint (consulted for the shared concept, not copied - plan.md's rebuild
- * rules) has a documented gap: its rotational rows are velocity-only, with the position-error bias
- * term computed but never assigned, so rotation drifts uncorrected over time. That gap is not
- * carried over here - this rotation lock is the exact same fully-corrected XPBD constraint
- * WeldConstraint uses, reused by composition rather than reimplemented with the same hole.
+ * The rotation lock is a fully-corrected XPBD position constraint - WeldConstraint's own angular
+ * half, reused by composition.
  *
  * XPBD position constraint for the linear half: C = (worldPointB - worldPointA) projected onto the
  * plane PERPENDICULAR to the slide axis (the along-axis component is discarded before solving, so

@@ -1,8 +1,8 @@
 /**
  * World: the pipeline glue. Owns the body list and drives one tick through every stage in order -
- * broadphase, midphase, narrowphase, solver - exactly the pipeline table in plan.md, nothing more.
+ * broadphase, midphase, narrowphase, solver.
  *
- * Public surface matches plan.md's API surface table: addRigidBody, removeRigidBody,
+ * Public surface: addRigidBody, removeRigidBody,
  * addConstraint, removeConstraint, step(dt), gravity, rayIntersect, shapeIntersect. The two query
  * methods are thin delegates to Queries (Rule 2: World is pipeline glue, not where an algorithm's
  * real body lives) — they exist here only because that is the documented public surface callers use.
@@ -58,7 +58,7 @@ class World {
     }
 
     // Advances the whole world by `dt`: broadphase -> midphase/narrowphase (fused inside
-    // NarrowPhase.step, which owns calling into Midphase per plan.md's phases split) -> solver.
+    // NarrowPhase.step, which owns calling into Midphase) -> solver.
     // Every dynamic body's derived state (world AABB, world inverse inertia) is refreshed BEFORE
     // broadphase runs, so broadphase's own "AABBs are current" assumption (Rule 1) holds for
     // this tick's bodies, including ones the solver moved last tick.

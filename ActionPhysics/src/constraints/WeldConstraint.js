@@ -4,7 +4,7 @@
  * whatever relative orientation the two bodies had when the weld was created). Behaves like the two
  * bodies were merged into one rigid body, without actually merging their shapes/mass.
  *
- * REBUILT, NOT PORTED. The pivot reuses PointConstraint's own 3x3 coupled solve directly (one owner
+ * The pivot reuses PointConstraint's own 3x3 coupled solve directly (one owner
  * for "solve a point constraint" - Rule 2), same composition HingeConstraint uses. The rotational
  * lock is the general XPBD relative-rotation constraint (Muller et al. 2020 sec 3.4): the RELATIVE
  * rotation between the two bodies (qB * qA^-1, or for a world weld, qA's own rotation) is compared

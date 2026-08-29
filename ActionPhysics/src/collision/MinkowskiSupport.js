@@ -19,7 +19,7 @@ class MinkowskiSupport {
         this._invRotB = new Quaternion();
         this._invRotA.copy(placedA.rotation).invert();
         this._invRotB.copy(placedB.rotation).invert();
-        // Per-instance scratch (plan.md: "scratch memory: per-stage arenas, never global") - EPA
+        // Per-instance scratch, never shared across instances or nested calls - EPA
         // calls supportInto() while GJK's own loop may still be holding references into a prior
         // call's result, so a SHARED scratch across instances (or across nested calls) would
         // silently corrupt whichever call didn't finish first.

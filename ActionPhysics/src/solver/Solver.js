@@ -1,25 +1,18 @@
 /**
- * XPBD solver. One solver, per plan.md ("Solver: XPBD, one solver only") - no PGS fallback exists
- * or is planned. Written from the algorithm (Muller et al., "Detailed Rigid Body Simulation with
+ * XPBD solver - the engine's one solver (Muller et al., "Detailed Rigid Body Simulation with
  * Extended Position Based Dynamics", 2020; Macklin et al.'s earlier XPBD paper for the compliance
- * formulation) - same reasoning as GJK/EPA: this is stage 6, one of the two stages plan.md names
- * as where the engine is won or lost, and a structural anchor to the predecessor's PGS-shaped
- * implementation would be exactly the wrong thing to carry over.
+ * formulation).
  *
- * THE CENTRAL DESIGN RULE (plan.md, "Solver: XPBD, one solver only" and the pipeline table):
- * velocity is DERIVED from position (v = (x - x_prev) / h) and used RAW - no clamp, no slop, no
- * per-body governor, anywhere in this file. If a body's derived velocity is ever wrong, that is a
- * NARROWPHASE bug (bad contact depth/normal), and the fix belongs there, not here. This is the
- * lesson from Goblin's derived-velocity problem (plan.md's own extended writeup): three clamp
- * variants were tried and each traded one failure for another, because the clamp was never the
- * real fix - a box arriving already 0.089 deep (five substeps of undetected travel) was the bug,
- * and clamping the resulting spin only hid it. Detection quality is what actually prevents that
- * here, not this file.
+ * THE CENTRAL DESIGN RULE: velocity is DERIVED from position (v = (x - x_prev) / h) and used RAW -
+ * no clamp, no slop, no per-body governor, anywhere in this file. If a body's derived velocity is
+ * ever wrong, that is a NARROWPHASE bug (bad contact depth/normal), and the fix belongs there, not
+ * here. Clamping was tried and traded one failure for another, because a clamp never fixes the real
+ * cause - a body arriving already deep after undetected travel - it only hides the resulting spin.
+ * Detection quality prevents deep arrivals, not this file.
  *
- * NO POINT-COUNT DIVISOR (plan.md, Bug reference / Solver): each contact point's own accumulated
- * lambda already does the job a divisor was invented to do (stop N-point overcorrection) -
- * removing that compensating term in the predecessor dropped iterations from 15 to 1 and frame
- * cost from 8.43ms to 6.87ms. No division by point count appears anywhere below.
+ * NO POINT-COUNT DIVISOR: each contact point's own accumulated lambda already does the job a
+ * divisor was invented to do (stop N-point overcorrection). No division by point count appears
+ * anywhere below.
  *
  * SUBSTEPPING: gravity/forces integrate once per substep; each substep runs its own XPBD position
  * solve (a fixed small iteration count per substep, not many iterations of a single big step) -
@@ -30,7 +23,7 @@ class Solver {
         opts = opts || {};
         this.substeps = opts.substeps || 4;
         this.iterations = opts.iterations || 1; // position-solve passes PER SUBSTEP
-        // Scratch, owned entirely by the solver (plan.md: per-stage arena, never a shared global).
+        // Scratch, owned entirely by the solver - never shared across stages.
         this._rA = new Vector3(); this._rB = new Vector3();
         this._deltaPos = new Vector3();
         this._impulse = new Vector3();
@@ -241,9 +234,8 @@ class Solver {
     // real overlap resolves) never arrived. Recomputing C live is what makes convergence within a
     // tick's substeps possible at all: each correction actually reduces the NEXT measured C.
     //
-    // Compliance is 0 here (rigid, infinitely stiff contact) - plan.md's own open question
-    // ("whether compliance is ever non-zero in practice") is left open; 0 is the correct default
-    // for a contact that should not be springy.
+    // Compliance is 0 here (rigid, infinitely stiff contact) - the correct default for a contact
+    // that should not be springy.
     _solvePoint(point, bodyA, bodyB, h) {
         point.currentAnchorAInto(this._rA, bodyA);
         point.currentAnchorBInto(this._rB, bodyB);
@@ -253,7 +245,7 @@ class Solver {
         // own output, see EPA.js). C = (anchorB - anchorA) . normal is positive exactly when B's
         // anchor has moved PAST A's anchor in the normal's own direction - i.e. penetrating.
         const C = (this._rB.x - this._rA.x) * nx + (this._rB.y - this._rA.y) * ny + (this._rB.z - this._rA.z) * nz;
-        // SPECULATIVE CONTACT (plan.md, "Continuous collision / speculative contacts"): this guard,
+        // SPECULATIVE CONTACT: this guard,
         // combined with the point being detected BEFORE overlap (narrowphase's speculative margin),
         // IS the speculative mechanism - no separate code path. The point is created while still
         // separated (negative signedDistance), so it already exists in the manifold. Then every
@@ -270,8 +262,8 @@ class Solver {
 
         // Capture the pre-solve contact-relative NORMAL velocity for restitution HERE, only on the
         // substep that actually pushes this point (C > 0, guarded above) - never on an earlier
-        // substep where the pair is still approaching. This is the fix for a real bug (plan.md, Bug
-        // reference: restitution measured 101.19% of impact speed at e=1): the old capture site ran
+        // substep where the pair is still approaching. This is the fix for a real bug (restitution
+        // measured 101.19% of impact speed at e=1): the old capture site ran
         // unconditionally at the START of every substep, for every existing manifold point, even
         // substeps before contact actually engaged. When a tick's fall-to-impact spans multiple
         // substeps, each pre-contact substep overwrote this value with the body's CURRENT, still-
@@ -407,7 +399,7 @@ class Solver {
     // a resting body's tangential contact velocity is driven to exactly zero, capped by the Coulomb
     // limit, so it does not creep - the position-anchor approach kept saturating its cap and letting
     // the body slide down a shallow slope. This is a physical contact constraint on the relative
-    // velocity, NOT the derived-velocity clamp plan.md forbids (that governed a whole body's velocity
+    // velocity, NOT the forbidden derived-velocity clamp (that governed a whole body's velocity
     // to hide a detection bug; this only removes the tangential rub and restores a chosen restitution
     // at the contact, which is exactly what friction and bounce ARE).
     _solveContactVelocity(point, bodyA, bodyB, h) {

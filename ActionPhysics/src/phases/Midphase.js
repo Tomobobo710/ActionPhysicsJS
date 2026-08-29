@@ -12,16 +12,15 @@
  *   - MeshShape: candidates are its triangles (wrapped as TriangleShape) whose world AABB overlaps.
  *
  * Each CompoundShape/MeshShape gets its own BVH over its children/triangles, built ONCE and cached
- * on the shape instance itself (`shape._midphaseBVH`) - static geometry, built once per plan.md's
- * Spatial section. A shape never rebuilds this even if queried by many different bodies (a mesh
+ * on the shape instance itself (`shape._midphaseBVH`) - static geometry. A shape never rebuilds
+ * this even if queried by many different bodies (a mesh
  * asset shared across several static bodies builds its BVH exactly once).
  */
 class Midphase {
     constructor() {
         // Static-geometry leaf cache: for a given (shape, queryAABB) the set of leaf indices that
-        // overlapped, INCLUDING the empty set. Not caching an empty result was the bug that made
-        // every resting body re-walk the BVH and re-run GJK every frame forever (plan.md, Bug
-        // reference / Caching) - 80% of all cache checks in that measurement. Keyed by the OTHER
+        // overlapped, INCLUDING the empty set. Not caching an empty result made
+        // every resting body re-walk the BVH and re-run GJK every frame forever. Keyed by the OTHER
         // body's id, since the query box moves every tick with that body; invalidated once per
         // tick for a moving other-body, kept for a sleeping one (the sleep manager owns eviction
         // once it exists - this cache only ever stores what it's given, never guesses staleness).
@@ -30,8 +29,7 @@ class Midphase {
 
     // Clears every cached leaf-walk result. Call this when a static/kinematic compound or mesh
     // body's geometry or transform changes - the cache has no way to know that on its own (it is
-    // keyed by the OTHER body, not the static one), matching the "sleeping bodies still get woken
-    // explicitly" discipline in plan.md's Sleep section rather than guessing at staleness here.
+    // keyed by the OTHER body, not the static one). Callers own staleness here; the cache never
     invalidate() {
         this._leafCache.clear();
     }

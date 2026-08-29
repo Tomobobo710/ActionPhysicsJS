@@ -1,6 +1,6 @@
 // Axis is local Y. Constructor takes TOTAL height, unlike every other shape here — noted
-// explicitly because it is the one deliberate exception to the half-extent rule (plan.md,
-// Units and conventions): a capsule's height already includes its hemispherical caps, so there
+// explicitly because it is the one deliberate exception to the half-extent rule: a capsule's
+// height already includes its hemispherical caps, so there
 // is no natural "half-extent" reading that isn't itself confusing. segmentHalfLength is the
 // half-length of the cylindrical core only (between sphere centers), derived once here.
 class CapsuleShape extends Shape {
@@ -40,7 +40,7 @@ class CapsuleShape extends Shape {
     }
 
     // Composite of a cylindrical core plus two hemispherical caps, each contributing its own
-    // parallel-axis term. Standard closed forms; see e.g. Bullet/Rapier capsule inertia derivations.
+    // parallel-axis term. Standard closed forms.
     computeMassData() {
         const r = this.radius, hs = this.segmentHalfLength;
         const cylinderVolume = Scalar.PI * r * r * (2 * hs);

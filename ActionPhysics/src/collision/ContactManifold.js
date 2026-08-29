@@ -1,13 +1,12 @@
 /**
  * ContactManifold: the persistent contact state for one pair of primitive shapes, across ticks.
  *
- * Owns point lifetime ENTIRELY (plan.md, component 5 and Rule 1/2). Narrowphase (via update())
+ * Owns point lifetime ENTIRELY. Narrowphase (via update())
  * only ever ADDS or REFRESHES points from this tick's GJK/EPA result; only the manifold itself
  * REMOVES a point, and only between ticks (never mid-substep - see the bug reference below).
  * Everywhere else assumes a manifold's point set is stable for the duration of a tick.
  *
- * BUG FIX CARRIED FROM THE PREDECESSOR (plan.md, Bug reference / Contact management):
- * "Refreshing manifolds mid-tick emptied them." Re-running a staleness cull once per SUBSTEP
+ * MID-TICK STABILITY: re-running a staleness cull once per SUBSTEP
  * retired points that were merely mid-correction - not actually separated, just still being
  * resolved by the solver's own position projection within the same tick. 38 of 1210 manifolds
  * emptied, dropping bodies onto their neighbours. The fix here is structural: update() (called
@@ -86,8 +85,8 @@ class ContactManifold {
             }
             if (bestJ === -1) {
                 // Not re-confirmed this tick: remove. This is the ONLY place a point is removed -
-                // never mid-substep, never from a separate staleness sweep (plan.md, Bug
-                // reference). A point that genuinely separated simply stops being reported by
+                // never mid-substep, never from a separate staleness sweep. A point that genuinely
+                // separated simply stops being reported by
                 // narrowphase and is pruned here, on the very next tick's update() call.
                 this.points.splice(i, 1);
                 this._localAnchors.splice(i, 1);
@@ -175,8 +174,8 @@ class ContactManifold {
             return;
         }
 
-        // Already at the cap: reduce. Standard 4-point manifold reduction (Bullet, Box2D use the
-        // same idea) - always KEEP the deepest point (it matters most for the solver), and among
+        // Already at the cap: reduce. Standard 4-point manifold reduction - always KEEP the
+        // deepest point (it matters most for the solver), and among
         // the remaining candidates (the new point plus the 3 non-deepest existing ones) keep
         // whichever 3 form the LARGEST-AREA quadrilateral with the deepest point. Maximizing area
         // keeps the manifold spread out (good torque resistance - a box resting on a corner-only

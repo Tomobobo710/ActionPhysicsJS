@@ -1,20 +1,11 @@
 /**
  * Constraint: base class for the user-facing joints (Point, Hinge, Slider, Weld).
  *
- * REBUILT, NOT PORTED (plan.md, "This is a rebuild, not a port"). Goblin's joints sit on top of
- * PGS's velocity-impulse machinery - Constraint/ConstraintRow/ConstraintLimit/ConstraintMotor, each
- * row an iteratively-solved velocity constraint with a Jacobian and a bias term. This engine has one
- * solver, XPBD (plan.md, "Solver: XPBD, one solver only"), which solves POSITION constraints
- * directly: a joint here computes its own position error (a vector or scalar C) and applies a
- * correction via the same generalized-inverse-mass math the contact solver already uses - there is
- * no row/Jacobian/bias abstraction to port, because XPBD does not have one. Carrying Goblin's row
- * shape over would be exactly the "port with different names" plan.md's rebuild rules warn against.
- *
- * A joint's solve() is called by the solver once per substep (same cadence as the contact solve),
- * inside the position-constraint loop, before velocity is derived - so a joint's effect shows up in
- * derived velocity for free, the same way a contact's does. No compliance/softness is implemented
- * yet (matches the contact solver's own current state - plan.md's open question on compliance is
- * still open); every joint here is rigid.
+ * A joint computes its own position error (a vector or scalar C) and applies the correction via
+ * the same generalized-inverse-mass math the contact solver already uses. A joint's solve() runs
+ * once per substep inside the position-constraint loop, before velocity is derived - so a joint's
+ * effect shows up in derived velocity for free, the same way a contact's does. No
+ * compliance/softness yet; every joint here is rigid.
  */
 class Constraint {
     constructor(bodyA, bodyB) {

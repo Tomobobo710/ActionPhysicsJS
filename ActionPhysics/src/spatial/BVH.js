@@ -1,6 +1,6 @@
 /**
  * Static BVH over a fixed set of leaves, built once. Flattened array layout - array indexing, not
- * pointer chasing (plan.md, Spatial). One implementation, three call sites: compound children,
+ * pointer chasing. One implementation, three call sites: compound children,
  * mesh triangles, swept queries.
  *
  * Construction takes a leaf count and two callbacks:
@@ -71,7 +71,7 @@ class BVH {
         }
 
         // Median split on the widest axis of [lo, hi)'s combined bound. A cheap, deterministic
-        // heuristic (no SAH) - correct measured cost per plan.md is 1.38 children visited per
+        // heuristic (no SAH) - measured cost is ~1.38 children visited per
         // query, which came from exactly this kind of structure; revisit only if a stress test
         // shows it isn't good enough.
         function buildRange(lo, hi) {

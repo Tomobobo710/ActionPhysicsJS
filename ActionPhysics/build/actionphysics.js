@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-24T22:19:44.591Z
+// ActionPhysics 0.1.0 — built 2026-08-24T23:00:20.622Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine.
@@ -2658,7 +2658,7 @@ ActionPhysics.AABB = AABB;
 class Shape {
     // A shape reports the CATEGORY of margin its narrowphase pair needs. Plane and Triangle are
     // degenerate (infinite extent / zero thickness) and get special-cased at dispatch rather than
-    // patched inside GJK/EPA — see plan.md, Shapes section.
+    // patched inside GJK/EPA.
     constructor(type) {
         this.type = type;
     }
@@ -2684,7 +2684,7 @@ ActionPhysics.Shape = Shape;
 
 
 // ==== src/shapes/BoxShape.js ====
-// Every dimension is a half-extent (plan.md, Units and conventions) — matches AABB, matches
+// Every dimension is a half-extent — matches AABB, matches
 // every other shape's convention. No shape silently uses a different one.
 class BoxShape extends Shape {
     constructor(halfWidth, halfHeight, halfDepth) {
@@ -2766,9 +2766,8 @@ ActionPhysics.SphereShape = SphereShape;
 
 
 // ==== src/shapes/CylinderShape.js ====
-// Axis is local Y. halfHeight is a half-extent (see plan.md, Units and conventions) — this is
-// the deliberate departure from the predecessor, whose capsule took total height and silently
-// broke callers written in half-extents everywhere else.
+// Axis is local Y. halfHeight is a half-extent, matching every other shape's convention
+// (CapsuleShape's total-height constructor is the one deliberate exception).
 class CylinderShape extends Shape {
     constructor(radius, halfHeight) {
         super('cylinder');
@@ -2880,8 +2879,8 @@ ActionPhysics.ConeShape = ConeShape;
 
 // ==== src/shapes/CapsuleShape.js ====
 // Axis is local Y. Constructor takes TOTAL height, unlike every other shape here — noted
-// explicitly because it is the one deliberate exception to the half-extent rule (plan.md,
-// Units and conventions): a capsule's height already includes its hemispherical caps, so there
+// explicitly because it is the one deliberate exception to the half-extent rule: a capsule's
+// height already includes its hemispherical caps, so there
 // is no natural "half-extent" reading that isn't itself confusing. segmentHalfLength is the
 // half-length of the cylindrical core only (between sphere centers), derived once here.
 class CapsuleShape extends Shape {
@@ -2921,7 +2920,7 @@ class CapsuleShape extends Shape {
     }
 
     // Composite of a cylindrical core plus two hemispherical caps, each contributing its own
-    // parallel-axis term. Standard closed forms; see e.g. Bullet/Rapier capsule inertia derivations.
+    // parallel-axis term. Standard closed forms.
     computeMassData() {
         const r = this.radius, hs = this.segmentHalfLength;
         const cylinderVolume = Scalar.PI * r * r * (2 * hs);
@@ -3298,8 +3297,7 @@ ActionPhysics.ConvexShape = ConvexShape;
 
 // ==== src/shapes/PlaneShape.js ====
 // A finite plane: a flat rectangle with zero thickness. Degenerate by construction — special-
-// cased explicitly rather than patched into GJK/EPA later (plan.md, Shapes: "Plane and Triangle
-// are degenerate and are special-cased explicitly at the shape level, not patched later").
+// cased explicitly at the shape level rather than patched into GJK/EPA later.
 //
 // orientation selects which local axis is the normal: 'x', 'y', or 'z'. halfW/halfL extend along
 // the other two axes, in the cyclic order (y,z) for 'x', (z,x) for 'y', (x,y) for 'z' — i.e. the
@@ -3353,7 +3351,7 @@ ActionPhysics.PlaneShape = PlaneShape;
 // ==== src/shapes/TriangleShape.js ====
 // A single zero-thickness triangle in local space. Degenerate like PlaneShape, for the same
 // reason — see PlaneShape's header. Used both standalone and as the per-triangle shape a
-// MeshShape's midphase dispatches into (plan.md: "midphase — which triangles of a mesh?").
+// MeshShape's midphase dispatches into.
 class TriangleShape extends Shape {
     constructor(a, b, c) {
         super('triangle');
@@ -3397,9 +3395,9 @@ ActionPhysics.TriangleShape = TriangleShape;
 
 // ==== src/shapes/MeshShape.js ====
 // Static triangle mesh: a vertex list plus flat index triples. Zero mass by construction — a
-// mesh is a static/kinematic-only shape (plan.md: BVH is "built once for static geometry").
-// The midphase BVH over these triangles is built lazily by whatever consumes this shape
-// (plan.md, Spatial: "one BVH implementation, three call sites"); this class only owns geometry.
+// mesh is a static/kinematic-only shape (its BVH is built once and never updated).
+// The midphase BVH over these triangles is built lazily by whatever consumes this shape;
+// this class only owns geometry.
 class MeshShape extends Shape {
     constructor(vertices, indices) {
         super('mesh');
@@ -3567,8 +3565,8 @@ ActionPhysics.CompoundShape = CompoundShape;
 
 // ==== src/shapes/LineSweptShape.js ====
 // A shape swept along a line segment from `start` to `end` (LOCAL-space points): the Minkowski sum
-// of `shape` with that segment. Used for continuous-collision / swept queries (plan.md, component
-// 11: Queries — ray casting, shape sweeps) without a dedicated CCD solver: the query just asks
+// of `shape` with that segment. Used for continuous-collision / swept queries
+// without a dedicated CCD solver: the query just asks
 // "does this swept volume touch anything", which is a support function away once the base shape
 // has one.
 class LineSweptShape extends Shape {
@@ -3626,8 +3624,8 @@ ActionPhysics.LineSweptShape = LineSweptShape;
 
 
 // ==== src/bodies/RigidBody.js ====
-// Body type, as a first-class concept (plan.md: "What mature engines have that Goblin doesn't" #2).
-// Checked in exactly one place per stage, never as scattered mass===Infinity comparisons.
+// Body type, as a first-class concept: checked in exactly one place per stage, never as scattered
+// mass===Infinity comparisons.
 const BODY_STATIC = 0;
 const BODY_KINEMATIC = 1;
 const BODY_DYNAMIC = 2;
@@ -3636,13 +3634,11 @@ let _nextBodyId = 1;
 
 /**
  * A rigid body: shape + world transform + (for dynamic bodies) mass/motion state. Broadphase and
- * midphase only need shape + transform + AABB; the mass/motion/material fields exist now rather
- * than being bolted on at the solver stage, so this class is not rebuilt twice (plan.md's "one
- * owner per concern" applies to the body's own field layout too - Mass is owned here, not
- * scattered across whichever stage happens to need it first).
+ * midphase only need shape + transform + AABB; the mass/motion/material fields exist so every
+ * concern has exactly one owning home (Mass is owned here, not scattered across whichever stage
+ * happens to need it first).
  *
- * Field groups match the API surface table in plan.md: Transform, Motion, Forces, Material, Mass,
- * Filtering, Identity.
+ * Field groups: Identity, Transform, Mass, Motion, Forces, Material, Filtering, Events.
  */
 class RigidBody {
     constructor(shape, mass) {
@@ -3693,8 +3689,8 @@ class RigidBody {
         // ---- Events ----
         this._listeners = {};
 
-        // Sleep (owned entirely by the sleep manager once it exists - plan.md, Sleep). Present
-        // here only as the state a body carries; no stage but the sleep manager writes to it.
+        // Sleep state, owned entirely by the sleep manager. Present here only as the state a body
+        // carries; no other stage writes to it.
         this.isAwake = true;
         this.sleepTimer = 0;
     }
@@ -3730,17 +3726,13 @@ class RigidBody {
     // ---- Forces ----
     //
     // An IMPULSE is an instantaneous velocity change (a bat hitting a ball) - applied directly to
-    // linear_velocity/angular_velocity right now, the standard physics-engine convention, and
-    // exactly equivalent to spawning the body with that velocity already set (this is what every
-    // impulse call in this file reduces to: dv = j * massInverted, dw = I^-1 * (r x j)).
+    // linear_velocity/angular_velocity right now. Every impulse call in this file reduces to:
+    // dv = j * massInverted, dw = I^-1 * (r x j).
     //
     // A FORCE/TORQUE is continuous (thrust, a constant push) - it accumulates into
-    // accumulated_force/accumulated_torque and is integrated by the solver once per SUBSTEP
-    // (Solver._substep step 1, alongside gravity), then cleared at the end of the full tick
-    // (World.step, after the solver runs) - the standard "forces are re-applied every tick by
-    // whoever wants them to keep acting" contract (matches Goblin's own accumulated-force/torque
-    // convention, and is why these fields already existed on this class before any of Forces was
-    // wired up - see plan.md's API surface table, Forces group).
+    // accumulated_force/accumulated_torque, is integrated by the solver once per SUBSTEP
+    // (Solver._substep, alongside gravity), and is cleared once per TICK (World.step): forces are
+    // re-applied every tick by whoever wants them to keep acting.
     applyImpulse(impulse) {
         if (this._massInverted <= 0) return this;
         this.linear_velocity.x += impulse.x * this._massInverted * this.linear_factor.x;
@@ -3805,8 +3797,7 @@ class RigidBody {
 
     // Zeroes accumulated_force/torque. Called by World.step once per TICK (not per substep - a
     // continuous force stays in effect for every substep within the tick it was applied, then a
-    // caller who wants it to keep acting must call applyForce again next tick, same as Goblin's own
-    // per-tick force contract).
+    // caller who wants it to keep acting must call applyForce again next tick).
     clearForces() {
         this.accumulated_force.set(0, 0, 0);
         this.accumulated_torque.set(0, 0, 0);
@@ -3922,7 +3913,7 @@ class RigidBody {
     // engine. This does NOT replace position/rotation as this body's own state (every solver/
     // narrowphase/query call site reads those fields directly, not through a Transform indirection -
     // changing that would touch hundreds of call sites for no behavioral benefit); it exists only
-    // for CONSUMER code (ActionEngineJS, tests, queries) that wants Transform's own API without
+    // for CONSUMER code (tests, queries) that wants Transform's own API without
     // duplicating its rotate-then-translate math. Lazily allocated once, then reused and re-synced
     // on every call - allocation-free after the first call, matching this file's own discipline for
     // every other derived accessor (getAABB, getBroadphaseAABB).
@@ -3987,9 +3978,8 @@ class RigidBody {
     }
 }
 
-// Scratch objects for the allocation-free AABB/inertia recompute above. Per-class, not shared
-// across unrelated algorithms (plan.md: "scratch memory: per-stage arenas, never global") - these
-// three are private to RigidBody's own derived-state recompute and touched nowhere else.
+// Scratch objects for the allocation-free AABB/inertia recompute above. Private to RigidBody's
+// own derived-state recompute, never shared across unrelated algorithms.
 RigidBody._scratchLocalAABB = new AABB();
 RigidBody._scratchMat3 = new Matrix3();
 RigidBody._scratchMat3b = new Matrix3();
@@ -4014,7 +4004,7 @@ ActionPhysics.RigidBody = RigidBody;
 // ==== src/spatial/BVH.js ====
 /**
  * Static BVH over a fixed set of leaves, built once. Flattened array layout - array indexing, not
- * pointer chasing (plan.md, Spatial). One implementation, three call sites: compound children,
+ * pointer chasing. One implementation, three call sites: compound children,
  * mesh triangles, swept queries.
  *
  * Construction takes a leaf count and two callbacks:
@@ -4085,7 +4075,7 @@ class BVH {
         }
 
         // Median split on the widest axis of [lo, hi)'s combined bound. A cheap, deterministic
-        // heuristic (no SAH) - correct measured cost per plan.md is 1.38 children visited per
+        // heuristic (no SAH) - measured cost is ~1.38 children visited per
         // query, which came from exactly this kind of structure; revisit only if a stress test
         // shows it isn't good enough.
         function buildRange(lo, hi) {
@@ -4150,7 +4140,7 @@ ActionPhysics.BVH = BVH;
 /**
  * Sweep-and-prune broadphase over AABBs, sorted along a single axis.
  *
- * Produces: candidate body pairs, no false negatives (plan.md, Broadphase). May assume AABBs are
+ * Produces: candidate body pairs, no false negatives. May assume AABBs are
  * current - it never recomputes one, only reads body.getBroadphaseAABB() (the fattened, speculative-
  * margin variant, so a pair surfaces the tick before overlap). Must never test actual shapes;
  * the only thing this file knows about a body is its AABB.
@@ -4249,16 +4239,15 @@ ActionPhysics.SAPBroadphase = SAPBroadphase;
  *   - MeshShape: candidates are its triangles (wrapped as TriangleShape) whose world AABB overlaps.
  *
  * Each CompoundShape/MeshShape gets its own BVH over its children/triangles, built ONCE and cached
- * on the shape instance itself (`shape._midphaseBVH`) - static geometry, built once per plan.md's
- * Spatial section. A shape never rebuilds this even if queried by many different bodies (a mesh
+ * on the shape instance itself (`shape._midphaseBVH`) - static geometry. A shape never rebuilds
+ * this even if queried by many different bodies (a mesh
  * asset shared across several static bodies builds its BVH exactly once).
  */
 class Midphase {
     constructor() {
         // Static-geometry leaf cache: for a given (shape, queryAABB) the set of leaf indices that
-        // overlapped, INCLUDING the empty set. Not caching an empty result was the bug that made
-        // every resting body re-walk the BVH and re-run GJK every frame forever (plan.md, Bug
-        // reference / Caching) - 80% of all cache checks in that measurement. Keyed by the OTHER
+        // overlapped, INCLUDING the empty set. Not caching an empty result made
+        // every resting body re-walk the BVH and re-run GJK every frame forever. Keyed by the OTHER
         // body's id, since the query box moves every tick with that body; invalidated once per
         // tick for a moving other-body, kept for a sleeping one (the sleep manager owns eviction
         // once it exists - this cache only ever stores what it's given, never guesses staleness).
@@ -4267,8 +4256,7 @@ class Midphase {
 
     // Clears every cached leaf-walk result. Call this when a static/kinematic compound or mesh
     // body's geometry or transform changes - the cache has no way to know that on its own (it is
-    // keyed by the OTHER body, not the static one), matching the "sleeping bodies still get woken
-    // explicitly" discipline in plan.md's Sleep section rather than guessing at staleness here.
+    // keyed by the OTHER body, not the static one). Callers own staleness here; the cache never
     invalidate() {
         this._leafCache.clear();
     }
@@ -4444,7 +4432,7 @@ class MinkowskiSupport {
         this._invRotB = new Quaternion();
         this._invRotA.copy(placedA.rotation).invert();
         this._invRotB.copy(placedB.rotation).invert();
-        // Per-instance scratch (plan.md: "scratch memory: per-stage arenas, never global") - EPA
+        // Per-instance scratch, never shared across instances or nested calls - EPA
         // calls supportInto() while GJK's own loop may still be holding references into a prior
         // call's result, so a SHARED scratch across instances (or across nested calls) would
         // silently corrupt whichever call didn't finish first.
@@ -4492,9 +4480,7 @@ ActionPhysics.MinkowskiSupport = MinkowskiSupport;
  * GJK: distance / overlap test between two convex shapes via their Minkowski difference.
  *
  * Written from the algorithm (Ericson, "Real-Time Collision Detection", ch. 5; the original
- * Gilbert-Johnson-Keerthi paper), not from a prior implementation - plan.md, "This is a rebuild,
- * not a port": narrowphase is the highest-risk component and the one place a structural anchor to
- * the predecessor would be worst to carry over.
+ * Gilbert-Johnson-Keerthi paper).
  *
  * Two outcomes, both from the SAME loop:
  *   OVERLAPPING - the simplex encloses the origin. Returns the simplex as-is (2-4 points) for EPA
@@ -4505,8 +4491,7 @@ ActionPhysics.MinkowskiSupport = MinkowskiSupport;
  *                 (Solver's job, not GJK's), and this result is used directly as a positive-
  *                 separation contact rather than triggering a second penetrating pass.
  *
- * BUG FIX CARRIED FROM THE PREDECESSOR (plan.md, Bug reference / Collision detection):
- * "Flush shapes reported no contact at all." Two shapes resting exactly touching (or a simplex that
+ * FLUSH/EXACT-TOUCH DISCIPLINE: two shapes resting exactly touching (or a simplex that
  * degenerates during the walk - three collinear points, a zero-area triangle) produced NaN
  * barycentric coordinates and the contact was silently discarded. The fix here is structural: every
  * point-in-simplex / closest-point routine below has an EXPLICIT fallback for the degenerate case
@@ -4687,8 +4672,8 @@ class GJK {
                 return this._originStrictlyInside(support) ? { overlapping: true, simplex: this } : this._separatedResult(support);
             }
         }
-        // Iteration cap reached without a clean termination. This mirrors EPA's own rule below
-        // (plan.md, Bug reference: "return the converged result, never the last one") - the
+        // Iteration cap reached without a clean termination. Mirrors EPA's own converged-result
+        // rule below - the
         // current simplex IS the best convergence reached, so report it honestly as SEPARATED
         // rather than pretending overlap or discarding.
         return this._separatedResult(support);
@@ -4830,8 +4815,8 @@ class GJK {
             normal = new Vector3(this._closest.x / dist, this._closest.y / dist, this._closest.z / dist);
         } else {
             // Exact touching: the origin lies ON the simplex, so `closest` itself carries no
-            // direction. This is the degenerate case the flush-contact fix (plan.md, Bug
-            // reference) exists for - fall back to a normal recoverable from the simplex's own
+            // direction. This is the degenerate case the flush-contact discipline exists for -
+            // fall back to a normal recoverable from the simplex's own
             // geometry rather than a fixed axis, which would be wrong for a touching pair whose
             // true contact plane isn't horizontal.
             normal = new Vector3();
@@ -4862,7 +4847,7 @@ class GJK {
     // points - a 4-point simplex never reaches here because a tetrahedron enclosing the origin
     // returns containsOrigin=true in _doSimplex before this is called). Degenerate simplices (a
     // zero-length edge, a zero-area triangle) fall back explicitly rather than dividing by zero -
-    // this IS the flush-contact fix (plan.md, Bug reference).
+    // this IS the flush-contact discipline.
     _barycentricOfClosest() {
         if (this._count === 1) return [1];
         if (this._count === 2) {
@@ -4938,8 +4923,8 @@ class GJK {
         const nLenSq = nx * nx + ny * ny + nz * nz;
 
         if (nLenSq < 1e-20) {
-            // Degenerate: three (near-)collinear points, zero-area triangle. THIS is the flush-
-            // contact bug from plan.md - fixed by falling back to the closest of the three edges
+            // Degenerate: three (near-)collinear points, zero-area triangle. Fixed by falling back
+            // to the closest of the three edges
             // explicitly instead of discarding. Try each edge as a 2-point simplex and keep the
             // best (closest-to-origin) result.
             return this._degenerateTriangleFallback();
@@ -5114,9 +5099,7 @@ ActionPhysics.GJK = GJK;
  * simplex that already encloses the origin. GJK proves overlap; EPA measures how deep.
  *
  * Written from the algorithm (van den Bergen, "Collision Detection in Interactive 3D
- * Environments"; the standard EPA formulation), not from a prior implementation - same reasoning
- * as GJK.js: narrowphase is the highest-risk component, and the one place a structural anchor to
- * the predecessor would be worst to carry over.
+ * Environments"; the standard EPA formulation).
  *
  * Produces: signed distance (always >= 0 here — a positive PENETRATION depth, matching the
  * Narrowphase contract's convention where positive = overlapping), a world-space normal pointing
@@ -5124,15 +5107,11 @@ ActionPhysics.GJK = GJK;
  * genuine tetrahedron (4 points) that encloses the origin - GJK.run() only ever returns
  * `overlapping: true` from its `_simplexTetrahedron` path, which never produces anything else.
  *
- * BUG FIX CARRIED FROM THE PREDECESSOR (plan.md, Bug reference / Collision detection):
- * "EPA accepted garbage on the iteration cap." Its stable-exit test required
- * `closest_face_distance > EPSILON`, but a resting/shallow contact sits BELOW epsilon, so it never
- * exited early, ran to the iteration cap, and returned whatever the LAST iteration's polytope
- * state happened to be - not the best one found. The fix here is structural: the closest face
- * found across every iteration is tracked independently of the loop's current state, and the
- * final return always reads from that tracked best - never from "whatever the polytope looks like
- * when the loop happens to end." A resting contact (depth near zero) converges immediately because
- * there is nothing left to expand, not because of a lucky exit-epsilon comparison.
+ * ITERATION-CAP DISCIPLINE: the result must never be "whatever the polytope looks like when the
+ * loop happens to end." The final return always re-queries the LIVE polytope's closest alive face,
+ * whether the loop converged cleanly or hit the iteration cap - a face's distance value is only
+ * meaningful while it is still alive. A resting contact (depth near zero) converges immediately
+ * because there is nothing left to expand, not because of a lucky exit-epsilon comparison.
  */
 class EPA {
     constructor() {
@@ -5236,12 +5215,12 @@ class EPA {
      * enclose the origin) into the true penetration depth and normal.
      *
      * Returns { distance, normal, pointA, pointB } - distance is a non-negative penetration depth
-     * (plan.md's positive = overlapping convention), normal points from B to A (same convention
+     * (positive = overlapping convention), normal points from B to A (same convention
      * GJK's separated result uses), pointA/pointB are witness points on each shape's own surface
      * recovered from the winning face's barycentric weights.
      *
-     * maxIterations guards non-convergence on pathological input. Per the header's bug-fix note,
-     * hitting the cap returns the best (closest-to-origin) face tracked across the WHOLE run, not
+     * maxIterations guards non-convergence on pathological input. Hitting the cap returns the
+     * live polytope's closest (closest-to-origin) alive face, not
      * whatever face is live when the loop happens to stop.
      */
     // Completes a full, non-degenerate tetrahedron (4 points, real volume) in this._wx.. from the
@@ -5389,8 +5368,8 @@ class EPA {
 
             // Converged: the new support point does not extend past the closest face's own plane
             // by more than a small margin. This is checked against the closest face's distance
-            // DIRECTLY (not a fixed epsilon independent of scale) - see the header's bug-fix note:
-            // the predecessor's bug was exactly a fixed-epsilon exit test failing for shallow
+            // DIRECTLY (not a fixed epsilon independent of scale) - a fixed-epsilon exit test
+            // fails for shallow
             // contacts. Comparing the new point's extent to the face's own already-converged
             // distance means a resting contact (whose closest face sits near-zero) still detects
             // "no more progress" correctly, because both sides of the comparison scale together.
@@ -5400,8 +5379,8 @@ class EPA {
         }
 
         // The closest ALIVE face, read fresh right here rather than tracked across iterations.
-        // This IS the actual fix for the predecessor's bug (plan.md, Bug reference: "returned
-        // whatever the final iteration produced" instead of the converged answer) - a face's own
+        // This IS the "return the converged result, never the last one" rule, applied correctly:
+        // a face's own
         // distance value is only meaningful while it is still alive; a face expansion replaces
         // wrong-but-smaller-looking faces with new ones as the polytope refines toward the true
         // surface, so tracking "smallest distance ever seen across iterations" (tried and reverted
@@ -5533,7 +5512,7 @@ ActionPhysics.EPA = EPA;
 // ==== src/collision/ContactDetails.js ====
 /**
  * ContactDetails: one contact point between a specific pair of primitive shapes, in the sign
- * convention plan.md establishes for the whole narrowphase: signed distance NEGATIVE when
+ * convention used across the whole narrowphase: signed distance NEGATIVE when
  * separated, POSITIVE when overlapping. GJK's separated result and EPA's overlapping result both
  * report a non-negative magnitude of their own (gap vs. depth) - normalizing the sign here is the
  * one place that distinction gets collapsed into a single number the rest of the pipeline can
@@ -5551,8 +5530,7 @@ class ContactDetails {
         this.pointOnB = new Vector3();
         this.normal = new Vector3();
         this.signedDistance = 0;
-        // Set by the manifold once matched against a previous tick's point (warm-start data -
-        // see plan.md's component list: "ContactManifold (4-point cap, dedup, warm-start data)").
+        // Set by the manifold once matched against a previous tick's point (warm-start data).
         // ContactDetails itself never reads or writes this; it exists here purely as a place to
         // carry the value across the manifold's point-matching step without a second parallel
         // array. Owned entirely by the solver once it exists (Rule 2: one owner per concern).
@@ -5612,7 +5590,7 @@ class ContactDetails {
     }
 
     // Fills this from a GJK separated result (`{distance, normal, pointA, pointB}`, distance is a
-    // non-negative GAP). signedDistance becomes negative - separated, per plan.md's convention.
+    // non-negative GAP). signedDistance becomes negative - separated, per the pipeline convention.
     setFromGJKSeparated(gjkResult) {
         this.pointOnA.copy(gjkResult.pointA);
         this.pointOnB.copy(gjkResult.pointB);
@@ -5659,13 +5637,12 @@ ActionPhysics.ContactDetails = ContactDetails;
 /**
  * ContactManifold: the persistent contact state for one pair of primitive shapes, across ticks.
  *
- * Owns point lifetime ENTIRELY (plan.md, component 5 and Rule 1/2). Narrowphase (via update())
+ * Owns point lifetime ENTIRELY. Narrowphase (via update())
  * only ever ADDS or REFRESHES points from this tick's GJK/EPA result; only the manifold itself
  * REMOVES a point, and only between ticks (never mid-substep - see the bug reference below).
  * Everywhere else assumes a manifold's point set is stable for the duration of a tick.
  *
- * BUG FIX CARRIED FROM THE PREDECESSOR (plan.md, Bug reference / Contact management):
- * "Refreshing manifolds mid-tick emptied them." Re-running a staleness cull once per SUBSTEP
+ * MID-TICK STABILITY: re-running a staleness cull once per SUBSTEP
  * retired points that were merely mid-correction - not actually separated, just still being
  * resolved by the solver's own position projection within the same tick. 38 of 1210 manifolds
  * emptied, dropping bodies onto their neighbours. The fix here is structural: update() (called
@@ -5744,8 +5721,8 @@ class ContactManifold {
             }
             if (bestJ === -1) {
                 // Not re-confirmed this tick: remove. This is the ONLY place a point is removed -
-                // never mid-substep, never from a separate staleness sweep (plan.md, Bug
-                // reference). A point that genuinely separated simply stops being reported by
+                // never mid-substep, never from a separate staleness sweep. A point that genuinely
+                // separated simply stops being reported by
                 // narrowphase and is pruned here, on the very next tick's update() call.
                 this.points.splice(i, 1);
                 this._localAnchors.splice(i, 1);
@@ -5833,8 +5810,8 @@ class ContactManifold {
             return;
         }
 
-        // Already at the cap: reduce. Standard 4-point manifold reduction (Bullet, Box2D use the
-        // same idea) - always KEEP the deepest point (it matters most for the solver), and among
+        // Already at the cap: reduce. Standard 4-point manifold reduction - always KEEP the
+        // deepest point (it matters most for the solver), and among
         // the remaining candidates (the new point plus the 3 non-deepest existing ones) keep
         // whichever 3 form the LARGEST-AREA quadrilateral with the deepest point. Maximizing area
         // keeps the manifold spread out (good torque resistance - a box resting on a corner-only
@@ -5984,7 +5961,7 @@ ActionPhysics.ContactManifoldList = ContactManifoldList;
  * NarrowPhase: dispatch layer tying Midphase's primitive-shape pairs through GJK/EPA into
  * ContactDetails, and routing them into the right ContactManifold.
  *
- * Produces: contacts with accurate point, normal, signed distance (plan.md, Narrowphase contract).
+ * Produces: contacts with accurate point, normal, signed distance.
  * May assume the pair is worth testing (a broadphase/midphase candidate). Must never cull contacts
  * for staleness, clamp depth, or second-guess its own math - that discipline lives entirely in
  * GJK/EPA/ContactDetails already; this file only wires them together and routes results into
@@ -5996,8 +5973,8 @@ ActionPhysics.ContactManifoldList = ContactManifoldList;
 class NarrowPhase {
     // Base speculative margin (metres): a contact is reported once its signed distance is within
     // this of touching, even while still SEPARATED, so a manifold point exists BEFORE overlap
-    // occurs. This is the whole mechanism of speculative contacts (plan.md, "Continuous collision /
-    // speculative contacts" and the derived-velocity fix): the solver's non-penetration constraint,
+    // occurs. This is the whole mechanism of speculative contacts and the derived-velocity fix):
+    // the solver's non-penetration constraint,
     // evaluated every substep against the body's PREDICTED position, needs a point already present
     // to stop the body AT touch instead of first letting it dig in and then digging it back out
     // (the deep-correction -> large derived velocity failure the base margin prevents). Per-pair,
@@ -6010,7 +5987,7 @@ class NarrowPhase {
         this._dt = 1 / 60; // set each tick by step(); the fallback only matters if step() is never called
         // Scratch GJK/EPA instances, reused across every pair tested this tick. Safe because
         // narrowphase runs pairs one at a time (never two GJK.run() calls interleaved) - see
-        // plan.md's scratch-memory rule: per-stage arena, not a global shared across unrelated
+        // Scratch arena owned by this stage, not shared across unrelated
         // algorithms. These belong to NarrowPhase alone.
         this._gjk = new GJK();
         this._epa = new EPA();
@@ -6041,8 +6018,8 @@ class NarrowPhase {
 
             for (let i = 0; i < primitivePairs.length; i++) {
                 const contact = this._testPrimitivePair(primitivePairs[i].a, primitivePairs[i].b);
-                // signedDistance: positive = overlapping, negative = separated by that gap (plan.md
-                // convention). Report the contact while overlapping OR within the speculative
+                // signedDistance: positive = overlapping, negative = separated by that gap. Report
+                // the contact while overlapping OR within the speculative
                 // margin of touching; drop it only once the gap exceeds the margin - too far this
                 // tick for the pair to reach, so no manifold point is warranted. This is the ONE
                 // place narrowphase decides a pair is "not worth a manifold entry" (see
@@ -6108,7 +6085,7 @@ class NarrowPhase {
     //
     // This updates geometry ONLY. It never adds, removes, or re-matches points, and never touches
     // the manifold's point SET or its warm-start lambda - that ownership stays with the manifold's
-    // once-per-tick update() (plan.md's rule against mid-tick manifold churn). A point whose contact
+    // once-per-tick update() (the rule against mid-tick manifold churn). A point whose contact
     // has genuinely separated this substep simply gets a negative signed distance here and the
     // solver's own C<=0 guard makes it inert; it is not culled mid-tick.
     //
@@ -6184,27 +6161,20 @@ ActionPhysics.NarrowPhase = NarrowPhase;
 
 // ==== src/solver/Solver.js ====
 /**
- * XPBD solver. One solver, per plan.md ("Solver: XPBD, one solver only") - no PGS fallback exists
- * or is planned. Written from the algorithm (Muller et al., "Detailed Rigid Body Simulation with
+ * XPBD solver - the engine's one solver (Muller et al., "Detailed Rigid Body Simulation with
  * Extended Position Based Dynamics", 2020; Macklin et al.'s earlier XPBD paper for the compliance
- * formulation) - same reasoning as GJK/EPA: this is stage 6, one of the two stages plan.md names
- * as where the engine is won or lost, and a structural anchor to the predecessor's PGS-shaped
- * implementation would be exactly the wrong thing to carry over.
+ * formulation).
  *
- * THE CENTRAL DESIGN RULE (plan.md, "Solver: XPBD, one solver only" and the pipeline table):
- * velocity is DERIVED from position (v = (x - x_prev) / h) and used RAW - no clamp, no slop, no
- * per-body governor, anywhere in this file. If a body's derived velocity is ever wrong, that is a
- * NARROWPHASE bug (bad contact depth/normal), and the fix belongs there, not here. This is the
- * lesson from Goblin's derived-velocity problem (plan.md's own extended writeup): three clamp
- * variants were tried and each traded one failure for another, because the clamp was never the
- * real fix - a box arriving already 0.089 deep (five substeps of undetected travel) was the bug,
- * and clamping the resulting spin only hid it. Detection quality is what actually prevents that
- * here, not this file.
+ * THE CENTRAL DESIGN RULE: velocity is DERIVED from position (v = (x - x_prev) / h) and used RAW -
+ * no clamp, no slop, no per-body governor, anywhere in this file. If a body's derived velocity is
+ * ever wrong, that is a NARROWPHASE bug (bad contact depth/normal), and the fix belongs there, not
+ * here. Clamping was tried and traded one failure for another, because a clamp never fixes the real
+ * cause - a body arriving already deep after undetected travel - it only hides the resulting spin.
+ * Detection quality prevents deep arrivals, not this file.
  *
- * NO POINT-COUNT DIVISOR (plan.md, Bug reference / Solver): each contact point's own accumulated
- * lambda already does the job a divisor was invented to do (stop N-point overcorrection) -
- * removing that compensating term in the predecessor dropped iterations from 15 to 1 and frame
- * cost from 8.43ms to 6.87ms. No division by point count appears anywhere below.
+ * NO POINT-COUNT DIVISOR: each contact point's own accumulated lambda already does the job a
+ * divisor was invented to do (stop N-point overcorrection). No division by point count appears
+ * anywhere below.
  *
  * SUBSTEPPING: gravity/forces integrate once per substep; each substep runs its own XPBD position
  * solve (a fixed small iteration count per substep, not many iterations of a single big step) -
@@ -6215,7 +6185,7 @@ class Solver {
         opts = opts || {};
         this.substeps = opts.substeps || 4;
         this.iterations = opts.iterations || 1; // position-solve passes PER SUBSTEP
-        // Scratch, owned entirely by the solver (plan.md: per-stage arena, never a shared global).
+        // Scratch, owned entirely by the solver - never shared across stages.
         this._rA = new Vector3(); this._rB = new Vector3();
         this._deltaPos = new Vector3();
         this._impulse = new Vector3();
@@ -6426,9 +6396,8 @@ class Solver {
     // real overlap resolves) never arrived. Recomputing C live is what makes convergence within a
     // tick's substeps possible at all: each correction actually reduces the NEXT measured C.
     //
-    // Compliance is 0 here (rigid, infinitely stiff contact) - plan.md's own open question
-    // ("whether compliance is ever non-zero in practice") is left open; 0 is the correct default
-    // for a contact that should not be springy.
+    // Compliance is 0 here (rigid, infinitely stiff contact) - the correct default for a contact
+    // that should not be springy.
     _solvePoint(point, bodyA, bodyB, h) {
         point.currentAnchorAInto(this._rA, bodyA);
         point.currentAnchorBInto(this._rB, bodyB);
@@ -6438,7 +6407,7 @@ class Solver {
         // own output, see EPA.js). C = (anchorB - anchorA) . normal is positive exactly when B's
         // anchor has moved PAST A's anchor in the normal's own direction - i.e. penetrating.
         const C = (this._rB.x - this._rA.x) * nx + (this._rB.y - this._rA.y) * ny + (this._rB.z - this._rA.z) * nz;
-        // SPECULATIVE CONTACT (plan.md, "Continuous collision / speculative contacts"): this guard,
+        // SPECULATIVE CONTACT: this guard,
         // combined with the point being detected BEFORE overlap (narrowphase's speculative margin),
         // IS the speculative mechanism - no separate code path. The point is created while still
         // separated (negative signedDistance), so it already exists in the manifold. Then every
@@ -6455,8 +6424,8 @@ class Solver {
 
         // Capture the pre-solve contact-relative NORMAL velocity for restitution HERE, only on the
         // substep that actually pushes this point (C > 0, guarded above) - never on an earlier
-        // substep where the pair is still approaching. This is the fix for a real bug (plan.md, Bug
-        // reference: restitution measured 101.19% of impact speed at e=1): the old capture site ran
+        // substep where the pair is still approaching. This is the fix for a real bug (restitution
+        // measured 101.19% of impact speed at e=1): the old capture site ran
         // unconditionally at the START of every substep, for every existing manifold point, even
         // substeps before contact actually engaged. When a tick's fall-to-impact spans multiple
         // substeps, each pre-contact substep overwrote this value with the body's CURRENT, still-
@@ -6592,7 +6561,7 @@ class Solver {
     // a resting body's tangential contact velocity is driven to exactly zero, capped by the Coulomb
     // limit, so it does not creep - the position-anchor approach kept saturating its cap and letting
     // the body slide down a shallow slope. This is a physical contact constraint on the relative
-    // velocity, NOT the derived-velocity clamp plan.md forbids (that governed a whole body's velocity
+    // velocity, NOT the forbidden derived-velocity clamp (that governed a whole body's velocity
     // to hide a detection bug; this only removes the tangential rub and restores a chosen restitution
     // at the contact, which is exactly what friction and bounce ARE).
     _solveContactVelocity(point, bodyA, bodyB, h) {
@@ -6756,20 +6725,11 @@ ActionPhysics.Solver = Solver;
 /**
  * Constraint: base class for the user-facing joints (Point, Hinge, Slider, Weld).
  *
- * REBUILT, NOT PORTED (plan.md, "This is a rebuild, not a port"). Goblin's joints sit on top of
- * PGS's velocity-impulse machinery - Constraint/ConstraintRow/ConstraintLimit/ConstraintMotor, each
- * row an iteratively-solved velocity constraint with a Jacobian and a bias term. This engine has one
- * solver, XPBD (plan.md, "Solver: XPBD, one solver only"), which solves POSITION constraints
- * directly: a joint here computes its own position error (a vector or scalar C) and applies a
- * correction via the same generalized-inverse-mass math the contact solver already uses - there is
- * no row/Jacobian/bias abstraction to port, because XPBD does not have one. Carrying Goblin's row
- * shape over would be exactly the "port with different names" plan.md's rebuild rules warn against.
- *
- * A joint's solve() is called by the solver once per substep (same cadence as the contact solve),
- * inside the position-constraint loop, before velocity is derived - so a joint's effect shows up in
- * derived velocity for free, the same way a contact's does. No compliance/softness is implemented
- * yet (matches the contact solver's own current state - plan.md's open question on compliance is
- * still open); every joint here is rigid.
+ * A joint computes its own position error (a vector or scalar C) and applies the correction via
+ * the same generalized-inverse-mass math the contact solver already uses. A joint's solve() runs
+ * once per substep inside the position-constraint loop, before velocity is derived - so a joint's
+ * effect shows up in derived velocity for free, the same way a contact's does. No
+ * compliance/softness yet; every joint here is rigid.
  */
 class Constraint {
     constructor(bodyA, bodyB) {
@@ -6940,12 +6900,10 @@ ActionPhysics.PointConstraint = PointConstraint;
  * HingeConstraint: two bodies (or one body and the world) rotate about a shared axis and pivot
  * point, like a door hinge - 3 translational DOF removed at the pivot (same as PointConstraint) plus
  * 2 of the 3 rotational DOF removed (only rotation about the shared hinge axis is free). No swing
- * limit or motor yet (plan.md's Constraint base/limit/motor layer, item 8, is a later increment - see
- * plan.md's Not-started list; a hinge with no limit/motor is still a complete, correct hinge, just an
- * unbounded/unpowered one).
+ * limit or motor yet - a hinge with no limit/motor is still a complete, correct hinge, just an
+ * unbounded/unpowered one.
  *
- * REBUILT AS TWO STACKED XPBD POSITION CONSTRAINTS (plan.md, "This is a rebuild, not a port" -
- * Constraint.js's own header explains why Goblin's ConstraintRow/Jacobian shape is not carried over).
+ * Built as two stacked XPBD position constraints.
  * The pivot uses exactly PointConstraint's own 3x3 coupled solve (composition, not duplication - see
  * _solvePivot below, which shares PointConstraint's math via the same effective-mass helper). The
  * angular lock uses the standard XPBD relative-rotation trick (Muller et al. 2020 sec 3.4): each
@@ -6968,10 +6926,8 @@ class HingeConstraint extends Constraint {
         this.localPivotA = new Vector3().copy(pivotA);
         this.localPivotB = new Vector3().copy(pivotB || new Vector3());
         // bodyB's local hinge axis: derived from bodyA's world axis at construction time so the two
-        // bodies start co-axial (matching Goblin's own initial_quaternion capture, but derived
-        // directly here rather than stored as an initial relative rotation - this engine needs only
-        // the axis, not the free rotation about it, since there is no swing limit yet to measure
-        // against an initial reference angle).
+        // bodies start co-axial. Only the axis is captured, not an initial relative rotation - there
+        // is no swing limit yet to measure against an initial reference angle.
         this.localAxisB = new Vector3();
         if (bodyB) {
             const worldAxis = HingeConstraint._scratchV1.copy(this.localAxisA);
@@ -7008,9 +6964,7 @@ class HingeConstraint extends Constraint {
         }
 
         // limit: { min, max } angle in radians about the hinge axis (right-hand rule), or null for
-        // unbounded. set(min, max) below is the caller's entry point (matches Goblin's own
-        // constraint.limit.set(min, max) call shape, since that is simply "an angle range", not an
-        // implementation detail worth diverging from).
+        // unbounded. set(min, max) below is the caller's entry point - it is simply "an angle range".
         this.limit = { min: null, max: null, set: function (min, max) { this.min = min; this.max = max; return this; } };
         // motor: drives the hinge toward `targetVelocity` (rad/s about the axis) up to `maxTorque`
         // (world torque units) of effort per substep. maxTorque = 0 means no motor (the default).
@@ -7279,7 +7233,7 @@ ActionPhysics.HingeConstraint = HingeConstraint;
  * whatever relative orientation the two bodies had when the weld was created). Behaves like the two
  * bodies were merged into one rigid body, without actually merging their shapes/mass.
  *
- * REBUILT, NOT PORTED. The pivot reuses PointConstraint's own 3x3 coupled solve directly (one owner
+ * The pivot reuses PointConstraint's own 3x3 coupled solve directly (one owner
  * for "solve a point constraint" - Rule 2), same composition HingeConstraint uses. The rotational
  * lock is the general XPBD relative-rotation constraint (Muller et al. 2020 sec 3.4): the RELATIVE
  * rotation between the two bodies (qB * qA^-1, or for a world weld, qA's own rotation) is compared
@@ -7407,11 +7361,8 @@ ActionPhysics.WeldConstraint = WeldConstraint;
  * own rotation lock, reused directly below - one owner, Rule 2) plus 2 of the 3 translational DOF
  * locked (position perpendicular to the slide axis; motion ALONG the axis stays free).
  *
- * Goblin's own SliderConstraint (consulted for the shared concept, not copied - plan.md's rebuild
- * rules) has a documented gap: its rotational rows are velocity-only, with the position-error bias
- * term computed but never assigned, so rotation drifts uncorrected over time. That gap is not
- * carried over here - this rotation lock is the exact same fully-corrected XPBD constraint
- * WeldConstraint uses, reused by composition rather than reimplemented with the same hole.
+ * The rotation lock is a fully-corrected XPBD position constraint - WeldConstraint's own angular
+ * half, reused by composition.
  *
  * XPBD position constraint for the linear half: C = (worldPointB - worldPointA) projected onto the
  * plane PERPENDICULAR to the slide axis (the along-axis component is discarded before solving, so
@@ -7560,11 +7511,11 @@ ActionPhysics.SliderConstraint = SliderConstraint;
 // ==== src/queries/Queries.js ====
 /**
  * Queries: ray casting and shape sweeps against the world's bodies. World's public surface
- * (plan.md, API surface) is rayIntersect(start, end) and shapeIntersect(shape, start, end); this
+ * is rayIntersect(start, end) and shapeIntersect(shape, start, end); this
  * file is where both actually live, kept separate from World.js itself (Rule 2: World is pipeline
  * glue, not where an algorithm's real body belongs).
  *
- * REBUILT, NOT PORTED (plan.md, "This is a rebuild, not a port"). Both queries reuse GJK's own
+ * Both queries reuse GJK's own
  * closest-distance result directly, rather than a separate ray-vs-shape or shape-vs-shape
  * algorithm. A ray is modeled as a zero-radius sphere (SphereShape supportInto trivially returns
  * the ray's own origin for a zero radius, so this needs no special-cased ray/shape math anywhere)
@@ -7573,8 +7524,8 @@ ActionPhysics.SliderConstraint = SliderConstraint;
  * closest distance and normal between two convex shapes regardless of how far apart they start
  * (verified directly, see _advance's own comment) — one query per candidate body is enough, no
  * repeated advance-and-requery loop is needed the way it would be for a scene with many obstacles
- * along a single path. GJK/EPA are already proven correct (see the Bug reference's GJK/EPA
- * entries) — reusing them here is a smaller, more trustworthy surface than a second geometric
+ * along a single path. GJK/EPA are already proven correct — reusing them here is a smaller, more
+ * trustworthy surface than a second geometric
  * algorithm (segment-vs-triangle, slab tests, etc.) duplicating what GJK already computes.
  *
  * Broadphase has no arbitrary-AABB query surface (SAPBroadphase.computePairs() only produces
@@ -7582,9 +7533,8 @@ ActionPhysics.SliderConstraint = SliderConstraint;
  * ray-vs-AABB / swept-AABB-vs-AABB reject before ever calling GJK — bringing the O(n) candidate
  * cost down without needing a new spatial index. This is the same shape of filter broadphase
  * itself applies (AABB reject, then real geometry), just over the whole body list instead of a
- * sorted sweep, appropriate for the "~150 lines, not a hot per-tick path" scope plan.md gives
- * queries (Component inventory, section 11) — a query runs on demand, not every tick for every
- * body pair.
+ * sorted sweep — queries are not a hot per-tick path: a query runs on demand, not every tick for
+ * every body pair.
  */
 class Queries {
     // rayIntersect(bodies, start, end) -> { body, point, normal, distance, fraction } | null.
@@ -7888,9 +7838,9 @@ ActionPhysics.Queries = Queries;
 // ==== src/world/World.js ====
 /**
  * World: the pipeline glue. Owns the body list and drives one tick through every stage in order -
- * broadphase, midphase, narrowphase, solver - exactly the pipeline table in plan.md, nothing more.
+ * broadphase, midphase, narrowphase, solver.
  *
- * Public surface matches plan.md's API surface table: addRigidBody, removeRigidBody,
+ * Public surface: addRigidBody, removeRigidBody,
  * addConstraint, removeConstraint, step(dt), gravity, rayIntersect, shapeIntersect. The two query
  * methods are thin delegates to Queries (Rule 2: World is pipeline glue, not where an algorithm's
  * real body lives) — they exist here only because that is the documented public surface callers use.
@@ -7946,7 +7896,7 @@ class World {
     }
 
     // Advances the whole world by `dt`: broadphase -> midphase/narrowphase (fused inside
-    // NarrowPhase.step, which owns calling into Midphase per plan.md's phases split) -> solver.
+    // NarrowPhase.step, which owns calling into Midphase) -> solver.
     // Every dynamic body's derived state (world AABB, world inverse inertia) is refreshed BEFORE
     // broadphase runs, so broadphase's own "AABBs are current" assumption (Rule 1) holds for
     // this tick's bodies, including ones the solver moved last tick.

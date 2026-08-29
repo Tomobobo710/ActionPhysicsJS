@@ -2,9 +2,7 @@
  * GJK: distance / overlap test between two convex shapes via their Minkowski difference.
  *
  * Written from the algorithm (Ericson, "Real-Time Collision Detection", ch. 5; the original
- * Gilbert-Johnson-Keerthi paper), not from a prior implementation - plan.md, "This is a rebuild,
- * not a port": narrowphase is the highest-risk component and the one place a structural anchor to
- * the predecessor would be worst to carry over.
+ * Gilbert-Johnson-Keerthi paper).
  *
  * Two outcomes, both from the SAME loop:
  *   OVERLAPPING - the simplex encloses the origin. Returns the simplex as-is (2-4 points) for EPA
@@ -15,8 +13,7 @@
  *                 (Solver's job, not GJK's), and this result is used directly as a positive-
  *                 separation contact rather than triggering a second penetrating pass.
  *
- * BUG FIX CARRIED FROM THE PREDECESSOR (plan.md, Bug reference / Collision detection):
- * "Flush shapes reported no contact at all." Two shapes resting exactly touching (or a simplex that
+ * FLUSH/EXACT-TOUCH DISCIPLINE: two shapes resting exactly touching (or a simplex that
  * degenerates during the walk - three collinear points, a zero-area triangle) produced NaN
  * barycentric coordinates and the contact was silently discarded. The fix here is structural: every
  * point-in-simplex / closest-point routine below has an EXPLICIT fallback for the degenerate case
@@ -197,8 +194,8 @@ class GJK {
                 return this._originStrictlyInside(support) ? { overlapping: true, simplex: this } : this._separatedResult(support);
             }
         }
-        // Iteration cap reached without a clean termination. This mirrors EPA's own rule below
-        // (plan.md, Bug reference: "return the converged result, never the last one") - the
+        // Iteration cap reached without a clean termination. Mirrors EPA's own converged-result
+        // rule below - the
         // current simplex IS the best convergence reached, so report it honestly as SEPARATED
         // rather than pretending overlap or discarding.
         return this._separatedResult(support);
@@ -340,8 +337,8 @@ class GJK {
             normal = new Vector3(this._closest.x / dist, this._closest.y / dist, this._closest.z / dist);
         } else {
             // Exact touching: the origin lies ON the simplex, so `closest` itself carries no
-            // direction. This is the degenerate case the flush-contact fix (plan.md, Bug
-            // reference) exists for - fall back to a normal recoverable from the simplex's own
+            // direction. This is the degenerate case the flush-contact discipline exists for -
+            // fall back to a normal recoverable from the simplex's own
             // geometry rather than a fixed axis, which would be wrong for a touching pair whose
             // true contact plane isn't horizontal.
             normal = new Vector3();
@@ -372,7 +369,7 @@ class GJK {
     // points - a 4-point simplex never reaches here because a tetrahedron enclosing the origin
     // returns containsOrigin=true in _doSimplex before this is called). Degenerate simplices (a
     // zero-length edge, a zero-area triangle) fall back explicitly rather than dividing by zero -
-    // this IS the flush-contact fix (plan.md, Bug reference).
+    // this IS the flush-contact discipline.
     _barycentricOfClosest() {
         if (this._count === 1) return [1];
         if (this._count === 2) {
@@ -448,8 +445,8 @@ class GJK {
         const nLenSq = nx * nx + ny * ny + nz * nz;
 
         if (nLenSq < 1e-20) {
-            // Degenerate: three (near-)collinear points, zero-area triangle. THIS is the flush-
-            // contact bug from plan.md - fixed by falling back to the closest of the three edges
+            // Degenerate: three (near-)collinear points, zero-area triangle. Fixed by falling back
+            // to the closest of the three edges
             // explicitly instead of discarding. Try each edge as a 2-point simplex and keep the
             // best (closest-to-origin) result.
             return this._degenerateTriangleFallback();

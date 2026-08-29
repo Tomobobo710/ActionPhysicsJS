@@ -1,5 +1,5 @@
-// Body type, as a first-class concept (plan.md: "What mature engines have that Goblin doesn't" #2).
-// Checked in exactly one place per stage, never as scattered mass===Infinity comparisons.
+// Body type, as a first-class concept: checked in exactly one place per stage, never as scattered
+// mass===Infinity comparisons.
 const BODY_STATIC = 0;
 const BODY_KINEMATIC = 1;
 const BODY_DYNAMIC = 2;
@@ -8,13 +8,11 @@ let _nextBodyId = 1;
 
 /**
  * A rigid body: shape + world transform + (for dynamic bodies) mass/motion state. Broadphase and
- * midphase only need shape + transform + AABB; the mass/motion/material fields exist now rather
- * than being bolted on at the solver stage, so this class is not rebuilt twice (plan.md's "one
- * owner per concern" applies to the body's own field layout too - Mass is owned here, not
- * scattered across whichever stage happens to need it first).
+ * midphase only need shape + transform + AABB; the mass/motion/material fields exist so every
+ * concern has exactly one owning home (Mass is owned here, not scattered across whichever stage
+ * happens to need it first).
  *
- * Field groups match the API surface table in plan.md: Transform, Motion, Forces, Material, Mass,
- * Filtering, Identity.
+ * Field groups: Identity, Transform, Mass, Motion, Forces, Material, Filtering, Events.
  */
 class RigidBody {
     constructor(shape, mass) {
@@ -65,8 +63,8 @@ class RigidBody {
         // ---- Events ----
         this._listeners = {};
 
-        // Sleep (owned entirely by the sleep manager once it exists - plan.md, Sleep). Present
-        // here only as the state a body carries; no stage but the sleep manager writes to it.
+        // Sleep state, owned entirely by the sleep manager. Present here only as the state a body
+        // carries; no other stage writes to it.
         this.isAwake = true;
         this.sleepTimer = 0;
     }
@@ -102,17 +100,13 @@ class RigidBody {
     // ---- Forces ----
     //
     // An IMPULSE is an instantaneous velocity change (a bat hitting a ball) - applied directly to
-    // linear_velocity/angular_velocity right now, the standard physics-engine convention, and
-    // exactly equivalent to spawning the body with that velocity already set (this is what every
-    // impulse call in this file reduces to: dv = j * massInverted, dw = I^-1 * (r x j)).
+    // linear_velocity/angular_velocity right now. Every impulse call in this file reduces to:
+    // dv = j * massInverted, dw = I^-1 * (r x j).
     //
     // A FORCE/TORQUE is continuous (thrust, a constant push) - it accumulates into
-    // accumulated_force/accumulated_torque and is integrated by the solver once per SUBSTEP
-    // (Solver._substep step 1, alongside gravity), then cleared at the end of the full tick
-    // (World.step, after the solver runs) - the standard "forces are re-applied every tick by
-    // whoever wants them to keep acting" contract (matches Goblin's own accumulated-force/torque
-    // convention, and is why these fields already existed on this class before any of Forces was
-    // wired up - see plan.md's API surface table, Forces group).
+    // accumulated_force/accumulated_torque, is integrated by the solver once per SUBSTEP
+    // (Solver._substep, alongside gravity), and is cleared once per TICK (World.step): forces are
+    // re-applied every tick by whoever wants them to keep acting.
     applyImpulse(impulse) {
         if (this._massInverted <= 0) return this;
         this.linear_velocity.x += impulse.x * this._massInverted * this.linear_factor.x;
@@ -177,8 +171,7 @@ class RigidBody {
 
     // Zeroes accumulated_force/torque. Called by World.step once per TICK (not per substep - a
     // continuous force stays in effect for every substep within the tick it was applied, then a
-    // caller who wants it to keep acting must call applyForce again next tick, same as Goblin's own
-    // per-tick force contract).
+    // caller who wants it to keep acting must call applyForce again next tick).
     clearForces() {
         this.accumulated_force.set(0, 0, 0);
         this.accumulated_torque.set(0, 0, 0);
@@ -294,7 +287,7 @@ class RigidBody {
     // engine. This does NOT replace position/rotation as this body's own state (every solver/
     // narrowphase/query call site reads those fields directly, not through a Transform indirection -
     // changing that would touch hundreds of call sites for no behavioral benefit); it exists only
-    // for CONSUMER code (ActionEngineJS, tests, queries) that wants Transform's own API without
+    // for CONSUMER code (tests, queries) that wants Transform's own API without
     // duplicating its rotate-then-translate math. Lazily allocated once, then reused and re-synced
     // on every call - allocation-free after the first call, matching this file's own discipline for
     // every other derived accessor (getAABB, getBroadphaseAABB).
@@ -359,9 +352,8 @@ class RigidBody {
     }
 }
 
-// Scratch objects for the allocation-free AABB/inertia recompute above. Per-class, not shared
-// across unrelated algorithms (plan.md: "scratch memory: per-stage arenas, never global") - these
-// three are private to RigidBody's own derived-state recompute and touched nowhere else.
+// Scratch objects for the allocation-free AABB/inertia recompute above. Private to RigidBody's
+// own derived-state recompute, never shared across unrelated algorithms.
 RigidBody._scratchLocalAABB = new AABB();
 RigidBody._scratchMat3 = new Matrix3();
 RigidBody._scratchMat3b = new Matrix3();

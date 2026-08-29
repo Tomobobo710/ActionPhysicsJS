@@ -1,10 +1,10 @@
 /**
  * Queries: ray casting and shape sweeps against the world's bodies. World's public surface
- * (plan.md, API surface) is rayIntersect(start, end) and shapeIntersect(shape, start, end); this
+ * is rayIntersect(start, end) and shapeIntersect(shape, start, end); this
  * file is where both actually live, kept separate from World.js itself (Rule 2: World is pipeline
  * glue, not where an algorithm's real body belongs).
  *
- * REBUILT, NOT PORTED (plan.md, "This is a rebuild, not a port"). Both queries reuse GJK's own
+ * Both queries reuse GJK's own
  * closest-distance result directly, rather than a separate ray-vs-shape or shape-vs-shape
  * algorithm. A ray is modeled as a zero-radius sphere (SphereShape supportInto trivially returns
  * the ray's own origin for a zero radius, so this needs no special-cased ray/shape math anywhere)
@@ -13,8 +13,8 @@
  * closest distance and normal between two convex shapes regardless of how far apart they start
  * (verified directly, see _advance's own comment) — one query per candidate body is enough, no
  * repeated advance-and-requery loop is needed the way it would be for a scene with many obstacles
- * along a single path. GJK/EPA are already proven correct (see the Bug reference's GJK/EPA
- * entries) — reusing them here is a smaller, more trustworthy surface than a second geometric
+ * along a single path. GJK/EPA are already proven correct — reusing them here is a smaller, more
+ * trustworthy surface than a second geometric
  * algorithm (segment-vs-triangle, slab tests, etc.) duplicating what GJK already computes.
  *
  * Broadphase has no arbitrary-AABB query surface (SAPBroadphase.computePairs() only produces
@@ -22,9 +22,8 @@
  * ray-vs-AABB / swept-AABB-vs-AABB reject before ever calling GJK — bringing the O(n) candidate
  * cost down without needing a new spatial index. This is the same shape of filter broadphase
  * itself applies (AABB reject, then real geometry), just over the whole body list instead of a
- * sorted sweep, appropriate for the "~150 lines, not a hot per-tick path" scope plan.md gives
- * queries (Component inventory, section 11) — a query runs on demand, not every tick for every
- * body pair.
+ * sorted sweep — queries are not a hot per-tick path: a query runs on demand, not every tick for
+ * every body pair.
  */
 class Queries {
     // rayIntersect(bodies, start, end) -> { body, point, normal, distance, fraction } | null.
