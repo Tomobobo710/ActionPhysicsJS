@@ -62,7 +62,7 @@ node tests/run_headless.js
 open tests/suite.html
 ```
 
-769 passing tests covering math primitives, shapes, collision detection, solver correctness, constraints, queries, character controllers, FPS scenarios, and physics-correctness assertions on multi-shape tumbling scenes.
+Tests covering math primitives, shapes, collision detection, solver correctness, constraints, queries, character controller scenarios, and physics-correctness.
 
 ## Units & Conventions
 
