@@ -57,5 +57,11 @@ module.exports = [
     'src/collision/GJK.js',
     'src/collision/EPA.js',
 
+    // Contacts: ContactDetails normalizes GJK/EPA output; ContactManifold owns point lifetime;
+    // ContactManifoldList owns the set of active manifolds.
+    'src/collision/ContactDetails.js',
+    'src/collision/ContactManifold.js',
+    'src/collision/ContactManifoldList.js',
+
     'src/outro.js'
 ];
