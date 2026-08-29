@@ -122,11 +122,8 @@ class HingeConstraint extends Constraint {
         // Project both references into the plane perpendicular to axis, then measure the signed
         // angle FROM refB (the fixed/starting reference) TO refA (bodyA's current one) via
         // atan2(cross . axis, dot) - the standard signed-angle-about-an-axis formula, exact for any
-        // angle (not a small-angle approximation like the axis-alignment correction above). This
-        // order matters: atan2(refA x refB . axis, ...) gives the angle FROM the current reference
-        // back TO the fixed one, i.e. the NEGATIVE of how far the body has actually swung - verified
-        // directly against the body's own rotation quaternion (2*atan2(q.z, q.w) for a pure Z-axis
-        // rotation) after gravity torqued a hinged plank, which caught this the wrong way round.
+        // angle. The order matters: cross(refA, refB) would give the angle FROM the current
+        // reference back TO the fixed one, the negative of how far the body has actually swung.
         HingeConstraint._projectOntoPlane(refA, axis);
         HingeConstraint._projectOntoPlane(refB, axis);
         const dot = refA.x * refB.x + refA.y * refB.y + refA.z * refB.z;
@@ -166,32 +163,24 @@ class HingeConstraint extends Constraint {
 
         // deltaTheta = -violation / wSum, same Lagrange-multiplier shape as _solveAxisAlignment.
         // _swingAngle measures the angle FROM the fixed/bodyB reference TO bodyA's current one, so
-        // increasing bodyA's own rotation about +axis directly increases the swing angle - verified
-        // directly (_applyAngularDelta(bodyA, +axis*s) measured a positive swing-angle change), the
-        // opposite sign from _solveAxisAlignment's bodyA call (that correction targets an axis-
-        // alignment error, a different quantity with its own independently-verified sign).
+        // increasing bodyA's own rotation about +axis directly increases the swing angle - the
+        // opposite sign from _solveAxisAlignment's bodyA call, which targets a different quantity
+        // (axis-alignment error, not swing angle).
         const scale = -violation / wSum;
         const tx = axis.x * scale, ty = axis.y * scale, tz = axis.z * scale;
         if (bodyA._massInverted > 0) HingeConstraint._applyAngularDelta(bodyA, tx, ty, tz);
         if (hasB) HingeConstraint._applyAngularDelta(bodyB, -tx, -ty, -tz);
     }
 
-    // Drives the RELATIVE angular velocity about the hinge axis toward motor.targetVelocity - a
-    // POSITION correction (matching how every other constraint here acts: the solver derives
-    // velocity from the position delta once per substep AFTER all constraints run, Solver._substep
-    // step 4, so a constraint that only ever wrote angular_velocity directly would have that write
-    // silently discarded the instant step 4 ran).
+    // Drives the RELATIVE angular velocity about the hinge axis toward motor.targetVelocity as a
+    // POSITION correction (the solver derives velocity from the position delta once per substep
+    // after all constraints run, so a write straight to angular_velocity would be discarded).
     //
     // A torque-limited motor accelerates the relative angular velocity toward motor.targetVelocity
     // at angular acceleration alpha = maxTorque*wSum (wSum is the inverse angular moment along the
-    // axis - the standard torque/inertia relation), never overshooting the target in one substep
-    // (a real motor stops applying torque the instant it reaches the speed it was driving toward,
-    // it does not fling the body past it). deltaOmega below is that bounded velocity CHANGE for
-    // this substep; the position step it produces is deltaOmega*h, applied as a small-angle
-    // rotation via _applyAngularDelta (a POSITION correction, matching every other constraint here
-    // - the solver derives velocity from the position delta once per substep AFTER all constraints
-    // run, Solver._substep step 4, so a constraint that only ever wrote angular_velocity directly
-    // would have that write silently discarded the instant step 4 ran).
+    // axis), never overshooting the target in one substep. deltaOmega below is that bounded
+    // velocity change for this substep; the position step it produces is deltaOmega*h, applied as
+    // a small-angle rotation via _applyAngularDelta.
     _solveMotor(h) {
         const bodyA = this.bodyA, bodyB = this.bodyB;
         const axis = HingeConstraint._scratchAxis.copy(this.localAxisA);
@@ -212,11 +201,8 @@ class HingeConstraint extends Constraint {
         if (velError === 0) return;
 
         // maxTorque bounds the angular velocity CHANGE this substep directly (deltaOmega =
-        // maxTorque*wSum, the standard impulse/inverse-inertia relation) - not integrated by h
-        // again on top of that. h already enters once, through step = deltaOmega*h below; an
-        // extra *h here made the motor's real holding strength ~240x weaker than intended (verified
-        // directly: a plank needing ~39 N*m to hold level against its own weight never held with
-        // maxTorque=1 under the double-h version, but does under this one).
+        // maxTorque*wSum, the standard impulse/inverse-inertia relation); h enters once, through
+        // step = deltaOmega*h below, not again here.
         const maxDeltaOmega = this.motor.maxTorque * wSum;
         const deltaOmega = velError > 0 ? Math.min(velError, maxDeltaOmega) : Math.max(velError, -maxDeltaOmega);
         let step = deltaOmega * h;
@@ -234,8 +220,7 @@ class HingeConstraint extends Constraint {
             if (step === 0) return;
         }
 
-        // Positive step increases the swing angle - same sign convention as _solveLimit, verified
-        // the same way (_applyAngularDelta(bodyA, +axis*s) measures a positive swing-angle change).
+        // Positive step increases the swing angle - same sign convention as _solveLimit.
         const scale = step / wSum;
         const tx = axis.x * scale, ty = axis.y * scale, tz = axis.z * scale;
         if (bodyA._massInverted > 0) HingeConstraint._applyAngularDelta(bodyA, tx, ty, tz);

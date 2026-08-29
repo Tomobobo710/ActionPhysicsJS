@@ -26,11 +26,14 @@
  * every body pair.
  */
 class Queries {
-    // rayIntersect(bodies, start, end) -> { body, point, normal, distance, fraction } | null.
+    // rayIntersect(bodies, start, end, ignore) -> { body, point, normal, distance, fraction } | null.
     // The single body whose surface the segment start->end hits FIRST (smallest fraction along the
     // segment), or null if the segment hits nothing. `distance`/`fraction` are along the full
     // start->end segment, not the (possibly shorter) advancement the sweep itself took.
-    static rayIntersect(bodies, start, end) {
+    // `ignore` (optional) is a single RigidBody or an array of them, excluded from candidates before
+    // the AABB reject — a caller casting from its own body's surface (a ground-spring probe, a
+    // character's own capsule) would otherwise hit itself at distance ~0. See Queries._isIgnored.
+    static rayIntersect(bodies, start, end, ignore) {
         const dirX = end.x - start.x, dirY = end.y - start.y, dirZ = end.z - start.z;
         const fullLen = Math.sqrt(dirX * dirX + dirY * dirY + dirZ * dirZ);
         if (fullLen < 1e-12) return null; // zero-length ray hits nothing (a point query isn't a ray)
@@ -38,6 +41,7 @@ class Queries {
         let best = null, bestFraction = Infinity;
         for (let i = 0; i < bodies.length; i++) {
             const body = bodies[i];
+            if (Queries._isIgnored(body, ignore)) continue;
             const aabb = body.getAABB();
             if (!Queries._rayIntersectsAABB(start, end, aabb)) continue;
 
@@ -47,10 +51,10 @@ class Queries {
         return best;
     }
 
-    // shapeIntersect(bodies, shape, start, end) -> { body, point, normal, distance, fraction } | null.
-    // Sweeps `shape` (in its own local orientation, held fixed — no rotation during the sweep) from
-    // start to end and reports the first body it touches, same shape of result as rayIntersect.
-    static shapeIntersect(bodies, shape, start, end, rotation) {
+    // shapeIntersect(bodies, shape, start, end, rotation, ignore) -> same result shape as
+    // rayIntersect. Sweeps `shape` (in its own local orientation, held fixed — no rotation during
+    // the sweep) from start to end and reports the first body it touches. `ignore`: see rayIntersect.
+    static shapeIntersect(bodies, shape, start, end, rotation, ignore) {
         const dirX = end.x - start.x, dirY = end.y - start.y, dirZ = end.z - start.z;
         const fullLen = Math.sqrt(dirX * dirX + dirY * dirY + dirZ * dirZ);
         const localAABB = Queries._scratchLocalAABB;
@@ -64,6 +68,7 @@ class Queries {
         let best = null, bestFraction = Infinity;
         for (let i = 0; i < bodies.length; i++) {
             const body = bodies[i];
+            if (Queries._isIgnored(body, ignore)) continue;
             const aabb = body.getAABB();
             if (!Queries._sweptAABBMayHit(start, end, radius, aabb)) continue;
 
@@ -71,6 +76,16 @@ class Queries {
             if (hit && hit.fraction < bestFraction) { bestFraction = hit.fraction; best = hit; best.body = body; }
         }
         return best;
+    }
+
+    // True if `body` should be excluded from a query's candidates. `ignore` is whatever the caller
+    // passed to rayIntersect/shapeIntersect: undefined/null (nothing ignored), a single RigidBody, or
+    // an array of them. Checked once per candidate before the AABB reject, so an ignored body never
+    // reaches GJK at all.
+    static _isIgnored(body, ignore) {
+        if (!ignore) return false;
+        if (Array.isArray(ignore)) return ignore.indexOf(body) !== -1;
+        return body === ignore;
     }
 
     // rayIntersectBody(start, end, body) -> { point, normal, distance, fraction } | null. Same result

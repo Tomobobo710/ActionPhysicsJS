@@ -95,17 +95,20 @@ class World {
         this.emit('stepEnd', dt);
     }
 
-    // rayIntersect(start, end) -> { body, point, normal, distance, fraction } | null. The first
-    // body (if any) the segment start->end hits, via conservative advancement over GJK - see
-    // Queries.js.
-    rayIntersect(start, end) {
-        return Queries.rayIntersect(this.bodies, start, end);
+    // rayIntersect(start, end, ignore) -> { body, point, normal, distance, fraction } | null. The
+    // first body (if any) the segment start->end hits, via conservative advancement over GJK - see
+    // Queries.js. `ignore` (optional): a single RigidBody or array of them to exclude from
+    // candidates - e.g. a character controller casting from its own body's surface passes itself,
+    // so its own capsule is never reported as the "ground" a tick after spawning.
+    rayIntersect(start, end, ignore) {
+        return Queries.rayIntersect(this.bodies, start, end, ignore);
     }
 
-    // shapeIntersect(shape, start, end, rotation) -> same result shape as rayIntersect. Sweeps
-    // `shape` (held at a fixed `rotation`, identity if omitted) from start to end.
-    shapeIntersect(shape, start, end, rotation) {
-        return Queries.shapeIntersect(this.bodies, shape, start, end, rotation);
+    // shapeIntersect(shape, start, end, rotation, ignore) -> same result shape as rayIntersect.
+    // Sweeps `shape` (held at a fixed `rotation`, identity if omitted) from start to end. `ignore`:
+    // see rayIntersect.
+    shapeIntersect(shape, start, end, rotation, ignore) {
+        return Queries.shapeIntersect(this.bodies, shape, start, end, rotation, ignore);
     }
 }
 

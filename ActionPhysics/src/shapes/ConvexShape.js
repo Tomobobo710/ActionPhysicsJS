@@ -87,8 +87,7 @@ class ConvexShape extends Shape {
             comAccum.y += tetVol * (a.y + b.y + c.y) / 4;
             comAccum.z += tetVol * (a.z + b.z + c.z) / 4;
 
-            // Closed-form moments of a tetrahedron (O,a,b,c) with density 1, verified by direct
-            // Monte-Carlo integration against uniform samples of the tetrahedron's own volume:
+            // Closed-form moments of a tetrahedron (O,a,b,c) with density 1:
             //   int x^2 dV  = (V/20) * ( sum_i xi^2 + (sum_i xi)^2 )
             //   int xy  dV  = (V/20) * ( sum_i xi*yi + (sum_i xi)(sum_i yi) )
             // over the 4 vertices (a, b, c, and the origin, whose coordinates are all 0 and so

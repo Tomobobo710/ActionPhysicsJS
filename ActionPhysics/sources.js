@@ -85,5 +85,9 @@ module.exports = [
     // World - pipeline glue.
     'src/world/World.js',
 
+    // Character controllers - use World/RigidBody's privileged interface (raw force/velocity
+    // access), loaded last since they depend on everything above.
+    'src/character/CharacterController.js',
+
     'src/outro.js'
 ];

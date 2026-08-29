@@ -2,7 +2,7 @@
 	Runner.suite('collision');
 	var AP = typeof module !== 'undefined' && module.exports ? require('../../../build/actionphysics.js') : window.ActionPhysics;
 	var DESC = "An 11-plank bridge is linked end-to-end with paired PointConstraints (breaking_threshold " +
-		"8), anchored at both ends over a ground plane, and a sphere is dropped onto it every 60 ticks.";
+		"800), anchored at both ends over a ground plane, and a sphere is dropped onto it every 60 ticks.";
 
 	Runner.test('collision/constraint-point-scene', 'plank bridge held together by point constraints', function (t) {
 		var world = t.makeWorld();
@@ -31,11 +31,11 @@
 
 			if (previousPlank) {
 				constraint = new AP.PointConstraint(previousPlank, plank, rightBack, leftBack);
-				constraint.breaking_threshold = 8;
+				constraint.breaking_threshold = 800;
 				world.addConstraint(constraint);
 
 				constraint = new AP.PointConstraint(previousPlank, plank, rightFront, leftFront);
-				constraint.breaking_threshold = 8;
+				constraint.breaking_threshold = 800;
 				world.addConstraint(constraint);
 			}
 

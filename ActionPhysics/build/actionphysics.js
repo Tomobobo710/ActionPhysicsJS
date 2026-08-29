@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-24T23:00:20.622Z
+// ActionPhysics 0.1.0 — built 2026-08-25T00:50:50.046Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine.
@@ -3043,8 +3043,7 @@ class ConvexShape extends Shape {
             comAccum.y += tetVol * (a.y + b.y + c.y) / 4;
             comAccum.z += tetVol * (a.z + b.z + c.z) / 4;
 
-            // Closed-form moments of a tetrahedron (O,a,b,c) with density 1, verified by direct
-            // Monte-Carlo integration against uniform samples of the tetrahedron's own volume:
+            // Closed-form moments of a tetrahedron (O,a,b,c) with density 1:
             //   int x^2 dV  = (V/20) * ( sum_i xi^2 + (sum_i xi)^2 )
             //   int xy  dV  = (V/20) * ( sum_i xi*yi + (sum_i xi)(sum_i yi) )
             // over the 4 vertices (a, b, c, and the origin, whose coordinates are all 0 and so
@@ -6803,8 +6802,7 @@ class PointConstraint extends Constraint {
     }
 
     // Called once per substep by the solver, same cadence as the contact position solve. `h` is
-    // accepted (unused - this joint is rigid, no compliance) to match the shape a compliant joint
-    // would need (Muller et al.'s alpha/h^2 term), same as the contact solver's own C=0 rigid case.
+    // this substep's own duration.
     solve(h) {
         if (!this.enabled) return;
         const bodyA = this.bodyA, bodyB = this.bodyB;
@@ -6813,10 +6811,6 @@ class PointConstraint extends Constraint {
         this._anchorAWorld(this._worldA);
         this._anchorBWorld(this._worldB);
         Vector3.subInto(this._C, this._worldB, this._worldA); // C = worldB - worldA (B->A convention, matching the contact solver's own ordering)
-        if (this.breaking_threshold != null && this._C.length() > this.breaking_threshold) {
-            this.enabled = false;
-            return;
-        }
         if (this._C.lengthSquared() < 1e-20) return; // already satisfied to numerical precision
 
         Vector3.subInto(this._rA, this._worldA, bodyA.position);
@@ -6826,7 +6820,11 @@ class PointConstraint extends Constraint {
         this._buildEffectiveMassMatrix(this._K, bodyA, hasB ? bodyB : null, this._rA, this._rB);
         if (!this._Kinv.invertInto(this._K)) return; // singular (both bodies immovable) - nothing to solve
 
-        // delta = Kinv * (-C): the position correction that satisfies C=0 in one solve.
+        // delta = Kinv * (-C): the position correction that satisfies C=0 in one solve. This is the
+        // constraint's Lagrange multiplier for this substep; delta/h^2 is its force-equivalent
+        // (Muller et al. 2020 eq 11), what breaking_threshold below is checked against - raw C
+        // alone stays near zero under any load since a rigid constraint always closes it in one
+        // solve, so it cannot distinguish a settled joint from an overloaded one.
         const cx = -this._C.x, cy = -this._C.y, cz = -this._C.z;
         const K = this._Kinv;
         this._delta.set(
@@ -6834,6 +6832,11 @@ class PointConstraint extends Constraint {
             K.e10 * cx + K.e11 * cy + K.e12 * cz,
             K.e20 * cx + K.e21 * cy + K.e22 * cz
         );
+
+        if (this.breaking_threshold != null && this._delta.length() / (h * h) > this.breaking_threshold) {
+            this.enabled = false;
+            return;
+        }
 
         this._applyCorrection(bodyA, this._rA, this._delta, -1);
         if (hasB) this._applyCorrection(bodyB, this._rB, this._delta, 1);
@@ -7020,11 +7023,8 @@ class HingeConstraint extends Constraint {
         // Project both references into the plane perpendicular to axis, then measure the signed
         // angle FROM refB (the fixed/starting reference) TO refA (bodyA's current one) via
         // atan2(cross . axis, dot) - the standard signed-angle-about-an-axis formula, exact for any
-        // angle (not a small-angle approximation like the axis-alignment correction above). This
-        // order matters: atan2(refA x refB . axis, ...) gives the angle FROM the current reference
-        // back TO the fixed one, i.e. the NEGATIVE of how far the body has actually swung - verified
-        // directly against the body's own rotation quaternion (2*atan2(q.z, q.w) for a pure Z-axis
-        // rotation) after gravity torqued a hinged plank, which caught this the wrong way round.
+        // angle. The order matters: cross(refA, refB) would give the angle FROM the current
+        // reference back TO the fixed one, the negative of how far the body has actually swung.
         HingeConstraint._projectOntoPlane(refA, axis);
         HingeConstraint._projectOntoPlane(refB, axis);
         const dot = refA.x * refB.x + refA.y * refB.y + refA.z * refB.z;
@@ -7064,32 +7064,24 @@ class HingeConstraint extends Constraint {
 
         // deltaTheta = -violation / wSum, same Lagrange-multiplier shape as _solveAxisAlignment.
         // _swingAngle measures the angle FROM the fixed/bodyB reference TO bodyA's current one, so
-        // increasing bodyA's own rotation about +axis directly increases the swing angle - verified
-        // directly (_applyAngularDelta(bodyA, +axis*s) measured a positive swing-angle change), the
-        // opposite sign from _solveAxisAlignment's bodyA call (that correction targets an axis-
-        // alignment error, a different quantity with its own independently-verified sign).
+        // increasing bodyA's own rotation about +axis directly increases the swing angle - the
+        // opposite sign from _solveAxisAlignment's bodyA call, which targets a different quantity
+        // (axis-alignment error, not swing angle).
         const scale = -violation / wSum;
         const tx = axis.x * scale, ty = axis.y * scale, tz = axis.z * scale;
         if (bodyA._massInverted > 0) HingeConstraint._applyAngularDelta(bodyA, tx, ty, tz);
         if (hasB) HingeConstraint._applyAngularDelta(bodyB, -tx, -ty, -tz);
     }
 
-    // Drives the RELATIVE angular velocity about the hinge axis toward motor.targetVelocity - a
-    // POSITION correction (matching how every other constraint here acts: the solver derives
-    // velocity from the position delta once per substep AFTER all constraints run, Solver._substep
-    // step 4, so a constraint that only ever wrote angular_velocity directly would have that write
-    // silently discarded the instant step 4 ran).
+    // Drives the RELATIVE angular velocity about the hinge axis toward motor.targetVelocity as a
+    // POSITION correction (the solver derives velocity from the position delta once per substep
+    // after all constraints run, so a write straight to angular_velocity would be discarded).
     //
     // A torque-limited motor accelerates the relative angular velocity toward motor.targetVelocity
     // at angular acceleration alpha = maxTorque*wSum (wSum is the inverse angular moment along the
-    // axis - the standard torque/inertia relation), never overshooting the target in one substep
-    // (a real motor stops applying torque the instant it reaches the speed it was driving toward,
-    // it does not fling the body past it). deltaOmega below is that bounded velocity CHANGE for
-    // this substep; the position step it produces is deltaOmega*h, applied as a small-angle
-    // rotation via _applyAngularDelta (a POSITION correction, matching every other constraint here
-    // - the solver derives velocity from the position delta once per substep AFTER all constraints
-    // run, Solver._substep step 4, so a constraint that only ever wrote angular_velocity directly
-    // would have that write silently discarded the instant step 4 ran).
+    // axis), never overshooting the target in one substep. deltaOmega below is that bounded
+    // velocity change for this substep; the position step it produces is deltaOmega*h, applied as
+    // a small-angle rotation via _applyAngularDelta.
     _solveMotor(h) {
         const bodyA = this.bodyA, bodyB = this.bodyB;
         const axis = HingeConstraint._scratchAxis.copy(this.localAxisA);
@@ -7110,11 +7102,8 @@ class HingeConstraint extends Constraint {
         if (velError === 0) return;
 
         // maxTorque bounds the angular velocity CHANGE this substep directly (deltaOmega =
-        // maxTorque*wSum, the standard impulse/inverse-inertia relation) - not integrated by h
-        // again on top of that. h already enters once, through step = deltaOmega*h below; an
-        // extra *h here made the motor's real holding strength ~240x weaker than intended (verified
-        // directly: a plank needing ~39 N*m to hold level against its own weight never held with
-        // maxTorque=1 under the double-h version, but does under this one).
+        // maxTorque*wSum, the standard impulse/inverse-inertia relation); h enters once, through
+        // step = deltaOmega*h below, not again here.
         const maxDeltaOmega = this.motor.maxTorque * wSum;
         const deltaOmega = velError > 0 ? Math.min(velError, maxDeltaOmega) : Math.max(velError, -maxDeltaOmega);
         let step = deltaOmega * h;
@@ -7132,8 +7121,7 @@ class HingeConstraint extends Constraint {
             if (step === 0) return;
         }
 
-        // Positive step increases the swing angle - same sign convention as _solveLimit, verified
-        // the same way (_applyAngularDelta(bodyA, +axis*s) measures a positive swing-angle change).
+        // Positive step increases the swing angle - same sign convention as _solveLimit.
         const scale = step / wSum;
         const tx = axis.x * scale, ty = axis.y * scale, tz = axis.z * scale;
         if (bodyA._massInverted > 0) HingeConstraint._applyAngularDelta(bodyA, tx, ty, tz);
@@ -7537,11 +7525,14 @@ ActionPhysics.SliderConstraint = SliderConstraint;
  * every body pair.
  */
 class Queries {
-    // rayIntersect(bodies, start, end) -> { body, point, normal, distance, fraction } | null.
+    // rayIntersect(bodies, start, end, ignore) -> { body, point, normal, distance, fraction } | null.
     // The single body whose surface the segment start->end hits FIRST (smallest fraction along the
     // segment), or null if the segment hits nothing. `distance`/`fraction` are along the full
     // start->end segment, not the (possibly shorter) advancement the sweep itself took.
-    static rayIntersect(bodies, start, end) {
+    // `ignore` (optional) is a single RigidBody or an array of them, excluded from candidates before
+    // the AABB reject — a caller casting from its own body's surface (a ground-spring probe, a
+    // character's own capsule) would otherwise hit itself at distance ~0. See Queries._isIgnored.
+    static rayIntersect(bodies, start, end, ignore) {
         const dirX = end.x - start.x, dirY = end.y - start.y, dirZ = end.z - start.z;
         const fullLen = Math.sqrt(dirX * dirX + dirY * dirY + dirZ * dirZ);
         if (fullLen < 1e-12) return null; // zero-length ray hits nothing (a point query isn't a ray)
@@ -7549,6 +7540,7 @@ class Queries {
         let best = null, bestFraction = Infinity;
         for (let i = 0; i < bodies.length; i++) {
             const body = bodies[i];
+            if (Queries._isIgnored(body, ignore)) continue;
             const aabb = body.getAABB();
             if (!Queries._rayIntersectsAABB(start, end, aabb)) continue;
 
@@ -7558,10 +7550,10 @@ class Queries {
         return best;
     }
 
-    // shapeIntersect(bodies, shape, start, end) -> { body, point, normal, distance, fraction } | null.
-    // Sweeps `shape` (in its own local orientation, held fixed — no rotation during the sweep) from
-    // start to end and reports the first body it touches, same shape of result as rayIntersect.
-    static shapeIntersect(bodies, shape, start, end, rotation) {
+    // shapeIntersect(bodies, shape, start, end, rotation, ignore) -> same result shape as
+    // rayIntersect. Sweeps `shape` (in its own local orientation, held fixed — no rotation during
+    // the sweep) from start to end and reports the first body it touches. `ignore`: see rayIntersect.
+    static shapeIntersect(bodies, shape, start, end, rotation, ignore) {
         const dirX = end.x - start.x, dirY = end.y - start.y, dirZ = end.z - start.z;
         const fullLen = Math.sqrt(dirX * dirX + dirY * dirY + dirZ * dirZ);
         const localAABB = Queries._scratchLocalAABB;
@@ -7575,6 +7567,7 @@ class Queries {
         let best = null, bestFraction = Infinity;
         for (let i = 0; i < bodies.length; i++) {
             const body = bodies[i];
+            if (Queries._isIgnored(body, ignore)) continue;
             const aabb = body.getAABB();
             if (!Queries._sweptAABBMayHit(start, end, radius, aabb)) continue;
 
@@ -7582,6 +7575,16 @@ class Queries {
             if (hit && hit.fraction < bestFraction) { bestFraction = hit.fraction; best = hit; best.body = body; }
         }
         return best;
+    }
+
+    // True if `body` should be excluded from a query's candidates. `ignore` is whatever the caller
+    // passed to rayIntersect/shapeIntersect: undefined/null (nothing ignored), a single RigidBody, or
+    // an array of them. Checked once per candidate before the AABB reject, so an ignored body never
+    // reaches GJK at all.
+    static _isIgnored(body, ignore) {
+        if (!ignore) return false;
+        if (Array.isArray(ignore)) return ignore.indexOf(body) !== -1;
+        return body === ignore;
     }
 
     // rayIntersectBody(start, end, body) -> { point, normal, distance, fraction } | null. Same result
@@ -7933,21 +7936,316 @@ class World {
         this.emit('stepEnd', dt);
     }
 
-    // rayIntersect(start, end) -> { body, point, normal, distance, fraction } | null. The first
-    // body (if any) the segment start->end hits, via conservative advancement over GJK - see
-    // Queries.js.
-    rayIntersect(start, end) {
-        return Queries.rayIntersect(this.bodies, start, end);
+    // rayIntersect(start, end, ignore) -> { body, point, normal, distance, fraction } | null. The
+    // first body (if any) the segment start->end hits, via conservative advancement over GJK - see
+    // Queries.js. `ignore` (optional): a single RigidBody or array of them to exclude from
+    // candidates - e.g. a character controller casting from its own body's surface passes itself,
+    // so its own capsule is never reported as the "ground" a tick after spawning.
+    rayIntersect(start, end, ignore) {
+        return Queries.rayIntersect(this.bodies, start, end, ignore);
     }
 
-    // shapeIntersect(shape, start, end, rotation) -> same result shape as rayIntersect. Sweeps
-    // `shape` (held at a fixed `rotation`, identity if omitted) from start to end.
-    shapeIntersect(shape, start, end, rotation) {
-        return Queries.shapeIntersect(this.bodies, shape, start, end, rotation);
+    // shapeIntersect(shape, start, end, rotation, ignore) -> same result shape as rayIntersect.
+    // Sweeps `shape` (held at a fixed `rotation`, identity if omitted) from start to end. `ignore`:
+    // see rayIntersect.
+    shapeIntersect(shape, start, end, rotation, ignore) {
+        return Queries.shapeIntersect(this.bodies, shape, start, end, rotation, ignore);
     }
 }
 
 ActionPhysics.World = World;
+
+
+// ==== src/character/CharacterController.js ====
+/**
+ * Spring-based character controller: a capsule body held at a fixed ride height above the ground
+ * by a raycast spring, with slope-projected movement and a small falling/grounded/jumping state
+ * machine. This is the smaller of ActionPhysics's two character controllers (the other is the
+ * FPS controller) — see the design plan's Component 10 for why they are independent, not a
+ * base + specialization.
+ *
+ * Uses the World/RigidBody privileged interface directly (raw force application, direct velocity
+ * writes) rather than the public gameplay surface — a character controller is documented as
+ * needing that access.
+ */
+class CharacterController {
+    constructor(world, options) {
+        this.world = world;
+        options = options || {};
+
+        const radius = options.radius || 2;
+        const totalHeight = options.height || 6;
+        this.shape = new CapsuleShape(radius, totalHeight);
+        this.body = new RigidBody(this.shape, options.mass || 1);
+
+        this.body.angular_factor = options.allowYRotation === false
+            ? new Vector3(0, 0, 0)
+            : new Vector3(0, 1, 0);
+
+        // Movement configuration
+        this.moveSpeed = options.moveSpeed || 50;
+        this.maxSpeed = options.maxSpeed || 50;
+        this.stopFactor = options.stopFactor || 0.9;
+        this.stoppingThreshold = options.stoppingThreshold || 0.1;
+        this.jumpForce = options.jumpForce || 60;
+        this.airAcceleration = options.airAcceleration || 0.3;
+        this.groundAcceleration = options.groundAcceleration || 0.3;
+
+        // Input handling
+        this._inputDirection = new Vector3();
+        this._hasInputThisFrame = false;
+        this._jumpRequested = false;
+
+        // Working vectors
+        this.contactNormal = new Vector3(0, 1, 0);
+        this.tempVector = new Vector3();
+        this.moveVector = new Vector3();
+        this.projectedMove = new Vector3();
+
+        // Ground spring config. Once the capsule touches the ground the solver's own contact
+        // constraint pins it there regardless of spring force, so the spring must stop a fall before
+        // the shape reaches the surface - hence a stiff springStrength default. springDamping is set
+        // near critical damping for that strength (2*sqrt(strength*mass)), not scaled proportionally
+        // with it - proportional scaling is underdamped and bounces for a long time before settling.
+        this.rideHeight = options.rideHeight || 4;
+        this.rayLength = options.rayLength || totalHeight;
+        this.springStrength = options.springStrength || 300;
+        this.springDamping = options.springDamping || 30;
+
+        // State management
+        this.states = {};
+        this.currentState = null;
+        this._lastStateChange = { from: null, to: null, time: Date.now() };
+
+        // Debug tracking
+        this._lastGroundHit = null;
+        this._lastHeightError = null;
+        this._lastSpringForce = null;
+        this._lastMoveDelta = new Vector3();
+        this._lastProjectedMove = new Vector3();
+        this._lastAppliedForce = null;
+
+        this._listeners = {};
+
+        this._initializeStates();
+        this.changeState('falling');
+    }
+
+    _initializeStates() {
+        this.states.falling = {
+            name: 'falling',
+            enter: () => {},
+            update: (deltaTime) => {
+                this.updateGroundSpring();
+                if (this._hasInputThisFrame) this.move(this._inputDirection, deltaTime);
+                if (this._lastGroundHit) return 'grounded';
+            },
+            exit: () => {}
+        };
+
+        this.states.grounded = {
+            name: 'grounded',
+            enter: () => {},
+            update: (deltaTime) => {
+                this.updateGroundSpring();
+
+                if (this._jumpRequested) {
+                    this._jumpRequested = false;
+                    return 'jumping';
+                }
+
+                if (this._hasInputThisFrame) {
+                    this.move(this._inputDirection, deltaTime);
+                } else {
+                    const vx = this.body.linear_velocity.x, vz = this.body.linear_velocity.z;
+                    const currentHorizontalSpeed = Math.sqrt(vx * vx + vz * vz);
+                    if (currentHorizontalSpeed > this.stoppingThreshold) {
+                        this.body.linear_velocity.x *= this.stopFactor;
+                        this.body.linear_velocity.z *= this.stopFactor;
+                    } else {
+                        this.body.linear_velocity.x = 0;
+                        this.body.linear_velocity.z = 0;
+                    }
+                }
+
+                if (!this._lastGroundHit) return 'falling';
+            },
+            exit: () => {}
+        };
+
+        this.states.jumping = {
+            name: 'jumping',
+            enter: () => {
+                this.body.linear_velocity.y = this.jumpForce;
+            },
+            update: (deltaTime) => {
+                if (this._hasInputThisFrame) this.move(this._inputDirection, deltaTime);
+                if (this.body.linear_velocity.y <= 0) return 'falling';
+            },
+            exit: () => {}
+        };
+    }
+
+    /** Requests a jump; only takes effect while grounded. */
+    wishJump() {
+        if (this.currentState && this.currentState.name === 'grounded') {
+            this._jumpRequested = true;
+        }
+    }
+
+    changeState(newStateName) {
+        const newState = this.states[newStateName];
+        if (!newState) throw new Error('Invalid state: ' + newStateName);
+
+        if (this.currentState) this.currentState.exit();
+
+        this._lastStateChange = {
+            from: this.currentState ? this.currentState.name : null,
+            to: newState.name,
+            time: Date.now()
+        };
+
+        this.currentState = newState;
+        this.currentState.enter();
+    }
+
+    /** Stores input direction for processing during update(). */
+    handleInput(direction) {
+        if (direction && direction.lengthSquared() > 0) {
+            this._inputDirection.copy(direction);
+            this._hasInputThisFrame = true;
+        } else {
+            this._inputDirection.set(0, 0, 0);
+            this._hasInputThisFrame = false;
+        }
+    }
+
+    /** Advances the state machine. Call once per frame after handleInput(). */
+    update(deltaTime) {
+        if (this.currentState) {
+            const nextState = this.currentState.update(deltaTime);
+            if (nextState && nextState !== this.currentState.name) {
+                this.changeState(nextState);
+            }
+        }
+        this._hasInputThisFrame = false;
+    }
+
+    /**
+     * Raycasts straight down from the capsule's base and applies a spring force to hold the body
+     * at rideHeight above whatever it hits. Call while in FALLING or GROUNDED.
+     */
+    updateGroundSpring() {
+        const halfHeight = this.shape.totalHeight / 2;
+        const rayStart = new Vector3(
+            this.body.position.x,
+            this.body.position.y - halfHeight - 0.00001,
+            this.body.position.z
+        );
+        const rayEnd = new Vector3(rayStart.x, rayStart.y - this.rayLength, rayStart.z);
+
+        const hit = this.world.rayIntersect(rayStart, rayEnd, this.body);
+
+        if (hit) {
+            this._lastGroundHit = hit;
+            this.contactNormal.copy(hit.normal);
+
+            const heightError = this.rideHeight - hit.distance;
+            const verticalVelocity = this.body.linear_velocity.y;
+            const springForce = (heightError * this.springStrength) - (verticalVelocity * this.springDamping);
+
+            this._lastHeightError = heightError;
+            this._lastSpringForce = springForce;
+            this._lastAppliedForce = { x: 0, y: springForce, z: 0 };
+
+            this.body.applyForce(new Vector3(0, springForce, 0));
+        } else {
+            this._lastGroundHit = null;
+            this._lastHeightError = null;
+            this._lastSpringForce = null;
+            this._lastAppliedForce = null;
+            this.contactNormal.set(0, 1, 0);
+        }
+    }
+
+    /** Projects `direction` onto the current ground (or air) and drives velocity toward it. */
+    move(direction, deltaTime) {
+        this.moveVector.copy(direction);
+        this.moveVector.scale(this.moveSpeed);
+        this._lastMoveDelta.copy(this.moveVector);
+
+        if (this.currentState.name === 'falling' || this.currentState.name === 'jumping') {
+            const currentY = this.body.linear_velocity.y;
+            this.body.linear_velocity.x += (this.moveVector.x - this.body.linear_velocity.x) * this.airAcceleration;
+            this.body.linear_velocity.z += (this.moveVector.z - this.body.linear_velocity.z) * this.airAcceleration;
+            this.body.linear_velocity.y = currentY;
+        } else {
+            const dot = this.moveVector.dot(this.contactNormal);
+            this.projectedMove.copy(this.moveVector);
+            this.tempVector.copy(this.contactNormal);
+            this.tempVector.scale(dot);
+            this.projectedMove.subtract(this.tempVector);
+            this._lastProjectedMove.copy(this.projectedMove);
+
+            this.body.linear_velocity.x += (this.projectedMove.x - this.body.linear_velocity.x) * this.groundAcceleration;
+            this.body.linear_velocity.z += (this.projectedMove.z - this.body.linear_velocity.z) * this.groundAcceleration;
+        }
+
+        const vx = this.body.linear_velocity.x, vz = this.body.linear_velocity.z;
+        const currentSpeed = Math.sqrt(vx * vx + vz * vz);
+        if (currentSpeed > this.maxSpeed) {
+            const scale = this.maxSpeed / currentSpeed;
+            this.body.linear_velocity.x *= scale;
+            this.body.linear_velocity.z *= scale;
+        }
+    }
+
+    /** Everything about current movement state, forces and contacts — for debugging/inspection. */
+    getDebugInfo() {
+        return {
+            physics: {
+                position: { x: this.body.position.x, y: this.body.position.y, z: this.body.position.z },
+                velocity: { x: this.body.linear_velocity.x, y: this.body.linear_velocity.y, z: this.body.linear_velocity.z }
+            },
+            movement: {
+                input_direction: this._hasInputThisFrame
+                    ? { x: this._inputDirection.x, y: this._inputDirection.y, z: this._inputDirection.z }
+                    : null,
+                raw_move: { x: this._lastMoveDelta.x, y: this._lastMoveDelta.y, z: this._lastMoveDelta.z },
+                projected_move: { x: this._lastProjectedMove.x, y: this._lastProjectedMove.y, z: this._lastProjectedMove.z },
+                applied_force: this._lastAppliedForce
+            },
+            spring: {
+                hit_distance: this._lastGroundHit ? this._lastGroundHit.distance : null,
+                height_error: this._lastHeightError,
+                spring_force: this._lastSpringForce,
+                target_height: this.rideHeight,
+                spring_strength: this.springStrength,
+                spring_damping: this.springDamping
+            },
+            contact: {
+                normal: { x: this.contactNormal.x, y: this.contactNormal.y, z: this.contactNormal.z },
+                hit: this._lastGroundHit
+                    ? { point: this._lastGroundHit.point, normal: this._lastGroundHit.normal, distance: this._lastGroundHit.distance }
+                    : null
+            },
+            state: { current: this.currentState ? this.currentState.name : null, lastTransition: this._lastStateChange }
+        };
+    }
+
+    addListener(event, fn) {
+        (this._listeners[event] || (this._listeners[event] = [])).push(fn);
+        return this;
+    }
+
+    emit(event, arg) {
+        const list = this._listeners[event];
+        if (!list) return;
+        for (let i = 0; i < list.length; i++) list[i](arg);
+    }
+}
+
+ActionPhysics.CharacterController = CharacterController;
 
 
 // ==== src/outro.js ====

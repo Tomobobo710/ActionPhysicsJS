@@ -54,8 +54,7 @@ class PointConstraint extends Constraint {
     }
 
     // Called once per substep by the solver, same cadence as the contact position solve. `h` is
-    // accepted (unused - this joint is rigid, no compliance) to match the shape a compliant joint
-    // would need (Muller et al.'s alpha/h^2 term), same as the contact solver's own C=0 rigid case.
+    // this substep's own duration.
     solve(h) {
         if (!this.enabled) return;
         const bodyA = this.bodyA, bodyB = this.bodyB;
@@ -64,10 +63,6 @@ class PointConstraint extends Constraint {
         this._anchorAWorld(this._worldA);
         this._anchorBWorld(this._worldB);
         Vector3.subInto(this._C, this._worldB, this._worldA); // C = worldB - worldA (B->A convention, matching the contact solver's own ordering)
-        if (this.breaking_threshold != null && this._C.length() > this.breaking_threshold) {
-            this.enabled = false;
-            return;
-        }
         if (this._C.lengthSquared() < 1e-20) return; // already satisfied to numerical precision
 
         Vector3.subInto(this._rA, this._worldA, bodyA.position);
@@ -77,7 +72,11 @@ class PointConstraint extends Constraint {
         this._buildEffectiveMassMatrix(this._K, bodyA, hasB ? bodyB : null, this._rA, this._rB);
         if (!this._Kinv.invertInto(this._K)) return; // singular (both bodies immovable) - nothing to solve
 
-        // delta = Kinv * (-C): the position correction that satisfies C=0 in one solve.
+        // delta = Kinv * (-C): the position correction that satisfies C=0 in one solve. This is the
+        // constraint's Lagrange multiplier for this substep; delta/h^2 is its force-equivalent
+        // (Muller et al. 2020 eq 11), what breaking_threshold below is checked against - raw C
+        // alone stays near zero under any load since a rigid constraint always closes it in one
+        // solve, so it cannot distinguish a settled joint from an overloaded one.
         const cx = -this._C.x, cy = -this._C.y, cz = -this._C.z;
         const K = this._Kinv;
         this._delta.set(
@@ -85,6 +84,11 @@ class PointConstraint extends Constraint {
             K.e10 * cx + K.e11 * cy + K.e12 * cz,
             K.e20 * cx + K.e21 * cy + K.e22 * cz
         );
+
+        if (this.breaking_threshold != null && this._delta.length() / (h * h) > this.breaking_threshold) {
+            this.enabled = false;
+            return;
+        }
 
         this._applyCorrection(bodyA, this._rA, this._delta, -1);
         if (hasB) this._applyCorrection(bodyB, this._rB, this._delta, 1);
