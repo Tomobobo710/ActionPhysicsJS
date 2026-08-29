@@ -52,5 +52,9 @@ module.exports = [
     // above.
     'src/phases/Midphase.js',
 
+    // Narrowphase (collision detection): MinkowskiSupport wraps two placed shapes; GJK consumes it.
+    'src/collision/MinkowskiSupport.js',
+    'src/collision/GJK.js',
+
     'src/outro.js'
 ];
