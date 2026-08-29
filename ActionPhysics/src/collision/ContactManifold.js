@@ -56,7 +56,18 @@ class ContactManifold {
     // Points not re-confirmed this tick (no incoming contact matched them, or the match exceeded
     // MATCH_DISTANCE, or signedDistance separated past REMOVE_DISTANCE) are removed HERE - this is
     // the manifold's one removal path, and it only ever runs from this method.
+    // Emits contact lifecycle events on both bodies as this update() call changes point state.
+    //   speculativeContact: a brand-new point this tick, while still separated (signedDistance < 0).
+    //       A listener on either body returning false vetoes the point outright (removed before the
+    //       solver ever sees it) - the one place a listener can affect physics, matching the
+    //       documented event-prevention concept.
+    //   contact: a brand-new point this tick that is already overlapping (signedDistance >= 0), or a
+    //       previously-speculative point that becomes overlapping on a later tick's refresh.
+    //   endContact: an existing point removed this tick (separated past match/removal, per-point).
+    //   endAllContact: fired once per body when this call empties the manifold to zero points after
+    //       having had at least one before.
     update(newContacts) {
+        const hadPointsBefore = this.points.length > 0;
         const matched = new Array(newContacts.length).fill(false);
 
         // Match each existing point against the best (closest, in bodyA-local space) unmatched
@@ -80,6 +91,7 @@ class ContactManifold {
                 // narrowphase and is pruned here, on the very next tick's update() call.
                 this.points.splice(i, 1);
                 this._localAnchors.splice(i, 1);
+                this._emitBoth('endContact', existing);
                 continue;
             }
             matched[bestJ] = true;
@@ -109,19 +121,42 @@ class ContactManifold {
             const keepNormal = Math.abs(newContacts[bestJ].signedDistance) < ContactManifold.EXACT_TOUCH_BAND
                 ? ContactManifold._scratchNormal.copy(existing.normal)
                 : null;
+            const wasOverlapping = existing.signedDistance >= 0;
             existing.copy(newContacts[bestJ]); // geometry refreshed
             existing.normalLambda = keepNormalLambda; // warm start restored
             existing.tangentLambda1 = keepTangentLambda1;
             existing.tangentLambda2 = keepTangentLambda2;
             if (keepNormal) existing.normal.copy(keepNormal); // established normal kept through the ambiguous band
             this._localAnchors[i] = ContactManifold._toLocal(this.bodyA, existing.pointOnA);
+            if (!wasOverlapping && existing.signedDistance >= 0) this._emitBoth('contact', existing);
         }
 
         // Any incoming contact not matched to an existing point is genuinely new.
         for (let j = 0; j < newContacts.length; j++) {
             if (matched[j]) continue;
-            this._addPoint(newContacts[j]);
+            if (newContacts[j].signedDistance < 0) {
+                if (!this._speculativeAllowed(newContacts[j])) continue; // vetoed by a listener
+                this._addPoint(newContacts[j]);
+                this._emitBoth('speculativeContact', newContacts[j]);
+            } else {
+                this._addPoint(newContacts[j]);
+                this._emitBoth('contact', newContacts[j]);
+            }
         }
+
+        if (hadPointsBefore && this.points.length === 0) this._emitBoth('endAllContact', null);
+    }
+
+    // A speculativeContact listener on either body may veto the point by returning false. Fired
+    // BEFORE the point is added, so a veto means the point never enters the manifold at all.
+    _speculativeAllowed(contact) {
+        return this.bodyA._speculativeVeto(contact, this.bodyB) !== false &&
+            this.bodyB._speculativeVeto(contact, this.bodyA) !== false;
+    }
+
+    _emitBoth(event, contact) {
+        this.bodyA.emit(event, { contact: contact, other: this.bodyB });
+        this.bodyB.emit(event, { contact: contact, other: this.bodyA });
     }
 
     _addPoint(contact) {

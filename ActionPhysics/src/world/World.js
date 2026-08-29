@@ -16,6 +16,18 @@ class World {
         this.gravity = new Vector3(0, -9.81, 0);
         this.bodies = []; // all bodies, static and dynamic alike - broadphase filters by type itself
         this.constraints = []; // joints - Point/Hinge/Slider/Weld, all solved by the same solver each substep
+        this._listeners = {};
+    }
+
+    addListener(event, fn) {
+        (this._listeners[event] || (this._listeners[event] = [])).push(fn);
+        return this;
+    }
+
+    emit(event, arg) {
+        const list = this._listeners[event];
+        if (!list) return;
+        for (let i = 0; i < list.length; i++) list[i](arg);
     }
 
     addConstraint(constraint) {
@@ -51,6 +63,7 @@ class World {
     // broadphase runs, so broadphase's own "AABBs are current" assumption (Rule 1) holds for
     // this tick's bodies, including ones the solver moved last tick.
     step(dt) {
+        this.emit('stepStart', dt);
         for (let i = 0; i < this.bodies.length; i++) this.bodies[i].updateDerived(dt);
 
         const pairs = this.broadphase.computePairs();
@@ -79,6 +92,7 @@ class World {
         // so refreshing here would be wasted work - narrowphase/broadphase for THIS tick already
         // ran against the pre-solve state, which is correct (Rule 1: each stage assumes the state
         // handed to it, not a moving target updated out from under it mid-tick).
+        this.emit('stepEnd', dt);
     }
 
     // rayIntersect(start, end) -> { body, point, normal, distance, fraction } | null. The first

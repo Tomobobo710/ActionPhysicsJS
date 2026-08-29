@@ -45,6 +45,47 @@ class HingeConstraint extends Constraint {
         // Reuse PointConstraint's own pivot solve by composing an internal instance rather than
         // duplicating its 3x3 coupled math - one owner for "solve a point constraint" (Rule 2).
         this._pivot = new PointConstraint(bodyA, bodyB, this.localPivotA, bodyB ? this.localPivotB : this._worldPivotBPlaceholder());
+
+        // Swing-angle reference frame: a vector perpendicular to the hinge axis, fixed in bodyA's
+        // LOCAL space, whose current angle (about the axis, relative to the SAME perpendicular
+        // carried by bodyB, or by a fixed world reference when bodyB is null) is the hinge's swing
+        // angle. Built once here via Gram-Schmidt against localAxisA so it is guaranteed
+        // perpendicular regardless of which direction the caller's axis points.
+        this._refA = HingeConstraint._perpendicularTo(this.localAxisA);
+        if (bodyB) {
+            // bodyB's own copy of the SAME world reference vector, expressed in bodyB's local
+            // space at construction time - both bodies start at zero swing angle by construction.
+            const worldRef = HingeConstraint._scratchV1.copy(this._refA);
+            bodyA.rotation.transformVectorInPlace(worldRef);
+            const invRotB = HingeConstraint._scratchQ.copy(bodyB.rotation).invert();
+            this._refB = new Vector3().copy(worldRef);
+            invRotB.transformVectorInPlace(this._refB);
+        } else {
+            // Fixed world reference: bodyA's own world reference vector AT CONSTRUCTION time,
+            // cached once (mirrors _fixedWorldAxis's own null-bodyB convention below).
+            this._refB = null;
+            this._fixedWorldRef = HingeConstraint._scratchV1.copy(this._refA);
+            bodyA.rotation.transformVectorInPlace(this._fixedWorldRef);
+            this._fixedWorldRef = new Vector3().copy(this._fixedWorldRef);
+        }
+
+        // limit: { min, max } angle in radians about the hinge axis (right-hand rule), or null for
+        // unbounded. set(min, max) below is the caller's entry point (matches Goblin's own
+        // constraint.limit.set(min, max) call shape, since that is simply "an angle range", not an
+        // implementation detail worth diverging from).
+        this.limit = { min: null, max: null, set: function (min, max) { this.min = min; this.max = max; return this; } };
+        // motor: drives the hinge toward `targetVelocity` (rad/s about the axis) up to `maxTorque`
+        // (world torque units) of effort per substep. maxTorque = 0 means no motor (the default).
+        this.motor = { targetVelocity: 0, maxTorque: 0, set: function (targetVelocity, maxTorque) { this.targetVelocity = targetVelocity; this.maxTorque = maxTorque; return this; } };
+    }
+
+    // Any vector not parallel to `axis`, made exactly perpendicular via Gram-Schmidt, then
+    // normalized - the reference direction a swing angle is measured from.
+    static _perpendicularTo(axis) {
+        const seed = Math.abs(axis.x) < 0.9 ? new Vector3(1, 0, 0) : new Vector3(0, 1, 0);
+        const d = seed.x * axis.x + seed.y * axis.y + seed.z * axis.z;
+        const perp = new Vector3(seed.x - d * axis.x, seed.y - d * axis.y, seed.z - d * axis.z);
+        return perp.normalizeInPlace();
     }
 
     // When bodyB is null, PointConstraint expects its "localAnchorB" to already be a WORLD point
@@ -63,6 +104,148 @@ class HingeConstraint extends Constraint {
         if (!this.enabled) return;
         this._pivot.solve(h);
         this._solveAxisAlignment();
+        if (this.limit.min != null || this.limit.max != null) this._solveLimit();
+        if (this.motor.maxTorque > 0) this._solveMotor(h);
+    }
+
+    // Current swing angle about the hinge axis: the signed angle (right-hand rule about axisA,
+    // range (-PI, PI]) from bodyA's world reference vector to bodyB's (or the fixed world
+    // reference when bodyB is null), both projected into the plane perpendicular to the axis so a
+    // small amount of axis misalignment (mid-solve, before _solveAxisAlignment has fully
+    // converged) does not corrupt the angle measurement.
+    _swingAngle() {
+        const bodyA = this.bodyA, bodyB = this.bodyB;
+        const axis = HingeConstraint._scratchAxis.copy(this.localAxisA);
+        bodyA.rotation.transformVectorInPlace(axis);
+
+        const refA = HingeConstraint._scratchV1.copy(this._refA);
+        bodyA.rotation.transformVectorInPlace(refA);
+
+        const refB = HingeConstraint._scratchV2;
+        if (bodyB) { refB.copy(this._refB); bodyB.rotation.transformVectorInPlace(refB); }
+        else refB.copy(this._fixedWorldRef);
+
+        // Project both references into the plane perpendicular to axis, then measure the signed
+        // angle FROM refB (the fixed/starting reference) TO refA (bodyA's current one) via
+        // atan2(cross . axis, dot) - the standard signed-angle-about-an-axis formula, exact for any
+        // angle (not a small-angle approximation like the axis-alignment correction above). This
+        // order matters: atan2(refA x refB . axis, ...) gives the angle FROM the current reference
+        // back TO the fixed one, i.e. the NEGATIVE of how far the body has actually swung - verified
+        // directly against the body's own rotation quaternion (2*atan2(q.z, q.w) for a pure Z-axis
+        // rotation) after gravity torqued a hinged plank, which caught this the wrong way round.
+        HingeConstraint._projectOntoPlane(refA, axis);
+        HingeConstraint._projectOntoPlane(refB, axis);
+        const dot = refA.x * refB.x + refA.y * refB.y + refA.z * refB.z;
+        const cx = refB.y * refA.z - refB.z * refA.y, cy = refB.z * refA.x - refB.x * refA.z, cz = refB.x * refA.y - refB.y * refA.x;
+        const crossDotAxis = cx * axis.x + cy * axis.y + cz * axis.z;
+        return Scalar.atan2(crossDotAxis, dot);
+    }
+
+    static _projectOntoPlane(v, axis) {
+        const d = v.x * axis.x + v.y * axis.y + v.z * axis.z;
+        v.x -= d * axis.x; v.y -= d * axis.y; v.z -= d * axis.z;
+        const len = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+        if (len > 1e-12) { v.x /= len; v.y /= len; v.z /= len; }
+    }
+
+    // Clamps the swing angle to [limit.min, limit.max] via the same small-angle angular-correction
+    // primitive _solveAxisAlignment uses: past a bound, rotate bodyB back toward bodyA by the
+    // violation amount, distributed by each body's inverse inertia along the hinge axis.
+    _solveLimit() {
+        const angle = this._swingAngle();
+        const min = this.limit.min != null ? this.limit.min : -Infinity;
+        const max = this.limit.max != null ? this.limit.max : Infinity;
+        let violation = 0;
+        if (angle < min) violation = angle - min; // negative: rotate bodyB's angle UP toward min
+        else if (angle > max) violation = angle - max; // positive: rotate bodyB's angle DOWN toward max
+        else return;
+
+        const bodyA = this.bodyA, bodyB = this.bodyB;
+        const axis = HingeConstraint._scratchAxis.copy(this.localAxisA);
+        bodyA.rotation.transformVectorInPlace(axis);
+
+        let wSum = 0;
+        const hasB = !!(bodyB && bodyB._massInverted > 0);
+        if (bodyA._massInverted > 0) wSum += HingeConstraint._angularEffectiveMass(bodyA, axis.x, axis.y, axis.z);
+        if (hasB) wSum += HingeConstraint._angularEffectiveMass(bodyB, axis.x, axis.y, axis.z);
+        if (wSum < 1e-12) return;
+
+        // deltaTheta = -violation / wSum, same Lagrange-multiplier shape as _solveAxisAlignment.
+        // _swingAngle measures the angle FROM the fixed/bodyB reference TO bodyA's current one, so
+        // increasing bodyA's own rotation about +axis directly increases the swing angle - verified
+        // directly (_applyAngularDelta(bodyA, +axis*s) measured a positive swing-angle change), the
+        // opposite sign from _solveAxisAlignment's bodyA call (that correction targets an axis-
+        // alignment error, a different quantity with its own independently-verified sign).
+        const scale = -violation / wSum;
+        const tx = axis.x * scale, ty = axis.y * scale, tz = axis.z * scale;
+        if (bodyA._massInverted > 0) HingeConstraint._applyAngularDelta(bodyA, tx, ty, tz);
+        if (hasB) HingeConstraint._applyAngularDelta(bodyB, -tx, -ty, -tz);
+    }
+
+    // Drives the RELATIVE angular velocity about the hinge axis toward motor.targetVelocity - a
+    // POSITION correction (matching how every other constraint here acts: the solver derives
+    // velocity from the position delta once per substep AFTER all constraints run, Solver._substep
+    // step 4, so a constraint that only ever wrote angular_velocity directly would have that write
+    // silently discarded the instant step 4 ran).
+    //
+    // A torque-limited motor accelerates the relative angular velocity toward motor.targetVelocity
+    // at angular acceleration alpha = maxTorque*wSum (wSum is the inverse angular moment along the
+    // axis - the standard torque/inertia relation), never overshooting the target in one substep
+    // (a real motor stops applying torque the instant it reaches the speed it was driving toward,
+    // it does not fling the body past it). deltaOmega below is that bounded velocity CHANGE for
+    // this substep; the position step it produces is deltaOmega*h, applied as a small-angle
+    // rotation via _applyAngularDelta (a POSITION correction, matching every other constraint here
+    // - the solver derives velocity from the position delta once per substep AFTER all constraints
+    // run, Solver._substep step 4, so a constraint that only ever wrote angular_velocity directly
+    // would have that write silently discarded the instant step 4 ran).
+    _solveMotor(h) {
+        const bodyA = this.bodyA, bodyB = this.bodyB;
+        const axis = HingeConstraint._scratchAxis.copy(this.localAxisA);
+        bodyA.rotation.transformVectorInPlace(axis);
+
+        let wSum = 0;
+        const hasB = !!(bodyB && bodyB._massInverted > 0);
+        if (bodyA._massInverted > 0) wSum += HingeConstraint._angularEffectiveMass(bodyA, axis.x, axis.y, axis.z);
+        if (hasB) wSum += HingeConstraint._angularEffectiveMass(bodyB, axis.x, axis.y, axis.z);
+        if (wSum < 1e-12) return;
+
+        // Rate of change of _swingAngle: bodyA's own rotation about +axis directly increases the
+        // swing angle (same convention _solveLimit's own sign fix verified), and bodyB's (or a
+        // fixed reference's) rotation the opposite way - so relOmega = wA - wB, not wB - wA.
+        const wA = bodyA.angular_velocity, wB = hasB ? bodyB.angular_velocity : HingeConstraint._zero;
+        const relOmega = (wA.x - wB.x) * axis.x + (wA.y - wB.y) * axis.y + (wA.z - wB.z) * axis.z;
+        const velError = this.motor.targetVelocity - relOmega;
+        if (velError === 0) return;
+
+        // maxTorque bounds the angular velocity CHANGE this substep directly (deltaOmega =
+        // maxTorque*wSum, the standard impulse/inverse-inertia relation) - not integrated by h
+        // again on top of that. h already enters once, through step = deltaOmega*h below; an
+        // extra *h here made the motor's real holding strength ~240x weaker than intended (verified
+        // directly: a plank needing ~39 N*m to hold level against its own weight never held with
+        // maxTorque=1 under the double-h version, but does under this one).
+        const maxDeltaOmega = this.motor.maxTorque * wSum;
+        const deltaOmega = velError > 0 ? Math.min(velError, maxDeltaOmega) : Math.max(velError, -maxDeltaOmega);
+        let step = deltaOmega * h;
+        if (step === 0) return;
+
+        // Respect the limit while driving: clamp the step so it cannot push the swing angle past
+        // an active bound (a motor holding against its own limit should stall there, not fight it
+        // every substep only to be shoved back by _solveLimit next).
+        if (this.limit.min != null || this.limit.max != null) {
+            const angle = this._swingAngle();
+            const min = this.limit.min != null ? this.limit.min : -Infinity;
+            const max = this.limit.max != null ? this.limit.max : Infinity;
+            if (step > 0 && angle + step > max) step = Math.max(0, max - angle);
+            else if (step < 0 && angle + step < min) step = Math.min(0, min - angle);
+            if (step === 0) return;
+        }
+
+        // Positive step increases the swing angle - same sign convention as _solveLimit, verified
+        // the same way (_applyAngularDelta(bodyA, +axis*s) measures a positive swing-angle change).
+        const scale = step / wSum;
+        const tx = axis.x * scale, ty = axis.y * scale, tz = axis.z * scale;
+        if (bodyA._massInverted > 0) HingeConstraint._applyAngularDelta(bodyA, tx, ty, tz);
+        if (hasB) HingeConstraint._applyAngularDelta(bodyB, -tx, -ty, -tz);
     }
 
     // Aligns bodyA's and bodyB's world-space hinge axes via a small-angle angular correction along
@@ -143,7 +326,9 @@ class HingeConstraint extends Constraint {
 
 HingeConstraint._scratchV1 = new Vector3();
 HingeConstraint._scratchV2 = new Vector3();
+HingeConstraint._scratchAxis = new Vector3();
 HingeConstraint._scratchQ = new Quaternion();
 HingeConstraint._scratchAngular = new Vector3();
+HingeConstraint._zero = new Vector3();
 
 ActionPhysics.HingeConstraint = HingeConstraint;

@@ -304,6 +304,30 @@ class RigidBody {
         return this._transform;
     }
 
+    // World-space support point: the farthest point on this body's shape along world-space
+    // `direction`, written into `out`. Same composition MinkowskiSupport.supportOfInto already uses
+    // internally for GJK/EPA (inverse-rotate direction into local space, call the shape's own
+    // supportInto, rotate the result back to world space, translate by position) - exposed here as a
+    // standalone body method since a caller outside narrowphase (a query, a consumer) has no reason
+    // to construct a MinkowskiSupport (which pairs two bodies) just to ask one body's own question.
+    findSupportPoint(direction, out) {
+        const scratchDir = RigidBody._scratchSupportDir;
+        RigidBody._scratchInvRot.copy(this.rotation).invert();
+        RigidBody._scratchInvRot.transformVectorInto(direction, scratchDir);
+        this.shape.supportInto(out, scratchDir);
+        this.rotation.transformVectorInPlace(out);
+        out.addInPlace(this.position);
+        return out;
+    }
+
+    // rayIntersect(start, end) -> { point, normal, distance, fraction } | null. Casts against THIS
+    // body alone (see Queries.rayIntersectBody) - for a caller that already holds a body reference
+    // and wants a hit test against just that one shape, without World.rayIntersect's whole-scene
+    // candidate search.
+    rayIntersect(start, end) {
+        return Queries.rayIntersectBody(start, end, this);
+    }
+
     // The fattened broadphase-query AABB (tight bound + speculative margin + velocity sweep).
     // Broadphase and midphase read THIS, not getAABB(), so a pair surfaces the tick before overlap
     // (see _recomputeBroadphaseAABB). Same staleness assumption as getAABB(): updateDerived() owns
@@ -322,6 +346,17 @@ class RigidBody {
         if (!list) return;
         for (let i = 0; i < list.length; i++) list[i](arg);
     }
+
+    // Runs this body's speculativeContact listeners and returns false if any of them vetoes the
+    // point (returns false). `other` is the body on the far side of the contact.
+    _speculativeVeto(contact, other) {
+        const list = this._listeners.speculativeContact;
+        if (!list) return true;
+        for (let i = 0; i < list.length; i++) {
+            if (list[i]({ contact: contact, other: other }) === false) return false;
+        }
+        return true;
+    }
 }
 
 // Scratch objects for the allocation-free AABB/inertia recompute above. Per-class, not shared
@@ -331,6 +366,8 @@ RigidBody._scratchLocalAABB = new AABB();
 RigidBody._scratchMat3 = new Matrix3();
 RigidBody._scratchMat3b = new Matrix3();
 RigidBody._scratchVec = new Vector3();
+RigidBody._scratchInvRot = new Quaternion();
+RigidBody._scratchSupportDir = new Vector3();
 
 RigidBody.STATIC = BODY_STATIC;
 RigidBody.KINEMATIC = BODY_KINEMATIC;

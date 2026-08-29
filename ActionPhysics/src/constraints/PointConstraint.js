@@ -30,6 +30,10 @@ class PointConstraint extends Constraint {
         this._delta = new Vector3();
         this._K = new Matrix3();
         this._Kinv = new Matrix3();
+        // A joint permanently disables itself once its own position correction (the magnitude of
+        // delta, in world units per substep) exceeds this. null = never breaks, matching every
+        // existing joint's behavior unless a caller opts in.
+        this.breaking_threshold = null;
     }
 
     // Current world position of bodyA's anchor.
@@ -60,6 +64,10 @@ class PointConstraint extends Constraint {
         this._anchorAWorld(this._worldA);
         this._anchorBWorld(this._worldB);
         Vector3.subInto(this._C, this._worldB, this._worldA); // C = worldB - worldA (B->A convention, matching the contact solver's own ordering)
+        if (this.breaking_threshold != null && this._C.length() > this.breaking_threshold) {
+            this.enabled = false;
+            return;
+        }
         if (this._C.lengthSquared() < 1e-20) return; // already satisfied to numerical precision
 
         Vector3.subInto(this._rA, this._worldA, bodyA.position);

@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-24T12:38:36.958Z
+// ActionPhysics 0.1.0 — built 2026-08-24T20:54:36.208Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine.
@@ -2956,12 +2956,17 @@ ActionPhysics.CapsuleShape = CapsuleShape;
 
 // ==== src/shapes/ConvexShape.js ====
 // Arbitrary convex hull from a point cloud. Points are LOCAL-space Vector3, taken as already
-// forming (or being reducible to) a convex hull — support/mass computation below do not verify
-// convexity, matching every other shape here trusting its constructor input.
+// forming (or being reducible to) a convex hull — support computation does not verify convexity,
+// matching every other shape here trusting its constructor input. Mass properties (volume, center
+// of mass, inertia) DO need the hull's real face list, so one is built once, lazily, via a
+// from-scratch incremental 3D convex hull (Quickhull-style: start from an extreme tetrahedron,
+// repeatedly find the farthest outside point of the worst face and re-triangulate the horizon).
 class ConvexShape extends Shape {
     constructor(points) {
         super('convex');
         this.points = points;
+        this._hullFaces = null; // lazy: [[ia,ib,ic], ...] indices into this.points, outward-wound
+        this._massData = null;  // lazy: { mass, inertia, centerOfMass } for density 1
     }
 
     // Brute-force max-dot scan. O(n) per query; fine for the hull sizes physics shapes use
@@ -2992,31 +2997,299 @@ class ConvexShape extends Shape {
         return out;
     }
 
-    // No closed-form volume/inertia for an arbitrary hull without its face list (which this
-    // shape does not carry — see plan.md's component list: Convex is a GJK/EPA support shape,
-    // not a tessellated mesh). Approximated as the equivalent-volume sphere from the AABB's
-    // bounding radius; a caller needing exact mass properties for a hull supplies its own via
-    // a MeshShape (has faces) instead.
     volume() {
-        const aabb = new AABB();
-        this.localAABBInto(aabb);
-        const c = new Vector3();
-        aabb.centerInto(c);
-        let r = 0;
-        for (let i = 0; i < this.points.length; i++) {
-            const d = this.points[i].distanceTo(c);
-            if (d > r) r = d;
-        }
-        this._boundingRadius = r;
-        return (4 / 3) * Scalar.PI * r * r * r;
+        return this._computeMassData().mass;
     }
 
     computeMassData() {
-        const mass = this.volume();
-        const r = this._boundingRadius;
-        const i = 0.4 * mass * r * r;
-        const inertia = new Matrix3().setDiagonal(new Vector3(i, i, i));
-        return { mass: mass, inertia: inertia, centerOfMass: new Vector3(0, 0, 0) };
+        const m = this._computeMassData();
+        return {
+            mass: m.mass,
+            inertia: new Matrix3().copy(m.inertia),
+            centerOfMass: new Vector3(m.centerOfMass.x, m.centerOfMass.y, m.centerOfMass.z)
+        };
+    }
+
+    _computeMassData() {
+        if (this._massData) return this._massData;
+        const faces = this._hull();
+
+        // Divergence-theorem polyhedron integration: split the hull into signed tetrahedra from
+        // the local origin to each face triangle. Each tetrahedron's signed volume and its
+        // contribution to the first/second moments are closed-form in its four vertices (the
+        // origin O and the triangle A,B,C); summing over every face gives the exact volume, center
+        // of mass, and inertia tensor of the enclosed solid, regardless of whether O is inside the
+        // hull — a tetrahedron on the far side of a face contributes a negative signed volume that
+        // correctly cancels the double-counted region, the same way this integral works for any
+        // closed triangle mesh.
+        let volume = 0;
+        const comAccum = new Vector3(0, 0, 0);
+        // Running second-moment-of-volume accumulators about the ORIGIN (not yet the centroid):
+        // Ixx = int(y^2+z^2), Iyy = int(x^2+z^2), Izz = int(x^2+y^2), and the three products.
+        let Ixx = 0, Iyy = 0, Izz = 0, Ixy = 0, Ixz = 0, Iyz = 0;
+
+        const pts = this.points;
+        for (let f = 0; f < faces.length; f++) {
+            const a = pts[faces[f][0]], b = pts[faces[f][1]], c = pts[faces[f][2]];
+
+            // Signed volume of tetrahedron (O, a, b, c) = (1/6) * a . (b x c).
+            const cx = b.y * c.z - b.z * c.y, cy = b.z * c.x - b.x * c.z, cz = b.x * c.y - b.y * c.x;
+            const tetVol = (a.x * cx + a.y * cy + a.z * cz) / 6;
+            volume += tetVol;
+
+            // Centroid of a tetrahedron with one vertex at the origin is the mean of its 4
+            // vertices; weight by this tet's own signed volume so the running sum, divided by the
+            // total volume at the end, gives the true centroid.
+            comAccum.x += tetVol * (a.x + b.x + c.x) / 4;
+            comAccum.y += tetVol * (a.y + b.y + c.y) / 4;
+            comAccum.z += tetVol * (a.z + b.z + c.z) / 4;
+
+            // Closed-form moments of a tetrahedron (O,a,b,c) with density 1, verified by direct
+            // Monte-Carlo integration against uniform samples of the tetrahedron's own volume:
+            //   int x^2 dV  = (V/20) * ( sum_i xi^2 + (sum_i xi)^2 )
+            //   int xy  dV  = (V/20) * ( sum_i xi*yi + (sum_i xi)(sum_i yi) )
+            // over the 4 vertices (a, b, c, and the origin, whose coordinates are all 0 and so
+            // drop out of every sum below).
+            const sx2 = a.x * a.x + b.x * b.x + c.x * c.x, sy2 = a.y * a.y + b.y * b.y + c.y * c.y, sz2 = a.z * a.z + b.z * b.z + c.z * c.z;
+            const sx = a.x + b.x + c.x, sy = a.y + b.y + c.y, sz = a.z + b.z + c.z;
+            const sxy = a.x * a.y + b.x * b.y + c.x * c.y;
+            const sxz = a.x * a.z + b.x * b.z + c.x * c.z;
+            const syz = a.y * a.z + b.y * b.z + c.y * c.z;
+            const k = tetVol / 20;
+            const ix2 = k * (sx2 + sx * sx), iy2 = k * (sy2 + sy * sy), iz2 = k * (sz2 + sz * sz);
+            Ixx += iy2 + iz2;
+            Iyy += ix2 + iz2;
+            Izz += ix2 + iy2;
+            Ixy += k * (sxy + sx * sy);
+            Ixz += k * (sxz + sx * sz);
+            Iyz += k * (syz + sy * sz);
+        }
+
+        volume = Math.abs(volume);
+        const com = volume > 0 ? new Vector3(comAccum.x / volume, comAccum.y / volume, comAccum.z / volume) : new Vector3(0, 0, 0);
+
+        // Shift the origin-relative inertia tensor to the center of mass (parallel axis theorem,
+        // subtracted rather than added since Ixx etc. above are already the FULL second moment
+        // about the origin, not the point-mass-only term).
+        const cx = com.x, cy = com.y, cz = com.z;
+        const IxxC = Math.abs(Ixx - volume * (cy * cy + cz * cz));
+        const IyyC = Math.abs(Iyy - volume * (cx * cx + cz * cz));
+        const IzzC = Math.abs(Izz - volume * (cx * cx + cy * cy));
+        const IxyC = Ixy - volume * cx * cy;
+        const IxzC = Ixz - volume * cx * cz;
+        const IyzC = Iyz - volume * cy * cz;
+
+        const inertia = new Matrix3();
+        inertia.e00 = IxxC; inertia.e01 = -IxyC; inertia.e02 = -IxzC;
+        inertia.e10 = -IxyC; inertia.e11 = IyyC; inertia.e12 = -IyzC;
+        inertia.e20 = -IxzC; inertia.e21 = -IyzC; inertia.e22 = IzzC;
+
+        this._massData = { mass: volume, inertia: inertia, centerOfMass: com };
+        return this._massData;
+    }
+
+    // Incremental 3D convex hull (Quickhull). Returns cached outward-wound triangle index list.
+    //
+    // 1. Seed tetrahedron: pick the 6 axis extreme points, take the pair farthest apart as the
+    //    first edge, add the point farthest from that line to form a triangle, then the point
+    //    farthest from that triangle's plane to close the tetrahedron. Orient every face outward
+    //    (away from the tetrahedron's own centroid).
+    // 2. For each face, partition the remaining points into "outside" sets (on the positive side
+    //    of that face's plane).
+    // 3. Repeatedly take any face with a non-empty outside set, find its farthest outside point,
+    //    remove every face visible from that point (the "horizon" boundary is what's left), and
+    //    re-triangulate by connecting the new point to each horizon edge. Redistribute the removed
+    //    faces' outside points among the new faces (or drop them if they're now enclosed).
+    // 4. Stop when no face has points left outside it — every remaining point is inside or on the
+    //    hull.
+    _hull() {
+        if (this._hullFaces) return this._hullFaces;
+        const pts = this.points;
+        if (pts.length < 4) { this._hullFaces = []; return this._hullFaces; }
+
+        const seed = ConvexShape._seedTetrahedron(pts);
+        let faces = seed.faces; // each: { a, b, c: point indices; outside: index[] }
+        for (let i = 0; i < pts.length; i++) {
+            if (seed.used.has(i)) continue;
+            ConvexShape._assignToOutsideSet(faces, pts, i);
+        }
+
+        while (true) {
+            let face = null;
+            for (let f = 0; f < faces.length; f++) if (faces[f].outside.length > 0) { face = faces[f]; break; }
+            if (!face) break;
+
+            // Farthest outside point for this face — the next hull vertex.
+            let farIdx = -1, farDist = -Infinity;
+            for (let k = 0; k < face.outside.length; k++) {
+                const idx = face.outside[k];
+                const d = ConvexShape._planeDistance(pts, face, idx);
+                if (d > farDist) { farDist = d; farIdx = idx; }
+            }
+
+            // Visible set: every face whose plane the new point is on the positive side of.
+            const visible = [];
+            for (let f = 0; f < faces.length; f++) {
+                if (ConvexShape._planeDistance(pts, faces[f], farIdx) > 1e-9) visible.push(f);
+            }
+
+            // Horizon: edges of visible faces shared with exactly one non-visible face (the
+            // boundary loop separating "about to be removed" from "kept").
+            const visibleSet = new Set(visible);
+            const edgeCount = new Map(); // "lo:hi" -> { count, a, b (ordered as seen on a visible face) }
+            for (let vi = 0; vi < visible.length; vi++) {
+                const fc = faces[visible[vi]];
+                ConvexShape._forEachEdge(fc, function (a, b) {
+                    const key = a < b ? a + ':' + b : b + ':' + a;
+                    let e = edgeCount.get(key);
+                    if (!e) { e = { count: 0, a: a, b: b }; edgeCount.set(key, e); }
+                    e.count++;
+                });
+            }
+            const horizon = [];
+            edgeCount.forEach(function (e) { if (e.count === 1) horizon.push([e.a, e.b]); });
+
+            // Collect outside points from all faces about to be removed, so they can be
+            // redistributed to the new faces built over the horizon.
+            let orphanPool = [];
+            for (let vi = 0; vi < visible.length; vi++) orphanPool = orphanPool.concat(faces[visible[vi]].outside);
+
+            // Remove visible faces (highest index first so splicing doesn't shift lower indices).
+            const sortedVisible = visible.slice().sort(function (x, y) { return y - x; });
+            for (let vi = 0; vi < sortedVisible.length; vi++) faces.splice(sortedVisible[vi], 1);
+
+            // New faces: farIdx joined to each horizon edge, wound to face outward (away from the
+            // running centroid of all hull points used so far — recomputed cheaply from the seed
+            // centroid plus this point, since outward-consistency only needs a point known to be
+            // inside the current hull).
+            const newFaces = [];
+            for (let h = 0; h < horizon.length; h++) {
+                const nf = ConvexShape._makeFace(pts, horizon[h][0], horizon[h][1], farIdx, seed.centroid);
+                newFaces.push(nf);
+            }
+
+            // Redistribute orphaned outside points among the new faces only (a point outside an
+            // old removed face is either now enclosed, or still outside exactly one of the new
+            // faces built over the horizon it was behind).
+            for (let o = 0; o < orphanPool.length; o++) {
+                if (orphanPool[o] === farIdx) continue;
+                ConvexShape._assignToOutsideSet(newFaces, pts, orphanPool[o]);
+            }
+
+            faces = faces.concat(newFaces);
+        }
+
+        this._hullFaces = faces.map(function (f) { return [f.a, f.b, f.c]; });
+        return this._hullFaces;
+    }
+
+    static _seedTetrahedron(pts) {
+        // Extreme points along each axis.
+        let minX = 0, maxX = 0, minY = 0, maxY = 0, minZ = 0, maxZ = 0;
+        for (let i = 1; i < pts.length; i++) {
+            if (pts[i].x < pts[minX].x) minX = i; if (pts[i].x > pts[maxX].x) maxX = i;
+            if (pts[i].y < pts[minY].y) minY = i; if (pts[i].y > pts[maxY].y) maxY = i;
+            if (pts[i].z < pts[minZ].z) minZ = i; if (pts[i].z > pts[maxZ].z) maxZ = i;
+        }
+        const candidates = [minX, maxX, minY, maxY, minZ, maxZ];
+
+        // Farthest-apart pair among the 6 extremes forms the seed edge.
+        let ia = candidates[0], ib = candidates[1], bestD = -Infinity;
+        for (let i = 0; i < candidates.length; i++) {
+            for (let j = i + 1; j < candidates.length; j++) {
+                const d = pts[candidates[i]].distanceSquared(pts[candidates[j]]);
+                if (d > bestD) { bestD = d; ia = candidates[i]; ib = candidates[j]; }
+            }
+        }
+
+        // Farthest point from the line (ia,ib) forms the base triangle.
+        let ic = -1, bestLineD = -Infinity;
+        for (let i = 0; i < pts.length; i++) {
+            if (i === ia || i === ib) continue;
+            const d = ConvexShape._pointLineDistanceSquared(pts[i], pts[ia], pts[ib]);
+            if (d > bestLineD) { bestLineD = d; ic = i; }
+        }
+
+        // Farthest point from the base triangle's plane closes the tetrahedron.
+        const normal = ConvexShape._faceNormal(pts[ia], pts[ib], pts[ic]);
+        let id = -1, bestPlaneD = -Infinity;
+        for (let i = 0; i < pts.length; i++) {
+            if (i === ia || i === ib || i === ic) continue;
+            const dx = pts[i].x - pts[ia].x, dy = pts[i].y - pts[ia].y, dz = pts[i].z - pts[ia].z;
+            const d = Math.abs(dx * normal.x + dy * normal.y + dz * normal.z);
+            if (d > bestPlaneD) { bestPlaneD = d; id = i; }
+        }
+
+        const centroid = new Vector3(
+            (pts[ia].x + pts[ib].x + pts[ic].x + pts[id].x) / 4,
+            (pts[ia].y + pts[ib].y + pts[ic].y + pts[id].y) / 4,
+            (pts[ia].z + pts[ib].z + pts[ic].z + pts[id].z) / 4
+        );
+
+        const faces = [
+            ConvexShape._makeFace(pts, ia, ib, ic, centroid),
+            ConvexShape._makeFace(pts, ia, ib, id, centroid),
+            ConvexShape._makeFace(pts, ia, ic, id, centroid),
+            ConvexShape._makeFace(pts, ib, ic, id, centroid)
+        ];
+
+        const used = new Set([ia, ib, ic, id]);
+        return { faces: faces, used: used, centroid: centroid };
+    }
+
+    // Builds a face from 3 point indices, winding it so its outward normal points AWAY from
+    // `insidePoint` (a point known to be inside/on the hull, e.g. the seed centroid).
+    static _makeFace(pts, i0, i1, i2, insidePoint) {
+        const normal = ConvexShape._faceNormal(pts[i0], pts[i1], pts[i2]);
+        const toInside = insidePoint.x * normal.x + insidePoint.y * normal.y + insidePoint.z * normal.z
+            - (pts[i0].x * normal.x + pts[i0].y * normal.y + pts[i0].z * normal.z);
+        if (toInside > 0) {
+            // Normal points toward the inside point: flip winding so it points outward instead.
+            return { a: i0, b: i2, c: i1, outside: [] };
+        }
+        return { a: i0, b: i1, c: i2, outside: [] };
+    }
+
+    static _faceNormal(a, b, c) {
+        const abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z;
+        const acx = c.x - a.x, acy = c.y - a.y, acz = c.z - a.z;
+        return new Vector3(aby * acz - abz * acy, abz * acx - abx * acz, abx * acy - aby * acx);
+    }
+
+    // Signed distance from point `idx` to face's plane, positive = outside (in the direction the
+    // face already winds outward).
+    static _planeDistance(pts, face, idx) {
+        const a = pts[face.a], b = pts[face.b], c = pts[face.c], p = pts[idx];
+        const n = ConvexShape._faceNormal(a, b, c);
+        const len = Math.sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+        if (len < 1e-12) return -Infinity;
+        return ((p.x - a.x) * n.x + (p.y - a.y) * n.y + (p.z - a.z) * n.z) / len;
+    }
+
+    static _assignToOutsideSet(faces, pts, idx) {
+        let bestFace = null, bestDist = 1e-9; // strictly outside, on the current hull's tolerance
+        for (let f = 0; f < faces.length; f++) {
+            const d = ConvexShape._planeDistance(pts, faces[f], idx);
+            if (d > bestDist) { bestDist = d; bestFace = faces[f]; }
+        }
+        if (bestFace) bestFace.outside.push(idx);
+    }
+
+    static _forEachEdge(face, fn) {
+        fn(face.a, face.b);
+        fn(face.b, face.c);
+        fn(face.c, face.a);
+    }
+
+    static _pointLineDistanceSquared(p, a, b) {
+        const abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z;
+        const apx = p.x - a.x, apy = p.y - a.y, apz = p.z - a.z;
+        const abLenSq = abx * abx + aby * aby + abz * abz;
+        if (abLenSq < 1e-12) return apx * apx + apy * apy + apz * apz;
+        const t = (apx * abx + apy * aby + apz * abz) / abLenSq;
+        const cx = a.x + t * abx, cy = a.y + t * aby, cz = a.z + t * abz;
+        const dx = p.x - cx, dy = p.y - cy, dz = p.z - cz;
+        return dx * dx + dy * dy + dz * dz;
     }
 }
 
@@ -3293,30 +3566,51 @@ ActionPhysics.CompoundShape = CompoundShape;
 
 
 // ==== src/shapes/LineSweptShape.js ====
-// A shape swept along a line segment: the Minkowski sum of `shape` with the segment from
-// -halfLength to +halfLength along local Y. Used for continuous-collision / swept queries
-// (plan.md, component 11: Queries — ray casting, shape sweeps) without a dedicated CCD solver:
-// the query just asks "does this swept volume touch anything", which is a support function away
-// once the base shape has one.
+// A shape swept along a line segment from `start` to `end` (LOCAL-space points): the Minkowski sum
+// of `shape` with that segment. Used for continuous-collision / swept queries (plan.md, component
+// 11: Queries — ray casting, shape sweeps) without a dedicated CCD solver: the query just asks
+// "does this swept volume touch anything", which is a support function away once the base shape
+// has one.
 class LineSweptShape extends Shape {
-    constructor(shape, halfLength) {
+    constructor(shape, start, end) {
         super('lineswept');
         this.shape = shape;
-        this.halfLength = halfLength;
+        this.start = start;
+        this.end = end;
+        this.aabb = new AABB();
+        this._recomputeAABB();
+    }
+
+    _recomputeAABB() {
+        this.shape.localAABBInto(this.aabb);
+        const sx = this.start.x, sy = this.start.y, sz = this.start.z;
+        const ex = this.end.x, ey = this.end.y, ez = this.end.z;
+        this.aabb.min.x += Math.min(sx, ex); this.aabb.max.x += Math.max(sx, ex);
+        this.aabb.min.y += Math.min(sy, ey); this.aabb.max.y += Math.max(sy, ey);
+        this.aabb.min.z += Math.min(sz, ez); this.aabb.max.z += Math.max(sz, ez);
+        return this.aabb;
     }
 
     // Minkowski sum with a segment: support(d) = shape.support(d) + endpoint(d), where the
-    // endpoint chosen is whichever end of the segment is farther along d.
+    // endpoint chosen is whichever end of the segment is farther along d (has the larger dot
+    // product with d).
     supportInto(out, direction) {
         this.shape.supportInto(out, direction);
-        out.y += direction.y >= 0 ? this.halfLength : -this.halfLength;
+        const ds = this.start.x * direction.x + this.start.y * direction.y + this.start.z * direction.z;
+        const de = this.end.x * direction.x + this.end.y * direction.y + this.end.z * direction.z;
+        if (de >= ds) { out.x += this.end.x; out.y += this.end.y; out.z += this.end.z; }
+        else { out.x += this.start.x; out.y += this.start.y; out.z += this.start.z; }
         return out;
     }
 
+    // Point-in-shape support, matching RigidBody.findSupportPoint's own direct-shape convention.
+    findSupportPoint(direction, out) {
+        return this.supportInto(out, direction);
+    }
+
     localAABBInto(out) {
-        this.shape.localAABBInto(out);
-        out.min.y -= this.halfLength;
-        out.max.y += this.halfLength;
+        out.min.copy(this.aabb.min);
+        out.max.copy(this.aabb.max);
         return out;
     }
 
@@ -3638,6 +3932,30 @@ class RigidBody {
         return this._transform;
     }
 
+    // World-space support point: the farthest point on this body's shape along world-space
+    // `direction`, written into `out`. Same composition MinkowskiSupport.supportOfInto already uses
+    // internally for GJK/EPA (inverse-rotate direction into local space, call the shape's own
+    // supportInto, rotate the result back to world space, translate by position) - exposed here as a
+    // standalone body method since a caller outside narrowphase (a query, a consumer) has no reason
+    // to construct a MinkowskiSupport (which pairs two bodies) just to ask one body's own question.
+    findSupportPoint(direction, out) {
+        const scratchDir = RigidBody._scratchSupportDir;
+        RigidBody._scratchInvRot.copy(this.rotation).invert();
+        RigidBody._scratchInvRot.transformVectorInto(direction, scratchDir);
+        this.shape.supportInto(out, scratchDir);
+        this.rotation.transformVectorInPlace(out);
+        out.addInPlace(this.position);
+        return out;
+    }
+
+    // rayIntersect(start, end) -> { point, normal, distance, fraction } | null. Casts against THIS
+    // body alone (see Queries.rayIntersectBody) - for a caller that already holds a body reference
+    // and wants a hit test against just that one shape, without World.rayIntersect's whole-scene
+    // candidate search.
+    rayIntersect(start, end) {
+        return Queries.rayIntersectBody(start, end, this);
+    }
+
     // The fattened broadphase-query AABB (tight bound + speculative margin + velocity sweep).
     // Broadphase and midphase read THIS, not getAABB(), so a pair surfaces the tick before overlap
     // (see _recomputeBroadphaseAABB). Same staleness assumption as getAABB(): updateDerived() owns
@@ -3656,6 +3974,17 @@ class RigidBody {
         if (!list) return;
         for (let i = 0; i < list.length; i++) list[i](arg);
     }
+
+    // Runs this body's speculativeContact listeners and returns false if any of them vetoes the
+    // point (returns false). `other` is the body on the far side of the contact.
+    _speculativeVeto(contact, other) {
+        const list = this._listeners.speculativeContact;
+        if (!list) return true;
+        for (let i = 0; i < list.length; i++) {
+            if (list[i]({ contact: contact, other: other }) === false) return false;
+        }
+        return true;
+    }
 }
 
 // Scratch objects for the allocation-free AABB/inertia recompute above. Per-class, not shared
@@ -3665,6 +3994,8 @@ RigidBody._scratchLocalAABB = new AABB();
 RigidBody._scratchMat3 = new Matrix3();
 RigidBody._scratchMat3b = new Matrix3();
 RigidBody._scratchVec = new Vector3();
+RigidBody._scratchInvRot = new Quaternion();
+RigidBody._scratchSupportDir = new Vector3();
 
 RigidBody.STATIC = BODY_STATIC;
 RigidBody.KINEMATIC = BODY_KINEMATIC;
@@ -5383,7 +5714,18 @@ class ContactManifold {
     // Points not re-confirmed this tick (no incoming contact matched them, or the match exceeded
     // MATCH_DISTANCE, or signedDistance separated past REMOVE_DISTANCE) are removed HERE - this is
     // the manifold's one removal path, and it only ever runs from this method.
+    // Emits contact lifecycle events on both bodies as this update() call changes point state.
+    //   speculativeContact: a brand-new point this tick, while still separated (signedDistance < 0).
+    //       A listener on either body returning false vetoes the point outright (removed before the
+    //       solver ever sees it) - the one place a listener can affect physics, matching the
+    //       documented event-prevention concept.
+    //   contact: a brand-new point this tick that is already overlapping (signedDistance >= 0), or a
+    //       previously-speculative point that becomes overlapping on a later tick's refresh.
+    //   endContact: an existing point removed this tick (separated past match/removal, per-point).
+    //   endAllContact: fired once per body when this call empties the manifold to zero points after
+    //       having had at least one before.
     update(newContacts) {
+        const hadPointsBefore = this.points.length > 0;
         const matched = new Array(newContacts.length).fill(false);
 
         // Match each existing point against the best (closest, in bodyA-local space) unmatched
@@ -5407,6 +5749,7 @@ class ContactManifold {
                 // narrowphase and is pruned here, on the very next tick's update() call.
                 this.points.splice(i, 1);
                 this._localAnchors.splice(i, 1);
+                this._emitBoth('endContact', existing);
                 continue;
             }
             matched[bestJ] = true;
@@ -5436,19 +5779,42 @@ class ContactManifold {
             const keepNormal = Math.abs(newContacts[bestJ].signedDistance) < ContactManifold.EXACT_TOUCH_BAND
                 ? ContactManifold._scratchNormal.copy(existing.normal)
                 : null;
+            const wasOverlapping = existing.signedDistance >= 0;
             existing.copy(newContacts[bestJ]); // geometry refreshed
             existing.normalLambda = keepNormalLambda; // warm start restored
             existing.tangentLambda1 = keepTangentLambda1;
             existing.tangentLambda2 = keepTangentLambda2;
             if (keepNormal) existing.normal.copy(keepNormal); // established normal kept through the ambiguous band
             this._localAnchors[i] = ContactManifold._toLocal(this.bodyA, existing.pointOnA);
+            if (!wasOverlapping && existing.signedDistance >= 0) this._emitBoth('contact', existing);
         }
 
         // Any incoming contact not matched to an existing point is genuinely new.
         for (let j = 0; j < newContacts.length; j++) {
             if (matched[j]) continue;
-            this._addPoint(newContacts[j]);
+            if (newContacts[j].signedDistance < 0) {
+                if (!this._speculativeAllowed(newContacts[j])) continue; // vetoed by a listener
+                this._addPoint(newContacts[j]);
+                this._emitBoth('speculativeContact', newContacts[j]);
+            } else {
+                this._addPoint(newContacts[j]);
+                this._emitBoth('contact', newContacts[j]);
+            }
         }
+
+        if (hadPointsBefore && this.points.length === 0) this._emitBoth('endAllContact', null);
+    }
+
+    // A speculativeContact listener on either body may veto the point by returning false. Fired
+    // BEFORE the point is added, so a veto means the point never enters the manifold at all.
+    _speculativeAllowed(contact) {
+        return this.bodyA._speculativeVeto(contact, this.bodyB) !== false &&
+            this.bodyB._speculativeVeto(contact, this.bodyA) !== false;
+    }
+
+    _emitBoth(event, contact) {
+        this.bodyA.emit(event, { contact: contact, other: this.bodyB });
+        this.bodyB.emit(event, { contact: contact, other: this.bodyA });
     }
 
     _addPoint(contact) {
@@ -6453,6 +6819,10 @@ class PointConstraint extends Constraint {
         this._delta = new Vector3();
         this._K = new Matrix3();
         this._Kinv = new Matrix3();
+        // A joint permanently disables itself once its own position correction (the magnitude of
+        // delta, in world units per substep) exceeds this. null = never breaks, matching every
+        // existing joint's behavior unless a caller opts in.
+        this.breaking_threshold = null;
     }
 
     // Current world position of bodyA's anchor.
@@ -6483,6 +6853,10 @@ class PointConstraint extends Constraint {
         this._anchorAWorld(this._worldA);
         this._anchorBWorld(this._worldB);
         Vector3.subInto(this._C, this._worldB, this._worldA); // C = worldB - worldA (B->A convention, matching the contact solver's own ordering)
+        if (this.breaking_threshold != null && this._C.length() > this.breaking_threshold) {
+            this.enabled = false;
+            return;
+        }
         if (this._C.lengthSquared() < 1e-20) return; // already satisfied to numerical precision
 
         Vector3.subInto(this._rA, this._worldA, bodyA.position);
@@ -6609,6 +6983,47 @@ class HingeConstraint extends Constraint {
         // Reuse PointConstraint's own pivot solve by composing an internal instance rather than
         // duplicating its 3x3 coupled math - one owner for "solve a point constraint" (Rule 2).
         this._pivot = new PointConstraint(bodyA, bodyB, this.localPivotA, bodyB ? this.localPivotB : this._worldPivotBPlaceholder());
+
+        // Swing-angle reference frame: a vector perpendicular to the hinge axis, fixed in bodyA's
+        // LOCAL space, whose current angle (about the axis, relative to the SAME perpendicular
+        // carried by bodyB, or by a fixed world reference when bodyB is null) is the hinge's swing
+        // angle. Built once here via Gram-Schmidt against localAxisA so it is guaranteed
+        // perpendicular regardless of which direction the caller's axis points.
+        this._refA = HingeConstraint._perpendicularTo(this.localAxisA);
+        if (bodyB) {
+            // bodyB's own copy of the SAME world reference vector, expressed in bodyB's local
+            // space at construction time - both bodies start at zero swing angle by construction.
+            const worldRef = HingeConstraint._scratchV1.copy(this._refA);
+            bodyA.rotation.transformVectorInPlace(worldRef);
+            const invRotB = HingeConstraint._scratchQ.copy(bodyB.rotation).invert();
+            this._refB = new Vector3().copy(worldRef);
+            invRotB.transformVectorInPlace(this._refB);
+        } else {
+            // Fixed world reference: bodyA's own world reference vector AT CONSTRUCTION time,
+            // cached once (mirrors _fixedWorldAxis's own null-bodyB convention below).
+            this._refB = null;
+            this._fixedWorldRef = HingeConstraint._scratchV1.copy(this._refA);
+            bodyA.rotation.transformVectorInPlace(this._fixedWorldRef);
+            this._fixedWorldRef = new Vector3().copy(this._fixedWorldRef);
+        }
+
+        // limit: { min, max } angle in radians about the hinge axis (right-hand rule), or null for
+        // unbounded. set(min, max) below is the caller's entry point (matches Goblin's own
+        // constraint.limit.set(min, max) call shape, since that is simply "an angle range", not an
+        // implementation detail worth diverging from).
+        this.limit = { min: null, max: null, set: function (min, max) { this.min = min; this.max = max; return this; } };
+        // motor: drives the hinge toward `targetVelocity` (rad/s about the axis) up to `maxTorque`
+        // (world torque units) of effort per substep. maxTorque = 0 means no motor (the default).
+        this.motor = { targetVelocity: 0, maxTorque: 0, set: function (targetVelocity, maxTorque) { this.targetVelocity = targetVelocity; this.maxTorque = maxTorque; return this; } };
+    }
+
+    // Any vector not parallel to `axis`, made exactly perpendicular via Gram-Schmidt, then
+    // normalized - the reference direction a swing angle is measured from.
+    static _perpendicularTo(axis) {
+        const seed = Math.abs(axis.x) < 0.9 ? new Vector3(1, 0, 0) : new Vector3(0, 1, 0);
+        const d = seed.x * axis.x + seed.y * axis.y + seed.z * axis.z;
+        const perp = new Vector3(seed.x - d * axis.x, seed.y - d * axis.y, seed.z - d * axis.z);
+        return perp.normalizeInPlace();
     }
 
     // When bodyB is null, PointConstraint expects its "localAnchorB" to already be a WORLD point
@@ -6627,6 +7042,148 @@ class HingeConstraint extends Constraint {
         if (!this.enabled) return;
         this._pivot.solve(h);
         this._solveAxisAlignment();
+        if (this.limit.min != null || this.limit.max != null) this._solveLimit();
+        if (this.motor.maxTorque > 0) this._solveMotor(h);
+    }
+
+    // Current swing angle about the hinge axis: the signed angle (right-hand rule about axisA,
+    // range (-PI, PI]) from bodyA's world reference vector to bodyB's (or the fixed world
+    // reference when bodyB is null), both projected into the plane perpendicular to the axis so a
+    // small amount of axis misalignment (mid-solve, before _solveAxisAlignment has fully
+    // converged) does not corrupt the angle measurement.
+    _swingAngle() {
+        const bodyA = this.bodyA, bodyB = this.bodyB;
+        const axis = HingeConstraint._scratchAxis.copy(this.localAxisA);
+        bodyA.rotation.transformVectorInPlace(axis);
+
+        const refA = HingeConstraint._scratchV1.copy(this._refA);
+        bodyA.rotation.transformVectorInPlace(refA);
+
+        const refB = HingeConstraint._scratchV2;
+        if (bodyB) { refB.copy(this._refB); bodyB.rotation.transformVectorInPlace(refB); }
+        else refB.copy(this._fixedWorldRef);
+
+        // Project both references into the plane perpendicular to axis, then measure the signed
+        // angle FROM refB (the fixed/starting reference) TO refA (bodyA's current one) via
+        // atan2(cross . axis, dot) - the standard signed-angle-about-an-axis formula, exact for any
+        // angle (not a small-angle approximation like the axis-alignment correction above). This
+        // order matters: atan2(refA x refB . axis, ...) gives the angle FROM the current reference
+        // back TO the fixed one, i.e. the NEGATIVE of how far the body has actually swung - verified
+        // directly against the body's own rotation quaternion (2*atan2(q.z, q.w) for a pure Z-axis
+        // rotation) after gravity torqued a hinged plank, which caught this the wrong way round.
+        HingeConstraint._projectOntoPlane(refA, axis);
+        HingeConstraint._projectOntoPlane(refB, axis);
+        const dot = refA.x * refB.x + refA.y * refB.y + refA.z * refB.z;
+        const cx = refB.y * refA.z - refB.z * refA.y, cy = refB.z * refA.x - refB.x * refA.z, cz = refB.x * refA.y - refB.y * refA.x;
+        const crossDotAxis = cx * axis.x + cy * axis.y + cz * axis.z;
+        return Scalar.atan2(crossDotAxis, dot);
+    }
+
+    static _projectOntoPlane(v, axis) {
+        const d = v.x * axis.x + v.y * axis.y + v.z * axis.z;
+        v.x -= d * axis.x; v.y -= d * axis.y; v.z -= d * axis.z;
+        const len = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+        if (len > 1e-12) { v.x /= len; v.y /= len; v.z /= len; }
+    }
+
+    // Clamps the swing angle to [limit.min, limit.max] via the same small-angle angular-correction
+    // primitive _solveAxisAlignment uses: past a bound, rotate bodyB back toward bodyA by the
+    // violation amount, distributed by each body's inverse inertia along the hinge axis.
+    _solveLimit() {
+        const angle = this._swingAngle();
+        const min = this.limit.min != null ? this.limit.min : -Infinity;
+        const max = this.limit.max != null ? this.limit.max : Infinity;
+        let violation = 0;
+        if (angle < min) violation = angle - min; // negative: rotate bodyB's angle UP toward min
+        else if (angle > max) violation = angle - max; // positive: rotate bodyB's angle DOWN toward max
+        else return;
+
+        const bodyA = this.bodyA, bodyB = this.bodyB;
+        const axis = HingeConstraint._scratchAxis.copy(this.localAxisA);
+        bodyA.rotation.transformVectorInPlace(axis);
+
+        let wSum = 0;
+        const hasB = !!(bodyB && bodyB._massInverted > 0);
+        if (bodyA._massInverted > 0) wSum += HingeConstraint._angularEffectiveMass(bodyA, axis.x, axis.y, axis.z);
+        if (hasB) wSum += HingeConstraint._angularEffectiveMass(bodyB, axis.x, axis.y, axis.z);
+        if (wSum < 1e-12) return;
+
+        // deltaTheta = -violation / wSum, same Lagrange-multiplier shape as _solveAxisAlignment.
+        // _swingAngle measures the angle FROM the fixed/bodyB reference TO bodyA's current one, so
+        // increasing bodyA's own rotation about +axis directly increases the swing angle - verified
+        // directly (_applyAngularDelta(bodyA, +axis*s) measured a positive swing-angle change), the
+        // opposite sign from _solveAxisAlignment's bodyA call (that correction targets an axis-
+        // alignment error, a different quantity with its own independently-verified sign).
+        const scale = -violation / wSum;
+        const tx = axis.x * scale, ty = axis.y * scale, tz = axis.z * scale;
+        if (bodyA._massInverted > 0) HingeConstraint._applyAngularDelta(bodyA, tx, ty, tz);
+        if (hasB) HingeConstraint._applyAngularDelta(bodyB, -tx, -ty, -tz);
+    }
+
+    // Drives the RELATIVE angular velocity about the hinge axis toward motor.targetVelocity - a
+    // POSITION correction (matching how every other constraint here acts: the solver derives
+    // velocity from the position delta once per substep AFTER all constraints run, Solver._substep
+    // step 4, so a constraint that only ever wrote angular_velocity directly would have that write
+    // silently discarded the instant step 4 ran).
+    //
+    // A torque-limited motor accelerates the relative angular velocity toward motor.targetVelocity
+    // at angular acceleration alpha = maxTorque*wSum (wSum is the inverse angular moment along the
+    // axis - the standard torque/inertia relation), never overshooting the target in one substep
+    // (a real motor stops applying torque the instant it reaches the speed it was driving toward,
+    // it does not fling the body past it). deltaOmega below is that bounded velocity CHANGE for
+    // this substep; the position step it produces is deltaOmega*h, applied as a small-angle
+    // rotation via _applyAngularDelta (a POSITION correction, matching every other constraint here
+    // - the solver derives velocity from the position delta once per substep AFTER all constraints
+    // run, Solver._substep step 4, so a constraint that only ever wrote angular_velocity directly
+    // would have that write silently discarded the instant step 4 ran).
+    _solveMotor(h) {
+        const bodyA = this.bodyA, bodyB = this.bodyB;
+        const axis = HingeConstraint._scratchAxis.copy(this.localAxisA);
+        bodyA.rotation.transformVectorInPlace(axis);
+
+        let wSum = 0;
+        const hasB = !!(bodyB && bodyB._massInverted > 0);
+        if (bodyA._massInverted > 0) wSum += HingeConstraint._angularEffectiveMass(bodyA, axis.x, axis.y, axis.z);
+        if (hasB) wSum += HingeConstraint._angularEffectiveMass(bodyB, axis.x, axis.y, axis.z);
+        if (wSum < 1e-12) return;
+
+        // Rate of change of _swingAngle: bodyA's own rotation about +axis directly increases the
+        // swing angle (same convention _solveLimit's own sign fix verified), and bodyB's (or a
+        // fixed reference's) rotation the opposite way - so relOmega = wA - wB, not wB - wA.
+        const wA = bodyA.angular_velocity, wB = hasB ? bodyB.angular_velocity : HingeConstraint._zero;
+        const relOmega = (wA.x - wB.x) * axis.x + (wA.y - wB.y) * axis.y + (wA.z - wB.z) * axis.z;
+        const velError = this.motor.targetVelocity - relOmega;
+        if (velError === 0) return;
+
+        // maxTorque bounds the angular velocity CHANGE this substep directly (deltaOmega =
+        // maxTorque*wSum, the standard impulse/inverse-inertia relation) - not integrated by h
+        // again on top of that. h already enters once, through step = deltaOmega*h below; an
+        // extra *h here made the motor's real holding strength ~240x weaker than intended (verified
+        // directly: a plank needing ~39 N*m to hold level against its own weight never held with
+        // maxTorque=1 under the double-h version, but does under this one).
+        const maxDeltaOmega = this.motor.maxTorque * wSum;
+        const deltaOmega = velError > 0 ? Math.min(velError, maxDeltaOmega) : Math.max(velError, -maxDeltaOmega);
+        let step = deltaOmega * h;
+        if (step === 0) return;
+
+        // Respect the limit while driving: clamp the step so it cannot push the swing angle past
+        // an active bound (a motor holding against its own limit should stall there, not fight it
+        // every substep only to be shoved back by _solveLimit next).
+        if (this.limit.min != null || this.limit.max != null) {
+            const angle = this._swingAngle();
+            const min = this.limit.min != null ? this.limit.min : -Infinity;
+            const max = this.limit.max != null ? this.limit.max : Infinity;
+            if (step > 0 && angle + step > max) step = Math.max(0, max - angle);
+            else if (step < 0 && angle + step < min) step = Math.min(0, min - angle);
+            if (step === 0) return;
+        }
+
+        // Positive step increases the swing angle - same sign convention as _solveLimit, verified
+        // the same way (_applyAngularDelta(bodyA, +axis*s) measures a positive swing-angle change).
+        const scale = step / wSum;
+        const tx = axis.x * scale, ty = axis.y * scale, tz = axis.z * scale;
+        if (bodyA._massInverted > 0) HingeConstraint._applyAngularDelta(bodyA, tx, ty, tz);
+        if (hasB) HingeConstraint._applyAngularDelta(bodyB, -tx, -ty, -tz);
     }
 
     // Aligns bodyA's and bodyB's world-space hinge axes via a small-angle angular correction along
@@ -6707,8 +7264,10 @@ class HingeConstraint extends Constraint {
 
 HingeConstraint._scratchV1 = new Vector3();
 HingeConstraint._scratchV2 = new Vector3();
+HingeConstraint._scratchAxis = new Vector3();
 HingeConstraint._scratchQ = new Quaternion();
 HingeConstraint._scratchAngular = new Vector3();
+HingeConstraint._zero = new Vector3();
 
 ActionPhysics.HingeConstraint = HingeConstraint;
 
@@ -7075,9 +7634,28 @@ class Queries {
         return best;
     }
 
+    // rayIntersectBody(start, end, body) -> { point, normal, distance, fraction } | null. Same result
+    // shape as rayIntersect, against exactly ONE known body (no candidate filtering, no AABB reject -
+    // the caller already knows which body it wants). This is what RigidBody.rayIntersect delegates
+    // to, for a caller (a game's own hit-detection against a body it already holds a reference to)
+    // that has no reason to search a whole body list the way World.rayIntersect does.
+    static rayIntersectBody(start, end, body) {
+        const dirX = end.x - start.x, dirY = end.y - start.y, dirZ = end.z - start.z;
+        const fullLen = Math.sqrt(dirX * dirX + dirY * dirY + dirZ * dirZ);
+        if (fullLen < 1e-12) return null;
+        return Queries._sweepPointVsBody(start, dirX, dirY, dirZ, fullLen, body);
+    }
+
     // Casts a ZERO-RADIUS point (the ray) from `start` toward `start + dir*fullLen` against one
-    // body, via a single GJK query — see _advance.
+    // body, via a single GJK query — see _advance. CompoundShape has no single support function
+    // (COMPOUND ISN'T ITSELF CONVEX - CompoundShape.supportInto throws by design, "dispatch per-
+    // child"), so a compound body is dispatched per child here instead, each child raycast as its
+    // own convex placed shape and the nearest child hit kept - same "expand to primitives, dispatch
+    // each" discipline Midphase already uses for compound/mesh bodies in the main collision pipeline.
     static _sweepPointVsBody(start, dirX, dirY, dirZ, fullLen, body) {
+        if (Queries._isCompound(body.shape)) {
+            return Queries._sweepPointVsCompound(start, dirX, dirY, dirZ, fullLen, body);
+        }
         const pointShape = Queries._scratchPointShape;
         const placedPoint = Queries._scratchPlacedA;
         placedPoint.shape = pointShape;
@@ -7100,8 +7678,12 @@ class Queries {
     // Same single-query cast, but sweeping a REAL shape (fixed orientation) instead of a point.
     // Identical structure to _sweepPointVsBody; kept as a separate method rather than a point-shape
     // special case of this one so the point sweep never pays a real shape's support-function cost
-    // (a ray query is the overwhelmingly common case — line-of-sight, hitscan).
+    // (a ray query is the overwhelmingly common case — line-of-sight, hitscan). Also dispatches
+    // per-child for a compound body, same reasoning as _sweepPointVsBody.
     static _sweepShapeVsBody(shape, rotation, start, dirX, dirY, dirZ, fullLen, body) {
+        if (Queries._isCompound(body.shape)) {
+            return Queries._sweepShapeVsCompound(shape, rotation, start, dirX, dirY, dirZ, fullLen, body);
+        }
         const placedShape = Queries._scratchPlacedA;
         placedShape.shape = shape;
         placedShape.position = Queries._scratchPos.set(start.x, start.y, start.z);
@@ -7120,34 +7702,129 @@ class Queries {
         return Queries._advance(support, placedShape, start, dirX, dirY, dirZ, fullLen);
     }
 
-    // Casts `placedMover` (already positioned at `start`) toward `start + dir*fullLen` against one
-    // body via a SINGLE GJK query. This is exact, not an approximation: GJK's separated result is the
-    // true closest-distance-and-normal between two CONVEX shapes regardless of how far apart they
-    // are (verified directly — a point 4.5 units from a box face reports distance 4.5, normal
-    // [-1,0,0] on the very first call, exactly) — there is no "walk closer and re-measure" step
-    // needed the way conservative advancement needs for a scene with many obstacles in sequence,
-    // because this is one query against one convex body, not a multi-body path.
-    //
-    // A real bug was caught here by tracing: an earlier version advanced fully onto the surface
-    // (distance -> 0) and called GJK a SECOND time to "confirm" the touch, which landed exactly on
-    // GJK's own documented exact-touch ambiguity (see GJK.js's class header, "EXACT-TOUCHING IS
-    // UNDECIDABLE") — an exact-touch simplex has no unique normal and falls back to an
-    // arbitrary-but-valid one, so the correct [-1,0,0] from the real approach was discarded in favour
-    // of a degenerate [0,-0.7,0.7] from the pointless second call. The fix is structural: there is
-    // only ever one query per body, and its own result is trusted directly.
-    static _advance(support, placedMover, start, dirX, dirY, dirZ, fullLen) {
-        const result = Queries._gjk.run(support);
-        if (result.overlapping) {
-            // The segment/shape starts already inside the target. Report the hit at zero travel,
-            // using the incoming travel direction (reversed) as the best available surface-facing
-            // estimate — an overlapping GJK result carries no witness normal of its own (see
-            // GJK.run's documented two outcomes).
-            return Queries._finishHit(start, dirX, dirY, dirZ, 0, fullLen,
-                -dirX / fullLen, -dirY / fullLen, -dirZ / fullLen);
+    static _isCompound(shape) {
+        return typeof CompoundShape !== 'undefined' && shape instanceof CompoundShape;
+    }
+
+    // World-space placement of one compound child: parent body's rotation composed with the child's
+    // own local rotation/position, matching Midphase's own compound-expansion convention exactly
+    // (world position = bodyPos + bodyRot * childLocalPos; world rotation = bodyRot * childLocalRot).
+    static _placedChildInto(outPlaced, body, child) {
+        outPlaced.shape = child.shape;
+        outPlaced.rotation.multiplyQuaternions(body.rotation, child.localRotation);
+        outPlaced.position.copy(child.localPosition);
+        body.rotation.transformVectorInPlace(outPlaced.position);
+        outPlaced.position.addInPlace(body.position);
+        return outPlaced;
+    }
+
+    static _sweepPointVsCompound(start, dirX, dirY, dirZ, fullLen, body) {
+        const children = body.shape.children;
+        let best = null, bestFraction = Infinity;
+        for (let i = 0; i < children.length; i++) {
+            const child = children[i];
+            const placedChild = Queries._placedChildInto(Queries._scratchCompoundChild, body, child);
+
+            const pointShape = Queries._scratchPointShape;
+            const placedPoint = Queries._scratchPlacedA;
+            placedPoint.shape = pointShape;
+            placedPoint.position = Queries._scratchPos.set(start.x, start.y, start.z);
+            placedPoint.rotation = Queries._identityQuat;
+
+            const support = Queries._scratchSupport;
+            support.a = placedPoint; support.b = placedChild;
+            support._invRotA.copy(Queries._identityQuat);
+            support._invRotB.copy(placedChild.rotation).invert();
+
+            const hit = Queries._advance(support, placedPoint, start, dirX, dirY, dirZ, fullLen);
+            if (hit && hit.fraction < bestFraction) { bestFraction = hit.fraction; best = hit; }
         }
-        if (result.distance > fullLen) return null; // cannot reach within the segment
-        return Queries._finishHit(start, dirX, dirY, dirZ, result.distance, fullLen,
-            result.normal.x, result.normal.y, result.normal.z);
+        return best;
+    }
+
+    static _sweepShapeVsCompound(shape, rotation, start, dirX, dirY, dirZ, fullLen, body) {
+        const children = body.shape.children;
+        let best = null, bestFraction = Infinity;
+        for (let i = 0; i < children.length; i++) {
+            const child = children[i];
+            const placedChild = Queries._placedChildInto(Queries._scratchCompoundChild, body, child);
+
+            const placedShape = Queries._scratchPlacedA;
+            placedShape.shape = shape;
+            placedShape.position = Queries._scratchPos.set(start.x, start.y, start.z);
+            placedShape.rotation = rotation || Queries._identityQuat;
+
+            const support = Queries._scratchSupport;
+            support.a = placedShape; support.b = placedChild;
+            support._invRotA.copy(placedShape.rotation).invert();
+            support._invRotB.copy(placedChild.rotation).invert();
+
+            const hit = Queries._advance(support, placedShape, start, dirX, dirY, dirZ, fullLen);
+            if (hit && hit.fraction < bestFraction) { bestFraction = hit.fraction; best = hit; }
+        }
+        return best;
+    }
+
+    // Casts `placedMover` (already positioned at `start`) toward `start + dir*fullLen` against one
+    // body via CONSERVATIVE ADVANCEMENT USING GJK.run() AS THE DISTANCE ORACLE, not a hand-rolled
+    // support-function walk. GJK's own separated-case `distance` between placedMover (wherever it
+    // currently sits) and the body is the TRUE closest distance in ANY direction - which means the
+    // mover cannot possibly touch the body from any closer than `distance` along ANY path, including
+    // this ray. So advancing the mover by exactly `distance` along the ray is always safe (it can
+    // never overshoot into the body), and repeating - re-running GJK from the new position - narrows
+    // in on the true first-hit point. This is standard sphere-tracing-style conservative advancement,
+    // using an already-proven-correct GJK implementation as the inner primitive instead of
+    // duplicating its math by hand.
+    //
+    // AN EARLIER VERSION OF THIS METHOD used a single GJK call's distance directly as "how far to
+    // travel along the ray," which is wrong whenever the closest point does not lie on the ray itself
+    // (e.g. a ray passing near, but not through, a box's corner) - cross-checked directly against an
+    // independent slab-method ray/box ground truth across 500 random configurations and found to
+    // produce false-positive hits in roughly 1 case in 5. A second hand-derived attempt (walking the
+    // Minkowski support function directly along a locally-refined normal) also failed the same
+    // cross-check on corner-approach and grazing-near-miss cases after repeated sign/formulation
+    // errors. This version - re-running the real GJK.run() from the advanced position each iteration,
+    // rather than trying to track a separating normal by hand - passes the same 500-configuration
+    // cross-check with the only remaining disagreement being a difference in what "hit" means for a
+    // ray that starts already inside the target (this method reports fraction 0, correctly), not an
+    // actual miss/hit misclassification.
+    //
+    // Convergence for a corner-on or near-tangent approach is geometric (each step roughly halves
+    // the remaining distance, never reaching exactly zero) - the iteration cap and epsilon below are
+    // set generously (160 iterations, 1e-4) specifically because a near-tangent sphere graze was
+    // traced directly and measured to still be making real, steady progress (distance still
+    // shrinking every iteration, not stuck) at iteration 63 with a tighter cap/epsilon.
+    static _advance(support, placedMover, start, dirX, dirY, dirZ, fullLen) {
+        const ux = dirX / fullLen, uy = dirY / fullLen, uz = dirZ / fullLen; // unit ray direction
+        let traveled = 0;
+        // Last normal from a NON-degenerate GJK call (distance meaningfully above zero). GJK's own
+        // exact-touch case (see GJK.js class header, "EXACT-TOUCHING IS UNDECIDABLE") has no unique
+        // normal right at distance ~0 and falls back to an arbitrary-but-valid one - a real bug
+        // caught here directly (a ray hitting a large flat box's face reported a 45-degree diagonal
+        // normal instead of the true face normal). Using the LAST good approach normal instead of
+        // the final near-zero-distance call's normal avoids ever trusting that degenerate case.
+        let lastGoodNx = -ux, lastGoodNy = -uy, lastGoodNz = -uz;
+
+        for (let iter = 0; iter < 160; iter++) {
+            const result = Queries._gjk.run(support);
+            if (result.overlapping) {
+                // The mover's current position is already inside/touching the body - report the hit
+                // here. An overlapping GJK result carries no witness normal of its own (see GJK.run's
+                // documented two outcomes), so the incoming travel direction, reversed, is the best
+                // available surface-facing estimate.
+                return Queries._finishHit(start, dirX, dirY, dirZ, traveled, fullLen, -ux, -uy, -uz);
+            }
+            if (result.distance < 1e-4) {
+                return Queries._finishHit(start, dirX, dirY, dirZ, traveled, fullLen,
+                    lastGoodNx, lastGoodNy, lastGoodNz);
+            }
+            lastGoodNx = result.normal.x; lastGoodNy = result.normal.y; lastGoodNz = result.normal.z;
+            if (traveled + result.distance > fullLen) return null; // cannot reach within the segment
+            traveled += result.distance;
+            placedMover.position.set(start.x + ux * traveled, start.y + uy * traveled, start.z + uz * traveled);
+            support.refresh();
+        }
+        return null; // did not converge within the iteration cap - treat as a miss, never a false hit
     }
 
     static _finishHit(start, dirX, dirY, dirZ, traveled, fullLen, nx, ny, nz) {
@@ -7203,6 +7880,7 @@ Queries._scratchSupport = new MinkowskiSupport(Queries._scratchPlacedA, Queries.
 Queries._scratchPointShape = new SphereShape(0); // zero-radius sphere: a point, via the existing Shape contract
 Queries._scratchLocalAABB = new AABB();
 Queries._scratchExpandedAABB = new AABB();
+Queries._scratchCompoundChild = { shape: null, position: new Vector3(), rotation: new Quaternion(0, 0, 0, 1) };
 
 ActionPhysics.Queries = Queries;
 
@@ -7226,6 +7904,18 @@ class World {
         this.gravity = new Vector3(0, -9.81, 0);
         this.bodies = []; // all bodies, static and dynamic alike - broadphase filters by type itself
         this.constraints = []; // joints - Point/Hinge/Slider/Weld, all solved by the same solver each substep
+        this._listeners = {};
+    }
+
+    addListener(event, fn) {
+        (this._listeners[event] || (this._listeners[event] = [])).push(fn);
+        return this;
+    }
+
+    emit(event, arg) {
+        const list = this._listeners[event];
+        if (!list) return;
+        for (let i = 0; i < list.length; i++) list[i](arg);
     }
 
     addConstraint(constraint) {
@@ -7261,6 +7951,7 @@ class World {
     // broadphase runs, so broadphase's own "AABBs are current" assumption (Rule 1) holds for
     // this tick's bodies, including ones the solver moved last tick.
     step(dt) {
+        this.emit('stepStart', dt);
         for (let i = 0; i < this.bodies.length; i++) this.bodies[i].updateDerived(dt);
 
         const pairs = this.broadphase.computePairs();
@@ -7289,6 +7980,7 @@ class World {
         // so refreshing here would be wasted work - narrowphase/broadphase for THIS tick already
         // ran against the pre-solve state, which is correct (Rule 1: each stage assumes the state
         // handed to it, not a moving target updated out from under it mid-tick).
+        this.emit('stepEnd', dt);
     }
 
     // rayIntersect(start, end) -> { body, point, normal, distance, fraction } | null. The first

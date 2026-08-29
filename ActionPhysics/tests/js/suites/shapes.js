@@ -313,7 +313,7 @@
 	// ---- LineSwept ----
 
 	test('shapes/lineswept', 'support extends the base shape support by the segment endpoint', function (t) {
-		var s = new AP.LineSweptShape(new AP.SphereShape(1), 5);
+		var s = new AP.LineSweptShape(new AP.SphereShape(1), new V(0, -5, 0), new V(0, 5, 0));
 		var got = drawSupport(t, s, new V(0, 1, 0));
 		vecIs(t, got, 0, 6, 0, '+Y: sphere radius plus half-length');
 		var out = new V();
