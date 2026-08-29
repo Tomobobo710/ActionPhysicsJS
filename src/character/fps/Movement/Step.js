@@ -321,7 +321,9 @@ proto.endStep = function(dt) {
     for (var ci = 0; ci < candidates.length; ci++) {
         var c = candidates[ci];
         var rise = (c.point.y + half) - this.body.position.y;
-        var tooHigh = this.grounded && rise > this.stepHeight + this._skin;
+        // feet already inside this surface -> push out onto it, not a step-up to refuse
+        var penetrating = (this.body.position.y - half) < c.point.y - this._skin;
+        var tooHigh = this.grounded && !penetrating && rise > this.stepHeight + this._skin;
         if (!tooHigh) { probe = c; tooHighToStep = false; break; }
         if (!probe) { probe = c; tooHighToStep = true; } // keep the highest as a fallback reference
     }

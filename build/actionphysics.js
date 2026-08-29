@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-29T02:15:38.628Z
+// ActionPhysics 0.1.0 — built 2026-08-29T06:07:26.026Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine.
@@ -9838,7 +9838,10 @@ proto._sweptCollideAndSlide = function(opts) {
             if (floorLike && h.point && (h.point.y - (p.y - height / 2)) > height * FPSC.TOE_BAND_FRAC) { localIgnore.push(h.body); continue; }
             if (climbSteepSlopes && self_._climbableSlopeAhead(start, mdx0, mdz0)) { localIgnore.push(h.body); continue; }
             var overlapped = h.fraction === 0 && h.distance === 0;
-            var into = floorLike ? -(vx * n.x + vz * n.z) : (vx * n.x + vz * n.z);
+            // vyDet included for the vertical-wall case only (detection): falling/rising past a
+            // near-vertical face counts as heading into it. Floor-like faces keep the horizontal-only
+            // test — their block is "slope ahead", owned by the clamp/steep path, not this.
+            var into = floorLike ? -(vx * n.x + vz * n.z) : (vx * n.x + vz * n.z + vyDet * n.y);
             if (into <= 0 && !overlapped) { return null; }
             var keep = 0;
             var b = h.body;
@@ -9878,12 +9881,17 @@ proto._sweptCollideAndSlide = function(opts) {
     // the move; position correction only for depenetration. Sub-stepped for reliable normals.
     var cx = p.x, cz = p.z;
     var depenX = 0, depenZ = 0;
+    // Vertical component of the move, for DETECTION ONLY — so the swept box sees a wall it's about to
+    // bury into by falling/rising past it (e.g. dropping straight down a near-vertical ramp face).
+    // vy never clips velocity or writes position here; the ground clamp still owns y. It only lets
+    // findBlock's `into` test fire so the existing horizontal back-probe can push the box out.
+    var vyDet = selfBody ? selfBody.linear_velocity.y : 0;
     for (var s = 0; s < nSub; s++) {
         for (var iter = 0; iter < 4; iter++) {
-            var speed = Math.sqrt(vx * vx + vz * vz);
+            var speed = Math.sqrt(vx * vx + vz * vz + vyDet * vyDet);
             if (speed < FPSC.EPS_DIR) { break; }
             var start = new Vector3(cx, sy, cz);
-            var end = new Vector3(cx + vx * sdt, sy, cz + vz * sdt);
+            var end = new Vector3(cx + vx * sdt, sy + vyDet * sdt, cz + vz * sdt);
             var blk = findBlock(start, end);
             if (!blk) { break; }
             // Step-up: before walling a near-vertical, non-yielding face, test if it's clear when
@@ -11079,7 +11087,9 @@ proto.endStep = function(dt) {
     for (var ci = 0; ci < candidates.length; ci++) {
         var c = candidates[ci];
         var rise = (c.point.y + half) - this.body.position.y;
-        var tooHigh = this.grounded && rise > this.stepHeight + this._skin;
+        // feet already inside this surface -> push out onto it, not a step-up to refuse
+        var penetrating = (this.body.position.y - half) < c.point.y - this._skin;
+        var tooHigh = this.grounded && !penetrating && rise > this.stepHeight + this._skin;
         if (!tooHigh) { probe = c; tooHighToStep = false; break; }
         if (!probe) { probe = c; tooHighToStep = true; } // keep the highest as a fallback reference
     }

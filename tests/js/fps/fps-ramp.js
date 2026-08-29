@@ -54,63 +54,69 @@
 		t.simulate(w, angles.length * BLOCK);
 	}, { page: 'fps/ramp', steps: 1200, description: 'Idle on below-limit ramps (10/25/40/44°) one at a time, ~5s each; the character must hold DEAD STILL — any movement is a slip.' });
 
-	PBF.scaleTest('fps/ramp', 'R2', 'slide off above-limit', function (t, S) {
-		var angles = [47, 55, 70, 89], BLOCK = 360;
-		var w = PBF.makeWorld();
-		var z0 = null, y0 = null, slid = {}, fellThrough = {}, launched = {}, groundedLastTick = false;
-
-		function build(world, idx, deg) {
-			world.addRigidBody(PBF.staticBox(60, 0.5, 60, { x: 0, y: -0.5, z: 0 }));
+	// R2: an above-limit ramp must let the character SLIDE DOWN THE FACE, never tunnel the slab under
+	// it, never launch upward on landing, and never drop through the ground floor. One row per angle
+	// so each is a single watchable scene with live per-tick criteria (was one row cramming all four).
+	function slideOffAboveLimit(id, deg) {
+		PBF.scaleTest('fps/ramp', id, 'slide off ' + deg + 'deg (above-limit)', function (t, S) {
+			var BLOCK = 360;
+			var w = PBF.makeWorld();
+			w.addRigidBody(PBF.staticBox(60, 0.5, 60, { x: 0, y: -0.5, z: 0 }));   // ground slab, top face y=0
 			var rot = PBF.axisAngleQuat(1, 0, 0, deg * Math.PI / 180);
-			world.addRigidBody(PBF.staticBox(10, 1, 15, { x: 0, y: 10, z: 0 }, '#665544', null, rot));
+			w.addRigidBody(PBF.staticBox(10, 1, 15, { x: 0, y: 10, z: 0 }, '#665544', null, rot));
+
 			var rad = deg * Math.PI / 180;
 			var ny = Math.cos(rad), nz = Math.sin(rad);
 			var faceY = 10 + ny, faceZ = 0 + nz;
 			var standoff = 10;
-			var curP = S.spawn(world, { x: 0, y: faceY + ny * standoff, z: faceZ + nz * standoff }, {});
+			var p = S.spawn(w, { x: 0, y: faceY + ny * standoff, z: faceZ + nz * standoff }, {});
 			var tossSpeed = 8;
-			curP.body.linear_velocity.x = 0;
-			curP.body.linear_velocity.y = tossSpeed * 0.3;
-			curP.body.linear_velocity.z = -nz * tossSpeed;
-			z0 = null; y0 = null; groundedLastTick = false;
-			return curP;
-		}
+			p.body.linear_velocity.x = 0;
+			p.body.linear_velocity.y = tossSpeed * 0.3;
+			p.body.linear_velocity.z = -nz * tossSpeed;
 
-		var seq = PBF.sequentialBlocks(t, w, angles, BLOCK, build, function (local, idx, deg, curP) {
-			var wasJustGrounded = curP.grounded && !groundedLastTick;
-			groundedLastTick = curP.grounded;
-			if (local === 1) { z0 = curP.body.position.z; y0 = curP.body.position.y; }
-			if (local > 1 && z0 != null) {
-				slid[deg] = +drift(curP, z0, y0).toFixed(1);
-				var feet = curP.body.position.y - curP.height / 2;
-				var overRamp = Math.abs(curP.body.position.z) < 15;
-				var faceDist = rampFaceDistance(deg, feet, curP.body.position.z);
-				if (overRamp && faceDist < -1) fellThrough[deg] = true;
-				if (wasJustGrounded && curP.body.linear_velocity.y > 2) launched[deg] = true;
-			}
-		});
+			var z0 = null, y0 = null, groundedLastTick = false, lastTick = 0;
+			var maxSlid = 0, sankRamp = false, launched = false, minFeet = Infinity;
+			PBF.drive(t, p, function (tick) {
+				lastTick = tick;
+				var wasJustGrounded = p.grounded && !groundedLastTick;
+				groundedLastTick = p.grounded;
+				if (tick === 1) { z0 = p.body.position.z; y0 = p.body.position.y; }
+				if (tick > 1 && z0 != null) {
+					maxSlid = Math.max(maxSlid, drift(p, z0, y0));
+					var feet = p.body.position.y - p.height / 2;
+					if (feet < minFeet) minFeet = feet;
+					var overRamp = Math.abs(p.body.position.z) < 15;
+					if (overRamp && rampFaceDistance(deg, feet, p.body.position.z) < -1) sankRamp = true;
+					if (wasJustGrounded && p.body.linear_velocity.y > 2) launched = true;
+				}
+				return {};
+			});
+			// The three "never" criteria can only be trusted once the whole slide has played out — hold
+			// them pending until the block is nearly done (keeps the run from early-outing the instant
+			// the slide-distance check goes green, and lets the viewer watch the values move meanwhile).
+			var settled = function () { return lastTick >= BLOCK - 2; };
 
-		t.log('Idle on above-limit ramps 47°→55°→70°→89°, ONE at a time. Each must SLIDE DOWN THE FACE (> 2u), NEVER drop through the slab, and NEVER launch upward on landing.');
-		t.expect('all angles slide down the face (> 2u)', function () {
-			if (seq.tickOf() < angles.length * BLOCK) return { ok: false, detail: 'sliding ' + angles[Math.min(angles.length - 1, Math.floor(seq.tickOf() / BLOCK))] + '°…' };
-			var ok = angles.every(function (d) { return (slid[d] || 0) > 2; });
-			var m = {}; angles.forEach(function (d) { m[d] = slid[d] || 0; });
-			return { ok: ok, detail: JSON.stringify(m) };
-		});
-		t.expect('no angle falls through the slab', function () {
-			if (seq.tickOf() < angles.length * BLOCK) return { ok: false, detail: 'sliding…' };
-			var ok = angles.every(function (d) { return !fellThrough[d]; });
-			var m = {}; angles.forEach(function (d) { m[d] = !!fellThrough[d]; });
-			return { ok: ok, detail: JSON.stringify(m) };
-		});
-		t.expect('no angle launches upward on landing', function () {
-			if (seq.tickOf() < angles.length * BLOCK) return { ok: false, detail: 'sliding…' };
-			var ok = angles.every(function (d) { return !launched[d]; });
-			var m = {}; angles.forEach(function (d) { m[d] = !!launched[d]; });
-			return { ok: ok, detail: JSON.stringify(m) };
-		});
-		t.simulate(w, angles.length * BLOCK);
-	}, { page: 'fps/ramp', steps: 1440, description: 'Idle on above-limit ramps (47/55/70/89°) one at a time; each must slide DOWN THE FACE, not tunnel through the slab, and not launch upward on landing.' });
+			t.log('Land on a ' + deg + 'deg ramp (above the walk limit). It must slide down the face, not tunnel the ramp slab, not launch on landing, and not drop through the floor.');
+			t.expect('slides down the face (> 2u)', function () {
+				return { ok: maxSlid > 2, detail: 'slid ' + maxSlid.toFixed(2) + 'u' };
+			});
+			t.expect('does not sink into the ramp slab', function () {
+				return { ok: settled() && !sankRamp, detail: sankRamp ? 'penetrated the ramp face' : (settled() ? 'stayed on the face' : 'sliding…') };
+			});
+			t.expect('does not launch upward on landing', function () {
+				return { ok: settled() && !launched, detail: launched ? 'launched (vy > 2 on grounding)' : (settled() ? 'no launch' : 'sliding…') };
+			});
+			t.expect('never falls through the floor', function () {
+				return { ok: settled() && minFeet > -0.1, detail: 'lowest feet y=' + (minFeet === Infinity ? 'n/a' : minFeet.toFixed(3)) + (settled() ? '' : ' (sliding…)') };
+			});
+			t.simulate(w, BLOCK);
+		}, { page: 'fps/ramp', steps: 360, description: 'Land on a ' + deg + 'deg above-limit ramp: must slide down the face, not tunnel the ramp, not launch on landing, not fall through the floor.' });
+	}
+	slideOffAboveLimit('R2a', 47);
+	slideOffAboveLimit('R2b', 55);
+	slideOffAboveLimit('R2c', 70);
+	slideOffAboveLimit('R2d', 89);
 
 	PBF.scaleTest('fps/ramp', 'R3', 'boundary 44 holds / 47 slides', function (t, S) {
 		var BLOCK = 240;
@@ -1006,6 +1012,79 @@
 		});
 		t.simulate(w, TOTAL);
 	}, { page: 'fps/ramp', steps: 220, description: 'Slide off a high platform edge (still sliding), land on a minimum-too-steep 46° ramp, ride up its face on momentum, crest the top edge, and launch airborne with upward velocity — the full slide feature end to end.' });
+
+	PBF.scaleTest('fps/ramp', 'R29', 'lands flush beside a near-vertical ramp: rests still AND does not clip the ramp', function (t, S) {
+		var BLOCK = 300, DEG = 85;
+		var w = PBF.makeWorld();
+		w.addRigidBody(PBF.staticBox(60, 0.5, 60, { x: 0, y: -0.5, z: 0 }));                 // ground slab, top face y=0
+		var rot = PBF.axisAngleQuat(1, 0, 0, DEG * Math.PI / 180);
+		w.addRigidBody(PBF.staticBox(10, 1, 15, { x: 0, y: 10, z: 0 }, '#665544', null, rot));
+		// spawn well above the floor, just clear of the (near-vertical) ramp face, so the character
+		// free-falls straight down and lands on the flat slab hard against the ramp base.
+		var p = S.spawn(w, { x: 0, y: 25, z: 1.6 }, {});
+		PBF.renderables(t, p);
+
+		var lastTick = 0, landedTick = -1;
+		// (a) settling
+		var restStreak = 0, longestRest = 0, worstDip = 0, flipCount = 0, prevGrounded = null;
+		// (b) ramp interpenetration / ghost coupling
+		var worstRampClip = 0, worstGhostGap = 0;
+		PBF.drive(t, p, function (tick) {
+			lastTick = tick;
+			var feet = p.body.position.y - p.height / 2;
+			var speed = Math.hypot(p.body.linear_velocity.x, p.body.linear_velocity.y, p.body.linear_velocity.z);
+			if (landedTick < 0 && p.grounded && feet < 0.2) landedTick = tick;
+			if (landedTick > 0) {
+				if (prevGrounded !== null && p.grounded !== prevGrounded) flipCount++;
+				if (feet < worstDip) worstDip = feet;
+				var atRest = p.grounded && Math.abs(feet) < 0.05 && speed < 0.05;
+				restStreak = atRest ? restStreak + 1 : 0;
+				if (restStreak > longestRest) longestRest = restStreak;
+
+				// deepest the controller box's +Z bottom edge pokes past the ramp's face plane
+				var frontZ = p.body.position.z + p.depth / 2;
+				var clip = -rampFaceDistance(DEG, feet, frontZ);   // >0 = inside the ramp solid
+				if (clip > worstRampClip) worstRampClip = clip;
+				// horizontal gap between the controller box and its ghost (should stay ~skin)
+				if (p._ghost) {
+					var gh = Math.hypot(p.body.position.x - p._ghost.position.x, p.body.position.z - p._ghost.position.z);
+					if (gh > worstGhostGap) worstGhostGap = gh;
+				}
+			}
+			prevGrounded = p.grounded;
+			return {};
+		});
+
+		var settled = function () { return lastTick >= BLOCK - 2; };
+		t.log('Scale-' + S.SC + ' character free-falls past a near-vertical ' + DEG + 'deg ramp onto the flat floor hard against the ramp base. (a) it must land and REST — grounded, feet at y=0, motionless. (b) its kinematic box must not clip into the ramp solid, and its ghost must stay coupled to it.');
+
+		// ---- (a) settles into a still grounded rest ----
+		t.expect('lands on the floor', function () {
+			return { ok: landedTick > 0, detail: landedTick > 0 ? 'landed @tick ' + landedTick : 'still falling' };
+		});
+		t.expect('(a) feet never dip more than 0.1 below the floor after landing', function () {
+			return { ok: settled() && worstDip > -0.1, detail: 'worst feet y=' + worstDip.toFixed(3) + (settled() ? '' : ' (settling…)') };
+		});
+		t.expect('(a) no grounded<->airborne chatter (< 4 flips)', function () {
+			return { ok: settled() && flipCount < 4, detail: flipCount + ' flips' + (settled() ? '' : ' so far') };
+		});
+		t.expect('(a) holds a long motionless rest (>= 60 ticks)', function () {
+			return { ok: settled() && longestRest >= 60, detail: 'longest rest = ' + longestRest + ' ticks' + (settled() ? '' : '…') };
+		});
+
+		// ---- (b) kinematic box / ghost stay honest against the ramp ----
+		t.expect('(b) kinematic box does not clip into the ramp (< 0.02)', function () {
+			return { ok: settled() && worstRampClip < 0.02, detail: 'deepest ramp clip = ' + worstRampClip.toFixed(3) + (settled() ? '' : '…') };
+		});
+		// coupled to within one wall-depenetration back-probe step (min(w,d)*0.1) + skin — the ghost,
+		// jammed against the ramp face, gets pushed out by that fixed granularity, so it can't sit
+		// tighter than one step. Was ~half a box-depth (0.44-0.80) before the vy-detection sweep fix.
+		var couplingLimit = Math.min(p.width, p.depth) * 0.1 + p._skin + 0.005;
+		t.expect('(b) ghost stays coupled to the controller box (h-gap within one back-probe step)', function () {
+			return { ok: settled() && worstGhostGap < couplingLimit, detail: 'worst ghost h-gap = ' + worstGhostGap.toFixed(3) + ' (limit ' + couplingLimit.toFixed(3) + ')' + (settled() ? '' : '…') };
+		});
+		t.simulate(w, BLOCK);
+	}, { page: 'fps/ramp', steps: 300, description: 'A character free-falls past a near-vertical 85deg ramp onto the flat floor against the ramp base. (a) it must settle into a still grounded rest (fails small-scale: ground-probe reach too short, grounded/airborne jitter). (b) its kinematic box must not interpenetrate the ramp and its ghost must stay coupled — the box currently clips the ramp base and the ghost is shoved a half-depth clear of it at every scale.' });
 })(
 	typeof module !== 'undefined' && module.exports ? require('../runner.js') : window.APRunner,
 	typeof module !== 'undefined' && module.exports ? require('../_util_fps.js') : window.PBF,
