@@ -55,14 +55,18 @@ class RigidBody {
         // against this engine should behave the same as one built through that wrapper.
         // angular_damping is not 0: Coulomb friction opposes tangential SLIP, and a cleanly rolling
         // shape has ~zero slip at the contact by construction, so without angular damping a rolling
-        // body never stops on friction alone (see rolling_friction below and VelocitySolve.js).
+        // body never stops on friction alone (see angular_friction below and VelocitySolve.js).
         this.friction = 3.0;
         this.restitution = 0.33;
         this.linear_damping = 0.1;
         this.angular_damping = 0.9;
-        // Rolling resistance coefficient (metres): caps a round shape's angular velocity about the
-        // contact tangent plane, the same way Coulomb friction caps tangential slip.
-        this.rolling_friction = 0.05;
+        // Contact-tangent-plane angular damping (metres): caps relative angular velocity ABOUT the
+        // contact's tangent plane (any axis lying in the contact surface), the same way Coulomb
+        // friction caps tangential linear slip. Shape-agnostic - it happens to be what real rolling
+        // resistance looks like on a round shape, but it also damps an ordinary box's pivot/topple
+        // at a contact corner. NOT the same thing as a future shape-aware rolling-resistance model
+        // (which would key off actual rolling contact geometry); this name is reserved for that.
+        this.angular_friction = 0.05;
 
         // ---- Filtering ----
         this.collision_mask = 0xFFFFFFFF;

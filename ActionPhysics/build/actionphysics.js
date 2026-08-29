@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-26T21:33:19.733Z
+// ActionPhysics 0.1.0 — built 2026-08-26T21:38:54.703Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine.
@@ -3605,14 +3605,18 @@ class RigidBody {
         // against this engine should behave the same as one built through that wrapper.
         // angular_damping is not 0: Coulomb friction opposes tangential SLIP, and a cleanly rolling
         // shape has ~zero slip at the contact by construction, so without angular damping a rolling
-        // body never stops on friction alone (see rolling_friction below and VelocitySolve.js).
+        // body never stops on friction alone (see angular_friction below and VelocitySolve.js).
         this.friction = 3.0;
         this.restitution = 0.33;
         this.linear_damping = 0.1;
         this.angular_damping = 0.9;
-        // Rolling resistance coefficient (metres): caps a round shape's angular velocity about the
-        // contact tangent plane, the same way Coulomb friction caps tangential slip.
-        this.rolling_friction = 0.05;
+        // Contact-tangent-plane angular damping (metres): caps relative angular velocity ABOUT the
+        // contact's tangent plane (any axis lying in the contact surface), the same way Coulomb
+        // friction caps tangential linear slip. Shape-agnostic - it happens to be what real rolling
+        // resistance looks like on a round shape, but it also damps an ordinary box's pivot/topple
+        // at a contact corner. NOT the same thing as a future shape-aware rolling-resistance model
+        // (which would key off actual rolling contact geometry); this name is reserved for that.
+        this.angular_friction = 0.05;
 
         // ---- Filtering ----
         this.collision_mask = 0xFFFFFFFF;
@@ -6421,13 +6425,13 @@ class Solver {
                 this._solveContactVelocity(manifold.points[i], bodyA, bodyB, gravity, h);
             }
             if (manifold.points.length > 0) {
-                // Reference point for rolling resistance: the most-engaged one (largest |normalLambda|),
-                // not always points[0] - see VelocitySolve.js._solveRollingResistance.
+                // Reference point for angular friction: the most-engaged one (largest |normalLambda|),
+                // not always points[0] - see VelocitySolve.js._solveAngularFriction.
                 let ref = manifold.points[0];
                 for (let i = 1; i < manifold.points.length; i++) {
                     if (Math.abs(manifold.points[i].normalLambda) > Math.abs(ref.normalLambda)) ref = manifold.points[i];
                 }
-                this._solveRollingResistance(ref, bodyA, bodyB, h);
+                this._solveAngularFriction(ref, bodyA, bodyB, h);
             }
         }
     }
@@ -6742,14 +6746,16 @@ proto._solveContactVelocity = function (point, bodyA, bodyB, gravity, h) {
     this._applyVelocityImpulse(bodyA, bodyB, this._rA, this._rB, -tx, -ty, -tz, jt);
 };
 
-// Rolling resistance: damps relative angular velocity ABOUT the tangent directions only (spin about
-// the normal is not rolling). Applied once per manifold via the most-engaged point, not once per
-// point - splitting it per-point let each point's correction change the angular velocity the next
-// point read, oscillating instead of converging (traced on a shoved cylinder: stuck at a nonzero
-// fixed-point angular velocity forever instead of decaying to rest).
-proto._solveRollingResistance = function (point, bodyA, bodyB, h) {
-    const rollingFriction = Math.sqrt(Math.max(bodyA.rolling_friction, 0) * Math.max(bodyB.rolling_friction, 0));
-    if (rollingFriction <= 0) return;
+// Angular friction: damps relative angular velocity ABOUT the contact's tangent plane only (spin
+// about the normal is untouched). Shape-agnostic - on a round shape this looks like rolling
+// resistance, but it fires the same way for a box pivoting at a contact corner. Applied once per
+// manifold via the most-engaged point, not once per point - splitting it per-point let each point's
+// correction change the angular velocity the next point read, oscillating instead of converging
+// (traced on a shoved cylinder: stuck at a nonzero fixed-point angular velocity forever instead of
+// decaying to rest).
+proto._solveAngularFriction = function (point, bodyA, bodyB, h) {
+    const angularFriction = Math.sqrt(Math.max(bodyA.angular_friction, 0) * Math.max(bodyB.angular_friction, 0));
+    if (angularFriction <= 0) return;
 
     const nx = point.normal.x, ny = point.normal.y, nz = point.normal.z;
     const rw = bodyA.angular_velocity, ww = bodyB.angular_velocity;
@@ -6771,7 +6777,7 @@ proto._solveRollingResistance = function (point, bodyA, bodyB, h) {
     }
     if (wSum < 1e-12) return;
 
-    const maxAngImpulse = rollingFriction * Math.abs(point.normalLambda) / h;
+    const maxAngImpulse = angularFriction * Math.abs(point.normalLambda) / h;
     if (maxAngImpulse <= 0) return;
     let j = relWMag / wSum;
     if (j > maxAngImpulse) j = maxAngImpulse;

@@ -30,7 +30,7 @@
 	}
 
 	rollTest('sphere — shoved, rolls to rest', 'sphere',
-		function (t, w) { return t.sphere(w, 0.4, 1, { pos: [0, 0.4, 0], friction: U.MAT.friction, rolling_friction: U.MAT.rolling_friction, restitution: U.MAT.restitution, linear_damping: U.MAT.linear_damping, angular_damping: U.MAT.angular_damping, color: '#F4D35E' }); },
+		function (t, w) { return t.sphere(w, 0.4, 1, { pos: [0, 0.4, 0], friction: U.MAT.friction, angular_friction: U.MAT.angular_friction, restitution: U.MAT.restitution, linear_damping: U.MAT.linear_damping, angular_damping: U.MAT.angular_damping, color: '#F4D35E' }); },
 		[1, 0, 0],
 		"A resting sphere is shoved into a roll (spun about a horizontal axis). PASS: rolling resistance " +
 		"brings |w| back to ~0 and it stops creeping. A sphere that rolls forever is the regression.");
@@ -39,13 +39,13 @@
 	// so the round barrel runs along X. Spinning about X is therefore rolling ON the barrel (toward Z) —
 	// the roll-without-slip case. Spinning about Z instead would tumble it end-over-end, not roll it.
 	rollTest('cylinder on side — shoved, rolls to rest', 'cylinder',
-		function (t, w) { return t.cylinder(w, 0.4, 1, 1, { pos: [0, 0.4, 0], rot: U.axisAngle(t, 0, 0, 1, Math.PI / 2), friction: U.MAT.friction, rolling_friction: U.MAT.rolling_friction, restitution: U.MAT.restitution, linear_damping: U.MAT.linear_damping, angular_damping: U.MAT.angular_damping, color: '#FFAA00' }); },
+		function (t, w) { return t.cylinder(w, 0.4, 1, 1, { pos: [0, 0.4, 0], rot: U.axisAngle(t, 0, 0, 1, Math.PI / 2), friction: U.MAT.friction, angular_friction: U.MAT.angular_friction, restitution: U.MAT.restitution, linear_damping: U.MAT.linear_damping, angular_damping: U.MAT.angular_damping, color: '#FFAA00' }); },
 		[1, 0, 0],
 		"A cylinder lying on its side is shoved into a roll along its barrel. PASS: it rolls, then comes " +
 		"to rest within the budget rather than trundling on indefinitely.");
 
 	rollTest('capsule on side — shoved, rolls to rest', 'capsule',
-		function (t, w) { return t.capsule(w, 0.4, 2, 1, { pos: [0, 0.4, 0], rot: U.axisAngle(t, 0, 0, 1, Math.PI / 2), friction: U.MAT.friction, rolling_friction: U.MAT.rolling_friction, restitution: U.MAT.restitution, linear_damping: U.MAT.linear_damping, angular_damping: U.MAT.angular_damping, color: '#45B7D1' }); },
+		function (t, w) { return t.capsule(w, 0.4, 2, 1, { pos: [0, 0.4, 0], rot: U.axisAngle(t, 0, 0, 1, Math.PI / 2), friction: U.MAT.friction, angular_friction: U.MAT.angular_friction, restitution: U.MAT.restitution, linear_damping: U.MAT.linear_damping, angular_damping: U.MAT.angular_damping, color: '#45B7D1' }); },
 		[1, 0, 0],
 		"A capsule lying on its side is shoved into a roll along its barrel. PASS: it rolls, then comes to " +
 		"rest rather than rolling or wobbling indefinitely.");

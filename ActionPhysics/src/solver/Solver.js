@@ -96,13 +96,13 @@ class Solver {
                 this._solveContactVelocity(manifold.points[i], bodyA, bodyB, gravity, h);
             }
             if (manifold.points.length > 0) {
-                // Reference point for rolling resistance: the most-engaged one (largest |normalLambda|),
-                // not always points[0] - see VelocitySolve.js._solveRollingResistance.
+                // Reference point for angular friction: the most-engaged one (largest |normalLambda|),
+                // not always points[0] - see VelocitySolve.js._solveAngularFriction.
                 let ref = manifold.points[0];
                 for (let i = 1; i < manifold.points.length; i++) {
                     if (Math.abs(manifold.points[i].normalLambda) > Math.abs(ref.normalLambda)) ref = manifold.points[i];
                 }
-                this._solveRollingResistance(ref, bodyA, bodyB, h);
+                this._solveAngularFriction(ref, bodyA, bodyB, h);
             }
         }
     }

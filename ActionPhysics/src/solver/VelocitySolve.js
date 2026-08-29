@@ -45,14 +45,16 @@ proto._solveContactVelocity = function (point, bodyA, bodyB, gravity, h) {
     this._applyVelocityImpulse(bodyA, bodyB, this._rA, this._rB, -tx, -ty, -tz, jt);
 };
 
-// Rolling resistance: damps relative angular velocity ABOUT the tangent directions only (spin about
-// the normal is not rolling). Applied once per manifold via the most-engaged point, not once per
-// point - splitting it per-point let each point's correction change the angular velocity the next
-// point read, oscillating instead of converging (traced on a shoved cylinder: stuck at a nonzero
-// fixed-point angular velocity forever instead of decaying to rest).
-proto._solveRollingResistance = function (point, bodyA, bodyB, h) {
-    const rollingFriction = Math.sqrt(Math.max(bodyA.rolling_friction, 0) * Math.max(bodyB.rolling_friction, 0));
-    if (rollingFriction <= 0) return;
+// Angular friction: damps relative angular velocity ABOUT the contact's tangent plane only (spin
+// about the normal is untouched). Shape-agnostic - on a round shape this looks like rolling
+// resistance, but it fires the same way for a box pivoting at a contact corner. Applied once per
+// manifold via the most-engaged point, not once per point - splitting it per-point let each point's
+// correction change the angular velocity the next point read, oscillating instead of converging
+// (traced on a shoved cylinder: stuck at a nonzero fixed-point angular velocity forever instead of
+// decaying to rest).
+proto._solveAngularFriction = function (point, bodyA, bodyB, h) {
+    const angularFriction = Math.sqrt(Math.max(bodyA.angular_friction, 0) * Math.max(bodyB.angular_friction, 0));
+    if (angularFriction <= 0) return;
 
     const nx = point.normal.x, ny = point.normal.y, nz = point.normal.z;
     const rw = bodyA.angular_velocity, ww = bodyB.angular_velocity;
@@ -74,7 +76,7 @@ proto._solveRollingResistance = function (point, bodyA, bodyB, h) {
     }
     if (wSum < 1e-12) return;
 
-    const maxAngImpulse = rollingFriction * Math.abs(point.normalLambda) / h;
+    const maxAngImpulse = angularFriction * Math.abs(point.normalLambda) / h;
     if (maxAngImpulse <= 0) return;
     let j = relWMag / wSum;
     if (j > maxAngImpulse) j = maxAngImpulse;
