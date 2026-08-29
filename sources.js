@@ -48,5 +48,9 @@ module.exports = [
     // Phases - broadphase needs RigidBody (reads .getAABB(), .bodyType, .id, .collision_mask/groups).
     'src/phases/SAPBroadphase.js',
 
+    // Midphase needs BVH, RigidBody, CompoundShape, MeshShape, TriangleShape - all already listed
+    // above.
+    'src/phases/Midphase.js',
+
     'src/outro.js'
 ];
