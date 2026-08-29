@@ -38,8 +38,12 @@ module.exports = [
     'src/shapes/CompoundShape.js',
     'src/shapes/LineSweptShape.js',
 
-    // Bodies - RigidBody references AABB, Matrix3, and the shape contract above.
+    // Bodies - RigidBody references AABB, Matrix3, and the shape contract above. RigidBody.js is
+    // the class shell; the phases attach onto RigidBody.prototype from their own files.
     'src/bodies/RigidBody.js',
+    'src/bodies/Forces.js',
+    'src/bodies/DerivedState.js',
+    'src/bodies/Accessors.js',
 
     // Spatial (part 2) - BVH is independent of RigidBody but grouped with phases since midphase
     // is its main consumer.
@@ -49,30 +53,43 @@ module.exports = [
     'src/phases/SAPBroadphase.js',
 
     // Midphase needs BVH, RigidBody, CompoundShape, MeshShape, TriangleShape - all already listed
-    // above.
+    // above. Midphase.js is the class shell; the phases attach onto the prototype from their own files.
     'src/phases/Midphase.js',
+    'src/phases/BVHCache.js',
+    'src/phases/ExpandPair.js',
 
     // Narrowphase (collision detection): MinkowskiSupport wraps two placed shapes; GJK consumes it.
+    // GJK.js/EPA.js are class shells; their phases attach onto the prototype from their own files.
     'src/collision/MinkowskiSupport.js',
     'src/collision/GJK.js',
+    'src/collision/Seeding.js',
+    'src/collision/Simplex.js',
+    'src/collision/Run.js',
     'src/collision/EPA.js',
+    'src/collision/InitialTetrahedron.js',
+    'src/collision/Expand.js',
 
-    // Contacts: ContactDetails normalizes GJK/EPA output; ContactManifold owns point lifetime;
-    // ContactManifoldList owns the set of active manifolds.
+    // Contacts: ContactDetails normalizes GJK/EPA output; ContactManifold owns point lifetime
+    // (class shell + Update.js + Reduction.js); ContactManifoldList owns the set of active manifolds.
     'src/collision/ContactDetails.js',
     'src/collision/ContactManifold.js',
+    'src/collision/Update.js',
+    'src/collision/Reduction.js',
     'src/collision/ContactManifoldList.js',
 
-    // Narrowphase dispatch - ties Midphase + GJK/EPA + ContactManifoldList together.
+    // Narrowphase dispatch - ties Midphase + GJK/EPA + ContactManifoldList together. NarrowPhase.js
+    // is the class shell; the phases attach onto NarrowPhase.prototype from their own files.
     'src/phases/NarrowPhase.js',
+    'src/phases/PairTest.js',
+    'src/phases/SpeculativeMargin.js',
+    'src/phases/GeometryRefresh.js',
 
-    // Solver - XPBD.
+    // Solver - XPBD. Solver.js is the class shell + orchestration; the phases attach onto
+    // Solver.prototype from their own files, same pattern as the FPS controller below.
     'src/solver/Solver.js',
-
-    // Sleep: island grouping + park/wake. Reads RigidBody (loaded above) and this tick's
-    // manifolds/constraints; run by World between narrowphase and the solver. Independent of Solver
-    // itself. Loaded before World, which constructs it.
-    'src/solver/IslandManager.js',
+    'src/solver/Integrate.js',
+    'src/solver/PositionSolve.js',
+    'src/solver/VelocitySolve.js',
 
     // Constraints (joints) - position-level XPBD constraints, built on the solver's own
     // Solver._integrateRotation and each body's mass/inertia fields. Loaded after Solver.
@@ -84,8 +101,12 @@ module.exports = [
 
     // Queries - ray/shape casts, conservative advancement over GJK. Depends on GJK, MinkowskiSupport,
     // SphereShape (used as a zero-radius point), AABB. Loaded after those, before World (World's
-    // rayIntersect/shapeIntersect delegate here).
+    // rayIntersect/shapeIntersect delegate here). Queries.js is the class shell + shared scratch;
+    // the phases attach onto Queries (a static-only class) from their own files.
     'src/queries/Queries.js',
+    'src/queries/Advance.js',
+    'src/queries/RayIntersect.js',
+    'src/queries/ShapeIntersect.js',
 
     // World - pipeline glue.
     'src/world/World.js',

@@ -84,13 +84,16 @@
 			var solver = world.solver;
 			var origSolveContactVelocity = solver._solveContactVelocity.bind(solver);
 			var approachSpeed = null, exitSpeed = null;
-			solver._solveContactVelocity = function (point, bodyA, bodyB, h) {
+			solver._solveContactVelocity = function (point, bodyA, bodyB, gravity, h) {
 				var preLambda = point.normalLambda;
-				origSolveContactVelocity(point, bodyA, bodyB, h);
+				origSolveContactVelocity(point, bodyA, bodyB, gravity, h);
 				// Only the substep where restitution ITSELF fires (e>0 and approach speed above the
 				// rest-jitter threshold) is the true bounce event; with e=0 the ball can satisfy
 				// preLambda<0 on several substeps while settling, and the first is not the bounce.
-				var fires = preLambda < 0 && e > 0 && point._preSolveNormalVel > AP.Solver.RESTITUTION_THRESHOLD;
+				var g = bodyA.gravity || bodyB.gravity || gravity;
+				var gravityMag = Math.sqrt(g.x * g.x + g.y * g.y + g.z * g.z);
+				var restitutionThreshold = gravityMag * h * AP.Solver.RESTITUTION_SLOP_FACTOR;
+				var fires = preLambda < 0 && e > 0 && point._preSolveNormalVel > restitutionThreshold;
 				if (approachSpeed === null && fires) {
 					approachSpeed = point._preSolveNormalVel;
 					exitSpeed = -solver._contactRelativeNormalVelocity(point, bodyA, bodyB);

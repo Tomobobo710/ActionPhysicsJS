@@ -1,29 +1,12 @@
-/**
- * WeldConstraint: rigidly fuses two bodies (or one body and the world) together at a shared point -
- * all 6 relative DOF removed (3 translational, same PointConstraint pivot; 3 rotational, held at
- * whatever relative orientation the two bodies had when the weld was created). Behaves like the two
- * bodies were merged into one rigid body, without actually merging their shapes/mass.
- *
- * The pivot reuses PointConstraint's own 3x3 coupled solve directly (one owner
- * for "solve a point constraint" - Rule 2), same composition HingeConstraint uses. The rotational
- * lock is the general XPBD relative-rotation constraint (Muller et al. 2020 sec 3.4): the RELATIVE
- * rotation between the two bodies (qB * qA^-1, or for a world weld, qA's own rotation) is compared
- * against the relative rotation captured AT CONSTRUCTION TIME - the error quaternion's imaginary
- * part (x,y,z) IS a small-angle axis*sin(angle/2) correction directly (a standard identity: for a
- * near-identity quaternion, (x,y,z) approximates half the rotation vector), used the same way
- * HingeConstraint's axisA x axisB error is - a Lagrange-multiplier-shaped deltaTheta = -error/wSum,
- * distributed by each body's own inverse inertia. Locking all 3 rotational DOF this way (rather than
- * Hinge's 2) is the only difference in the angular half; the pivot half is identical.
- */
+// Rigidly fuses two bodies at a shared point: pivot (composed PointConstraint) + full 3-DOF
+// rotation lock at whatever relative orientation existed at construction.
 class WeldConstraint extends Constraint {
     constructor(bodyA, bodyB, pivotA, pivotB) {
         super(bodyA, bodyB);
         this.localPivotA = new Vector3().copy(pivotA);
         this.localPivotB = new Vector3().copy(pivotB || new Vector3());
 
-        // The relative rotation to HOLD, captured now: for two bodies, qRel = qB^-1 * qA (so that
-        // qA * qRel^-1 gives back qB whenever satisfied). For a world weld (bodyB null), qRel is
-        // simply bodyA's own rotation at construction - the fixed orientation to hold it at.
+        // Relative rotation to hold: qRel = qB^-1 * qA (or bodyA's own rotation for a world weld).
         this.targetRel = new Quaternion();
         if (bodyB) {
             const invB = WeldConstraint._scratchQ.copy(bodyB.rotation).invert();
@@ -50,11 +33,8 @@ class WeldConstraint extends Constraint {
         this._solveRotationLock();
     }
 
-    // Drives the CURRENT relative rotation back to targetRel via a small-angle correction, same
-    // Lagrange-multiplier shape as every other constraint here.
     _solveRotationLock() {
         const bodyA = this.bodyA, bodyB = this.bodyB;
-        // currentRel = qB^-1 * qA (or just qA for a world weld) - same convention as construction.
         const currentRel = WeldConstraint._scratchQ2;
         if (bodyB) {
             const invB = WeldConstraint._scratchQ.copy(bodyB.rotation).invert();
@@ -62,21 +42,15 @@ class WeldConstraint extends Constraint {
         } else {
             currentRel.copy(bodyA.rotation);
         }
-        // error = currentRel * targetRel^-1 - the rotation that would bring currentRel back to
-        // targetRel. Its imaginary part is a direct small-angle correction (same identity Hinge's
-        // axis-alignment error uses, generalized from a 2D cross product to the full quaternion).
+        // error = currentRel * targetRel^-1; imaginary part is a direct small-angle correction.
         const invCurrent = WeldConstraint._scratchQ3.copy(currentRel).invert();
         const errQ = WeldConstraint._scratchQ4.multiplyQuaternions(this.targetRel, invCurrent);
-        if (errQ.w < 0) { errQ.x = -errQ.x; errQ.y = -errQ.y; errQ.z = -errQ.z; errQ.w = -errQ.w; } // shorter path
+        if (errQ.w < 0) { errQ.x = -errQ.x; errQ.y = -errQ.y; errQ.z = -errQ.z; errQ.w = -errQ.w; }
         const ex = errQ.x, ey = errQ.y, ez = errQ.z;
         const errLenSq = ex * ex + ey * ey + ez * ez;
         if (errLenSq < 1e-20) return;
 
-        // The error is expressed in BODY A's local orientation frame relative to B (since currentRel
-        // was built as qB^-1 * qA) - rotate it into WORLD space before applying, since the angular
-        // correction machinery (and inertia tensors) operate in world space. For a world weld
-        // currentRel IS bodyA's world rotation already, so the error is already world-frame; for a
-        // two-body weld it must be rotated by bodyB's world rotation first.
+        // error is in bodyB's local frame (currentRel = qB^-1 * qA); rotate to world before applying.
         const worldErr = WeldConstraint._scratchV;
         worldErr.set(ex, ey, ez);
         if (bodyB) bodyB.rotation.transformVectorInPlace(worldErr);

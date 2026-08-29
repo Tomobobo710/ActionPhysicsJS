@@ -1,33 +1,15 @@
-/**
- * SliderConstraint: two bodies (or one body and the world) may slide relative to each other ONLY
- * along a shared axis, like a piston - all 3 rotational DOF locked (identical to WeldConstraint's
- * own rotation lock, reused directly below - one owner, Rule 2) plus 2 of the 3 translational DOF
- * locked (position perpendicular to the slide axis; motion ALONG the axis stays free).
- *
- * The rotation lock is a fully-corrected XPBD position constraint - WeldConstraint's own angular
- * half, reused by composition.
- *
- * XPBD position constraint for the linear half: C = (worldPointB - worldPointA) projected onto the
- * plane PERPENDICULAR to the slide axis (the along-axis component is discarded before solving, so
- * it is never corrected - that is what leaves sliding free). Solved as a coupled 2x2 system in the
- * plane's own basis (two tangent directions spanning perpendicular-to-axis), the same generalized-
- * inverse-mass idea as PointConstraint's 3x3 solve, just restricted to 2 DOF instead of 3.
- */
+// Piston joint: rotation fully locked (reuses WeldConstraint's angular half), position locked
+// perpendicular to the slide axis, free to move along it.
 class SliderConstraint extends Constraint {
-    // localAxisA is in bodyA's local space (the slide direction). anchorA/anchorB are local points
-    // on each body that should stay coincident ALONG the perpendicular plane (their separation along
-    // the axis itself is the piston's free travel). bodyB may be null (slides relative to the world).
     constructor(bodyA, localAxisA, anchorA, bodyB, anchorB) {
         super(bodyA, bodyB);
         this.localAxis = new Vector3().copy(localAxisA).normalizeInPlace();
         this.localAnchorA = new Vector3().copy(anchorA);
         this.localAnchorB = new Vector3().copy(anchorB || new Vector3());
 
-        // Rotation lock: reuse WeldConstraint's own angular half directly by constructing one and
-        // only ever calling ITS rotation solve, never its pivot solve (the slider has its own,
-        // axis-restricted, positional constraint below - Weld's own unrestricted pivot would defeat
-        // sliding entirely if used here).
-        this._weld = new WeldConstraint(bodyA, bodyB, new Vector3(), new Vector3()); // pivots unused - only _solveRotationLock runs
+        // Only ever calls _solveRotationLock, never the pivot - the slider has its own
+        // axis-restricted positional constraint below.
+        this._weld = new WeldConstraint(bodyA, bodyB, new Vector3(), new Vector3());
 
         this._worldA = new Vector3();
         this._worldB = new Vector3();
@@ -64,13 +46,11 @@ class SliderConstraint extends Constraint {
         this._anchorAWorld(this._worldA);
         this._anchorBWorld(this._worldB);
 
-        // World-space slide axis (bodyA's frame owns the axis direction, per constructor doc).
         const axis = SliderConstraint._scratchAxis;
         axis.copy(this.localAxis);
         bodyA.rotation.transformVectorInPlace(axis);
 
-        // Full separation, then strip the along-axis component - what's left is exactly the
-        // perpendicular error this constraint corrects.
+        // Strip the along-axis component - what's left is the perpendicular error to correct.
         const sepX = this._worldB.x - this._worldA.x, sepY = this._worldB.y - this._worldA.y, sepZ = this._worldB.z - this._worldA.z;
         const along = sepX * axis.x + sepY * axis.y + sepZ * axis.z;
         const cx = sepX - along * axis.x, cy = sepY - along * axis.y, cz = sepZ - along * axis.z;
@@ -81,8 +61,6 @@ class SliderConstraint extends Constraint {
         if (hasB) Vector3.subInto(this._rB, this._worldB, bodyB.position);
         else this._rB.set(0, 0, 0);
 
-        // Two tangent directions spanning the plane perpendicular to axis - reuse the same
-        // find-orthogonal + cross idiom the contact solver's friction basis already uses.
         const t1 = this._t1, t2 = this._t2;
         t1.findOrthogonal(axis);
         Vector3.crossInto(t2, axis, t1);
@@ -94,8 +72,6 @@ class SliderConstraint extends Constraint {
         this._solveAxis(bodyA, hasB ? bodyB : null, this._rA, this._rB, t2, c2);
     }
 
-    // One scalar axis of the perpendicular correction - same shape as the contact solver's
-    // _solvePoint / friction axis: effective mass along `dir`, deltaLambda = -C/wSum, apply.
     _solveAxis(bodyA, bodyB, rA, rB, dir, C) {
         const dx = dir.x, dy = dir.y, dz = dir.z;
         let wSum = bodyA._massInverted + (bodyB ? bodyB._massInverted : 0);
@@ -117,7 +93,7 @@ class SliderConstraint extends Constraint {
         }
         if (wSum < 1e-12) return;
 
-        const deltaLambda = -C / wSum; // rigid, no accumulated warm-start (matches Weld/Point/Hinge - no compliance yet)
+        const deltaLambda = -C / wSum;
         const px = dx * deltaLambda, py = dy * deltaLambda, pz = dz * deltaLambda;
 
         if (bodyA._massInverted > 0) {
