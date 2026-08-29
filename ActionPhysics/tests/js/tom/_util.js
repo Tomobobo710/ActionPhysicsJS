@@ -17,7 +17,7 @@
 	// Solver._solveRollingResistance). angular_damping is kept as a general "spin bleeds off over time"
 	// backstop (also helps a body spinning in place, which rolling_friction deliberately ignores), and
 	// linear_damping the same for slow lateral creep.
-	var MAT = { friction: 3.0, restitution: 0.33, linear_damping: 0.1, angular_damping: 0.9, rolling_friction: 0.02 };
+	var MAT = { friction: 3.0, restitution: 0.33, linear_damping: 0.1, angular_damping: 0.9, rolling_friction: 0.05 };
 
 	// Merge Tom's material preset into an opts object without clobbering anything the caller set.
 	function withMat(opts) {

@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-26T20:38:41.171Z
+// ActionPhysics 0.1.0 — built 2026-08-26T21:04:33.751Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine.
@@ -3611,9 +3611,8 @@ class RigidBody {
         this.linear_damping = 0.1;
         this.angular_damping = 0.9;
         // Rolling resistance coefficient (metres): caps a round shape's angular velocity about the
-        // contact tangent plane, the same way Coulomb friction caps tangential slip. Defaults to 0
-        // (opt-in), matching Goblin's own default and ActionEngineJS relying on angular_damping alone.
-        this.rolling_friction = 0;
+        // contact tangent plane, the same way Coulomb friction caps tangential slip.
+        this.rolling_friction = 0.05;
 
         // ---- Filtering ----
         this.collision_mask = 0xFFFFFFFF;
@@ -6336,16 +6335,9 @@ class Solver {
             if (n === 1) this._solvePoint(manifold.points[0], bodyA, bodyB, h);
             return;
         }
-        // Multiple points: defer each point's angular correction (see _applyAngularCorrection).
-        // Quaternion composition doesn't commute, so several small rotations applied one at a time
-        // don't cancel out even when their axis-angle vectors sum to zero by symmetry - summing
-        // first and applying once removes that.
-        const defer = this._deferredRotation;
         for (let i = 0; i < n; i++) {
-            this._solvePoint(manifold.points[i], bodyA, bodyB, h, defer, true);
+            this._solvePoint(manifold.points[i], bodyA, bodyB, h, null, true);
         }
-        this._flushDeferredRotation(bodyA, defer);
-        this._flushDeferredRotation(bodyB, defer);
     }
 
     _solveContactVelocities(manifolds, gravity, h) {

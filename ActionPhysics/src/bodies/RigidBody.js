@@ -61,9 +61,8 @@ class RigidBody {
         this.linear_damping = 0.1;
         this.angular_damping = 0.9;
         // Rolling resistance coefficient (metres): caps a round shape's angular velocity about the
-        // contact tangent plane, the same way Coulomb friction caps tangential slip. Defaults to 0
-        // (opt-in), matching Goblin's own default and ActionEngineJS relying on angular_damping alone.
-        this.rolling_friction = 0;
+        // contact tangent plane, the same way Coulomb friction caps tangential slip.
+        this.rolling_friction = 0.05;
 
         // ---- Filtering ----
         this.collision_mask = 0xFFFFFFFF;

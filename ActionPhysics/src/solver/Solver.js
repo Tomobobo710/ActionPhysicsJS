@@ -84,16 +84,9 @@ class Solver {
             if (n === 1) this._solvePoint(manifold.points[0], bodyA, bodyB, h);
             return;
         }
-        // Multiple points: defer each point's angular correction (see _applyAngularCorrection).
-        // Quaternion composition doesn't commute, so several small rotations applied one at a time
-        // don't cancel out even when their axis-angle vectors sum to zero by symmetry - summing
-        // first and applying once removes that.
-        const defer = this._deferredRotation;
         for (let i = 0; i < n; i++) {
-            this._solvePoint(manifold.points[i], bodyA, bodyB, h, defer, true);
+            this._solvePoint(manifold.points[i], bodyA, bodyB, h, null, true);
         }
-        this._flushDeferredRotation(bodyA, defer);
-        this._flushDeferredRotation(bodyB, defer);
     }
 
     _solveContactVelocities(manifolds, gravity, h) {
