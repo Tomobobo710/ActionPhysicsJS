@@ -1,6 +1,6 @@
-// Adding a point, and the 4-point manifold cap reduction: always keep the deepest point, and among
-// the rest keep whichever 3 form the largest-area quadrilateral with it - maximizing spread gives
-// better torque resistance (a corner-only manifold rocks; 4 spread corners don't).
+// Point cap reduction, scoped per (childA, childB) group: keep the deepest point, and among the
+// rest keep whichever 3 form the largest-area quadrilateral with it - better torque resistance
+// than a corner-only manifold.
 var proto = ContactManifold.prototype;
 
 proto._addPoint = function (contact) {
@@ -8,28 +8,36 @@ proto._addPoint = function (contact) {
     point.normalLambda = 0; point.tangentLambda1 = 0; point.tangentLambda2 = 0; // fresh: no warm-start data
     point.setLocalAnchors(this.bodyA, this.bodyB);
     const local = ContactManifold._toLocal(this.bodyA, point.pointOnA);
+    const groupKey = ContactManifold._groupKey(contact.childA, contact.childB);
 
-    if (this.points.length < ContactManifold.MAX_POINTS) {
+    const groupIndices = [];
+    for (let i = 0; i < this.points.length; i++) {
+        if (ContactManifold._groupKey(this.points[i].childA, this.points[i].childB) === groupKey) groupIndices.push(i);
+    }
+
+    if (groupIndices.length < ContactManifold.MAX_POINTS) {
         this.points.push(point);
         this._localAnchors.push(local);
         return;
     }
-    this._reduceToFour(point, local);
+    this._reduceGroupToFour(groupIndices, point, local);
 };
 
-proto._reduceToFour = function (candidatePoint, candidateLocal) {
-    // Deepest = largest signedDistance (most overlapping), the point the solver most needs.
-    let deepestIdx = -1, deepestVal = candidatePoint.signedDistance;
-    for (let i = 0; i < this.points.length; i++) {
-        if (this.points[i].signedDistance > deepestVal) { deepestVal = this.points[i].signedDistance; deepestIdx = i; }
+// groupIndices: indices into this.points/_localAnchors sharing the new point's group.
+proto._reduceGroupToFour = function (groupIndices, candidatePoint, candidateLocal) {
+    let deepestAt = -1, deepestVal = candidatePoint.signedDistance;
+    for (let k = 0; k < groupIndices.length; k++) {
+        const i = groupIndices[k];
+        if (this.points[i].signedDistance > deepestVal) { deepestVal = this.points[i].signedDistance; deepestAt = i; }
     }
-    const deepestIsCandidate = deepestIdx === -1;
-    const deepestPoint = deepestIsCandidate ? candidatePoint : this.points[deepestIdx];
+    const deepestIsCandidate = deepestAt === -1;
+    const deepestPoint = deepestIsCandidate ? candidatePoint : this.points[deepestAt];
 
-    // Remaining candidates for the 3 non-deepest slots: exactly 4 of them (4 existing + candidate,
-    // minus the deepest), so there are exactly 4 possible triples - enumerate directly.
     const pool = [];
-    for (let i = 0; i < this.points.length; i++) if (i !== deepestIdx) pool.push({ point: this.points[i], local: this._localAnchors[i] });
+    for (let k = 0; k < groupIndices.length; k++) {
+        const i = groupIndices[k];
+        if (i !== deepestAt) pool.push({ point: this.points[i], local: this._localAnchors[i] });
+    }
     if (!deepestIsCandidate) pool.push({ point: candidatePoint, local: candidateLocal });
 
     let bestOmit = 0, bestArea = -1;
@@ -43,9 +51,12 @@ proto._reduceToFour = function (candidatePoint, candidateLocal) {
     const kept = [];
     for (let i = 0; i < pool.length; i++) if (i !== bestOmit) kept.push(pool[i]);
 
-    this.points = deepestIsCandidate ? [candidatePoint] : [deepestPoint];
-    this._localAnchors = deepestIsCandidate ? [candidateLocal] : [this._localAnchors[deepestIdx]];
-    for (let i = 0; i < kept.length; i++) { this.points.push(kept[i].point); this._localAnchors.push(kept[i].local); }
+    const finalPoints = [deepestPoint].concat(kept.map(k => k.point));
+    const finalLocals = [deepestIsCandidate ? candidateLocal : this._localAnchors[deepestAt]].concat(kept.map(k => k.local));
+    for (let s = 0; s < groupIndices.length; s++) {
+        this.points[groupIndices[s]] = finalPoints[s];
+        this._localAnchors[groupIndices[s]] = finalLocals[s];
+    }
 };
 
 // Rough quad area via the two diagonal-split triangles - a fine proxy for "how spread out", not a

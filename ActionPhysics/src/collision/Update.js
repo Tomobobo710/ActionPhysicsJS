@@ -70,13 +70,8 @@ proto.update = function (newContacts, dt) {
     if (hadPointsBefore && this.points.length === 0) this._emitBoth('endAllContact', null);
 };
 
-// Match tolerance for one existing point: the base floor (MATCH_DISTANCE, for a resting/slow
-// contact) widened by how far the contact point itself travels across each body's surface this
-// tick - the tangential relative velocity at the contact, times dt. Without this, a fast-sliding
-// or fast-rolling contact's point genuinely moves several tenths of a metre per tick in bodyA-
-// local space, blows past a fixed-radius match, and the manifold is destroyed and rebuilt from
-// scratch every tick - warm-start (accumulated lambda) never survives a single tick for exactly
-// the contacts that need it most. Same shape as SpeculativeMargin.js's own base+dynamic split.
+// Match tolerance: MATCH_DISTANCE floor widened by the contact point's own tangential travel this
+// tick, so fast-sliding/rolling contacts still match and keep their warm-start lambda.
 proto._matchDistance = function (point, dt) {
     if (!dt) return ContactManifold.MATCH_DISTANCE;
     const bodyA = this.bodyA, bodyB = this.bodyB;

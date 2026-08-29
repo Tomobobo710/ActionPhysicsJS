@@ -21,6 +21,10 @@ class ContactDetails {
         // Contact-relative normal velocity just before this substep's position solve, for
         // restitution. Written each substep by the solver.
         this._preSolveNormalVel = 0;
+
+        // Owning compound child per side, if any (null = whole body). Set by PairTest.js.
+        this.childA = null;
+        this.childB = null;
     }
 
     // Derives local anchors from current pointOnA/pointOnB + body transforms. Called once, at
@@ -79,6 +83,8 @@ class ContactDetails {
         this.normalLambda = other.normalLambda;
         this.tangentLambda1 = other.tangentLambda1;
         this.tangentLambda2 = other.tangentLambda2;
+        this.childA = other.childA;
+        this.childB = other.childB;
         return this;
     }
 

@@ -21,6 +21,8 @@ proto.step = function (broadphasePairs, midphase, dt) {
 
         for (let i = 0; i < primitivePairs.length; i++) {
             const contact = this._testPrimitivePair(primitivePairs[i].a, primitivePairs[i].b);
+            contact.childA = primitivePairs[i].a.child;
+            contact.childB = primitivePairs[i].b.child;
             // signedDistance: positive = overlapping, negative = separated by that gap. Report
             // while overlapping or within the speculative margin; drop once the gap exceeds it.
             if (contact.signedDistance < -margin) continue;

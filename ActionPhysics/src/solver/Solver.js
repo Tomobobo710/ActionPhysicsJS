@@ -102,12 +102,8 @@ class Solver {
     }
 }
 
-// Restitution slop multiplier: an approach speed below (gravityMag*h)*this factor doesn't bounce -
-// keeps a resting body's own one-substep gravity nudge from becoming perpetual micro-jitter,
-// scaled to gravity/timestep instead of a fixed absolute speed so it stays correct across body
-// scale (a fixed threshold silently killed real small/slow bounces - e.g. a marble dropped 5mm hit
-// the floor at 0.31 m/s, a genuine restitution-worthy impact, and got fully suppressed under a
-// flat 0.5 m/s cutoff).
-Solver.RESTITUTION_SLOP_FACTOR = 8;
+// Restitution slop multiplier: an approach speed below (gravityMag*h)*this doesn't bounce -
+// suppresses resting jitter, scaled to gravity/timestep so it stays correct across body scale.
+Solver.RESTITUTION_SLOP_FACTOR = 4;
 
 ActionPhysics.Solver = Solver;

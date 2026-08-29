@@ -7,7 +7,7 @@ var proto = Midphase.prototype;
 proto._expandSide = function (body, otherAABB, otherBodyId) {
     const shape = body.shape;
     if (!(shape instanceof CompoundShape) && !(shape instanceof MeshShape)) {
-        return [{ shape: shape, position: body.position, rotation: body.rotation }];
+        return [{ shape: shape, position: body.position, rotation: body.rotation, child: null }];
     }
 
     // Bring the other body's world AABB into this body's local space by inverse-transforming its 8
@@ -51,7 +51,7 @@ proto._expandSide = function (body, otherAABB, otherBodyId) {
             body.rotation.transformVectorInto(child.localPosition, worldPos);
             worldPos.addInPlace(body.position);
             const worldRot = new Quaternion().multiplyQuaternions(body.rotation, child.localRotation);
-            out.push({ shape: child.shape, position: worldPos, rotation: worldRot });
+            out.push({ shape: child.shape, position: worldPos, rotation: worldRot, child: child });
         }
     } else {
         const a = new Vector3(), b = new Vector3(), c = new Vector3();
@@ -63,7 +63,7 @@ proto._expandSide = function (body, otherAABB, otherBodyId) {
             body.rotation.transformVectorInto(a, wa); wa.addInPlace(body.position);
             body.rotation.transformVectorInto(b, wb); wb.addInPlace(body.position);
             body.rotation.transformVectorInto(c, wc); wc.addInPlace(body.position);
-            out.push({ shape: new TriangleShape(wa, wb, wc), position: new Vector3(0, 0, 0), rotation: new Quaternion() });
+            out.push({ shape: new TriangleShape(wa, wb, wc), position: new Vector3(0, 0, 0), rotation: new Quaternion(), child: null });
         }
     }
     return out;
