@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-26T10:25:59.838Z
+// ActionPhysics 0.1.0 — built 2026-08-26T10:35:34.031Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine.
@@ -4183,7 +4183,7 @@ var proto = Midphase.prototype;
 proto._expandSide = function (body, otherAABB, otherBodyId) {
     const shape = body.shape;
     if (!(shape instanceof CompoundShape) && !(shape instanceof MeshShape)) {
-        return [{ shape: shape, position: body.position, rotation: body.rotation, child: null }];
+        return [{ shape: shape, position: body.position, rotation: body.rotation }];
     }
 
     // Bring the other body's world AABB into this body's local space by inverse-transforming its 8
@@ -4227,7 +4227,7 @@ proto._expandSide = function (body, otherAABB, otherBodyId) {
             body.rotation.transformVectorInto(child.localPosition, worldPos);
             worldPos.addInPlace(body.position);
             const worldRot = new Quaternion().multiplyQuaternions(body.rotation, child.localRotation);
-            out.push({ shape: child.shape, position: worldPos, rotation: worldRot, child: child });
+            out.push({ shape: child.shape, position: worldPos, rotation: worldRot });
         }
     } else {
         const a = new Vector3(), b = new Vector3(), c = new Vector3();
@@ -4239,7 +4239,7 @@ proto._expandSide = function (body, otherAABB, otherBodyId) {
             body.rotation.transformVectorInto(a, wa); wa.addInPlace(body.position);
             body.rotation.transformVectorInto(b, wb); wb.addInPlace(body.position);
             body.rotation.transformVectorInto(c, wc); wc.addInPlace(body.position);
-            out.push({ shape: new TriangleShape(wa, wb, wc), position: new Vector3(0, 0, 0), rotation: new Quaternion(), child: null });
+            out.push({ shape: new TriangleShape(wa, wb, wc), position: new Vector3(0, 0, 0), rotation: new Quaternion() });
         }
     }
     return out;
@@ -5161,10 +5161,6 @@ class ContactDetails {
         // Contact-relative normal velocity just before this substep's position solve, for
         // restitution. Written each substep by the solver.
         this._preSolveNormalVel = 0;
-
-        // Owning compound child per side, if any (null = whole body). Set by PairTest.js.
-        this.childA = null;
-        this.childB = null;
     }
 
     // Derives local anchors from current pointOnA/pointOnB + body transforms. Called once, at
@@ -5223,8 +5219,6 @@ class ContactDetails {
         this.normalLambda = other.normalLambda;
         this.tangentLambda1 = other.tangentLambda1;
         this.tangentLambda2 = other.tangentLambda2;
-        this.childA = other.childA;
-        this.childB = other.childB;
         return this;
     }
 
@@ -5239,9 +5233,21 @@ ActionPhysics.ContactDetails = ContactDetails;
 
 
 // ==== src/collision/ContactManifold.js ====
-// Persistent contact state for one body pair, across ticks. Owns point lifetime; update() (once
-// per tick) matches/warm-starts/adds/removes, MAX_POINTS caps per (childA, childB) group so one
-// compound child can't evict another's points. See Update.js, Reduction.js.
+/**
+ * ContactManifold: persistent contact state for one pair of primitive shapes, across ticks.
+ *
+ * Owns point lifetime entirely. Narrowphase (via update(), called once per TICK, never per
+ * substep) only ever adds or refreshes points from that tick's GJK/EPA result; only the manifold
+ * itself removes a point, and only from update() - never mid-substep, which previously retired
+ * points still mid-correction (not actually separated), emptying manifolds and dropping bodies.
+ *
+ * PERSISTENCE / WARM-START: up to MAX_POINTS points. Each update() matches this tick's result
+ * against existing points by proximity in bodyA-local space (a contact feature's position relative
+ * to A's own frame stays close between ticks even as A moves). A match refreshes geometry on the
+ * EXISTING point object, preserving its accumulated lambda for the solver's warm start.
+ *
+ * See Update.js (the per-tick match/add/remove) and Reduction.js (4-point cap reduction).
+ */
 class ContactManifold {
     constructor(bodyA, bodyB) {
         this.bodyA = bodyA;
@@ -5256,22 +5262,17 @@ class ContactManifold {
 }
 
 ContactManifold.MAX_POINTS = 4;
-// Base floor; Update.js's _matchDistance widens by tangential travel per tick.
+// Base match distance (floor for a resting/slow contact) - see Update.js's _matchDistance, which
+// widens this by the contact point's own tangential travel per tick, the same shape
+// SpeculativeMargin.js already uses for the broadphase/narrowphase gap.
 ContactManifold.MATCH_DISTANCE = 0.05;
-// Half-width of the exact-touch band where GJK/EPA's normal is ambiguous (see Update.js).
+// Signed-distance half-width of the exact-touch band where GJK/EPA's normal is ambiguous and a
+// warm-matched point keeps its established normal instead (see Update.js).
 ContactManifold.EXACT_TOUCH_BAND = 0.001;
 
 ContactManifold._scratchNormal = new Vector3();
 ContactManifold._scratchRA = new Vector3();
 ContactManifold._scratchRB = new Vector3();
-
-// Stable group key for (childA, childB); null child = whole body. Lazily-assigned id per child.
-ContactManifold._nextChildId = 1;
-ContactManifold._groupKey = function (childA, childB) {
-    if (childA && childA._manifoldGroupId === undefined) childA._manifoldGroupId = ContactManifold._nextChildId++;
-    if (childB && childB._manifoldGroupId === undefined) childB._manifoldGroupId = ContactManifold._nextChildId++;
-    return (childA ? childA._manifoldGroupId : 0) + ':' + (childB ? childB._manifoldGroupId : 0);
-};
 
 ActionPhysics.ContactManifold = ContactManifold;
 
@@ -5349,8 +5350,13 @@ proto.update = function (newContacts, dt) {
     if (hadPointsBefore && this.points.length === 0) this._emitBoth('endAllContact', null);
 };
 
-// Match tolerance: MATCH_DISTANCE floor widened by the contact point's own tangential travel this
-// tick, so fast-sliding/rolling contacts still match and keep their warm-start lambda.
+// Match tolerance for one existing point: the base floor (MATCH_DISTANCE, for a resting/slow
+// contact) widened by how far the contact point itself travels across each body's surface this
+// tick - the tangential relative velocity at the contact, times dt. Without this, a fast-sliding
+// or fast-rolling contact's point genuinely moves several tenths of a metre per tick in bodyA-
+// local space, blows past a fixed-radius match, and the manifold is destroyed and rebuilt from
+// scratch every tick - warm-start (accumulated lambda) never survives a single tick for exactly
+// the contacts that need it most. Same shape as SpeculativeMargin.js's own base+dynamic split.
 proto._matchDistance = function (point, dt) {
     if (!dt) return ContactManifold.MATCH_DISTANCE;
     const bodyA = this.bodyA, bodyB = this.bodyB;
@@ -5391,9 +5397,9 @@ ContactManifold._toLocal = function (bodyA, worldPoint) {
 
 
 // ==== src/collision/Reduction.js ====
-// Point cap reduction, scoped per (childA, childB) group: keep the deepest point, and among the
-// rest keep whichever 3 form the largest-area quadrilateral with it - better torque resistance
-// than a corner-only manifold.
+// Adding a point, and the 4-point manifold cap reduction: always keep the deepest point, and among
+// the rest keep whichever 3 form the largest-area quadrilateral with it - maximizing spread gives
+// better torque resistance (a corner-only manifold rocks; 4 spread corners don't).
 var proto = ContactManifold.prototype;
 
 proto._addPoint = function (contact) {
@@ -5401,36 +5407,28 @@ proto._addPoint = function (contact) {
     point.normalLambda = 0; point.tangentLambda1 = 0; point.tangentLambda2 = 0; // fresh: no warm-start data
     point.setLocalAnchors(this.bodyA, this.bodyB);
     const local = ContactManifold._toLocal(this.bodyA, point.pointOnA);
-    const groupKey = ContactManifold._groupKey(contact.childA, contact.childB);
 
-    const groupIndices = [];
-    for (let i = 0; i < this.points.length; i++) {
-        if (ContactManifold._groupKey(this.points[i].childA, this.points[i].childB) === groupKey) groupIndices.push(i);
-    }
-
-    if (groupIndices.length < ContactManifold.MAX_POINTS) {
+    if (this.points.length < ContactManifold.MAX_POINTS) {
         this.points.push(point);
         this._localAnchors.push(local);
         return;
     }
-    this._reduceGroupToFour(groupIndices, point, local);
+    this._reduceToFour(point, local);
 };
 
-// groupIndices: indices into this.points/_localAnchors sharing the new point's group.
-proto._reduceGroupToFour = function (groupIndices, candidatePoint, candidateLocal) {
-    let deepestAt = -1, deepestVal = candidatePoint.signedDistance;
-    for (let k = 0; k < groupIndices.length; k++) {
-        const i = groupIndices[k];
-        if (this.points[i].signedDistance > deepestVal) { deepestVal = this.points[i].signedDistance; deepestAt = i; }
+proto._reduceToFour = function (candidatePoint, candidateLocal) {
+    // Deepest = largest signedDistance (most overlapping), the point the solver most needs.
+    let deepestIdx = -1, deepestVal = candidatePoint.signedDistance;
+    for (let i = 0; i < this.points.length; i++) {
+        if (this.points[i].signedDistance > deepestVal) { deepestVal = this.points[i].signedDistance; deepestIdx = i; }
     }
-    const deepestIsCandidate = deepestAt === -1;
-    const deepestPoint = deepestIsCandidate ? candidatePoint : this.points[deepestAt];
+    const deepestIsCandidate = deepestIdx === -1;
+    const deepestPoint = deepestIsCandidate ? candidatePoint : this.points[deepestIdx];
 
+    // Remaining candidates for the 3 non-deepest slots: exactly 4 of them (4 existing + candidate,
+    // minus the deepest), so there are exactly 4 possible triples - enumerate directly.
     const pool = [];
-    for (let k = 0; k < groupIndices.length; k++) {
-        const i = groupIndices[k];
-        if (i !== deepestAt) pool.push({ point: this.points[i], local: this._localAnchors[i] });
-    }
+    for (let i = 0; i < this.points.length; i++) if (i !== deepestIdx) pool.push({ point: this.points[i], local: this._localAnchors[i] });
     if (!deepestIsCandidate) pool.push({ point: candidatePoint, local: candidateLocal });
 
     let bestOmit = 0, bestArea = -1;
@@ -5444,12 +5442,9 @@ proto._reduceGroupToFour = function (groupIndices, candidatePoint, candidateLoca
     const kept = [];
     for (let i = 0; i < pool.length; i++) if (i !== bestOmit) kept.push(pool[i]);
 
-    const finalPoints = [deepestPoint].concat(kept.map(k => k.point));
-    const finalLocals = [deepestIsCandidate ? candidateLocal : this._localAnchors[deepestAt]].concat(kept.map(k => k.local));
-    for (let s = 0; s < groupIndices.length; s++) {
-        this.points[groupIndices[s]] = finalPoints[s];
-        this._localAnchors[groupIndices[s]] = finalLocals[s];
-    }
+    this.points = deepestIsCandidate ? [candidatePoint] : [deepestPoint];
+    this._localAnchors = deepestIsCandidate ? [candidateLocal] : [this._localAnchors[deepestIdx]];
+    for (let i = 0; i < kept.length; i++) { this.points.push(kept[i].point); this._localAnchors.push(kept[i].local); }
 };
 
 // Rough quad area via the two diagonal-split triangles - a fine proxy for "how spread out", not a
@@ -5539,6 +5534,154 @@ NarrowPhase.SPECULATIVE_BASE = 0.02;
 ActionPhysics.NarrowPhase = NarrowPhase;
 
 
+// ==== src/phases/SphereSphere.js ====
+// Closed-form sphere-sphere: no GJK, no EPA, no shared epsilon/iteration budget with any other
+// pair type. Own tunable margin (SphereSphere.DEGENERATE_EPSILON), independent of GJK.js/EPA.js.
+const SphereSphere = {};
+
+// True iff both placed shapes are bare SphereShapes (not a compound/mesh child wrapping one).
+SphereSphere.applies = function (placedA, placedB) {
+    return placedA.shape instanceof SphereShape && placedB.shape instanceof SphereShape;
+};
+
+// Below this center-to-center distance the separating direction is undefined (coincident
+// centers) - falls back to a fixed axis rather than dividing by ~0.
+SphereSphere.DEGENERATE_EPSILON = 1e-9;
+
+SphereSphere.test = function (placedA, placedB, out) {
+    const ax = placedA.position.x, ay = placedA.position.y, az = placedA.position.z;
+    const bx = placedB.position.x, by = placedB.position.y, bz = placedB.position.z;
+    const dx = bx - ax, dy = by - ay, dz = bz - az;
+    const distSq = dx * dx + dy * dy + dz * dz;
+    const dist = Math.sqrt(distSq);
+    const ra = placedA.shape.radius, rb = placedB.shape.radius;
+
+    let nx, ny, nz;
+    if (dist > SphereSphere.DEGENERATE_EPSILON) {
+        // normal points B -> A, matching GJK/EPA's own convention.
+        nx = -dx / dist; ny = -dy / dist; nz = -dz / dist;
+    } else {
+        nx = 0; ny = 1; nz = 0;
+    }
+
+    out.pointOnA.set(ax - nx * ra, ay - ny * ra, az - nz * ra);
+    out.pointOnB.set(bx + nx * rb, by + ny * rb, bz + nz * rb);
+    out.normal.set(nx, ny, nz);
+    out.signedDistance = (ra + rb) - dist; // positive = overlapping, matching the pipeline convention
+    Vector3.addInto(out.point, out.pointOnA, out.pointOnB).scaleInPlace(0.5);
+    return out;
+};
+
+
+// ==== src/phases/SphereBox.js ====
+// Closed-form sphere-box: closest point on an oriented box to the sphere center, clamped per-axis
+// in the box's local frame. Own epsilon, no shared GJK/EPA state.
+const SphereBox = {};
+
+SphereBox.applies = function (placedA, placedB) {
+    return (placedA.shape instanceof SphereShape && placedB.shape instanceof BoxShape) ||
+        (placedA.shape instanceof BoxShape && placedB.shape instanceof SphereShape);
+};
+
+// Below this distance from the box surface to the sphere center, the surface normal is undefined
+// (center exactly on/past every face at once - only reachable at the box's own center) - falls
+// back to a fixed axis rather than dividing by ~0.
+SphereBox.DEGENERATE_EPSILON = 1e-9;
+
+SphereBox.test = function (placedA, placedB, out) {
+    const sphereFirst = placedA.shape instanceof SphereShape;
+    const spherePlaced = sphereFirst ? placedA : placedB;
+    const boxPlaced = sphereFirst ? placedB : placedA;
+    const sphere = spherePlaced.shape, box = boxPlaced.shape;
+
+    // Sphere center in the box's local frame.
+    const invRot = SphereBox._scratchQuat.copy(boxPlaced.rotation).invert();
+    const local = SphereBox._scratchV1;
+    local.copy(spherePlaced.position).subInPlace(boxPlaced.position);
+    invRot.transformVectorInPlace(local);
+
+    // Closest point on the box to that center, clamped per axis; also track whether the center is
+    // strictly inside (all three axes already within their half-extent - deep penetration).
+    const hw = box.halfWidth, hh = box.halfHeight, hd = box.halfDepth;
+    const insideX = local.x > -hw && local.x < hw;
+    const insideY = local.y > -hh && local.y < hh;
+    const insideZ = local.z > -hd && local.z < hd;
+    const inside = insideX && insideY && insideZ;
+
+    const closest = SphereBox._scratchV2;
+    let localNx = 0, localNy = 0, localNz = 0, penetration = 0;
+    if (inside) {
+        // Center is inside the box: push out along whichever axis has the LEAST penetration
+        // (the standard box-interior-point resolution - the shortest way out).
+        const px = hw - Math.abs(local.x), py = hh - Math.abs(local.y), pz = hd - Math.abs(local.z);
+        if (px <= py && px <= pz) { localNx = local.x >= 0 ? 1 : -1; penetration = px; closest.set(local.x >= 0 ? hw : -hw, local.y, local.z); }
+        else if (py <= pz) { localNy = local.y >= 0 ? 1 : -1; penetration = py; closest.set(local.x, local.y >= 0 ? hh : -hh, local.z); }
+        else { localNz = local.z >= 0 ? 1 : -1; penetration = pz; closest.set(local.x, local.y, local.z >= 0 ? hd : -hd); }
+    } else {
+        closest.set(
+            Math.max(-hw, Math.min(hw, local.x)),
+            Math.max(-hh, Math.min(hh, local.y)),
+            Math.max(-hd, Math.min(hd, local.z))
+        );
+    }
+
+    const dx = local.x - closest.x, dy = local.y - closest.y, dz = local.z - closest.z;
+    const distSq = dx * dx + dy * dy + dz * dz;
+    const dist = Math.sqrt(distSq);
+
+    let worldNx, worldNy, worldNz;
+    if (inside) {
+        // Normal already chosen above (box-local axis of least penetration).
+        SphereBox._scratchV1.set(localNx, localNy, localNz);
+        boxPlaced.rotation.transformVectorInPlace(SphereBox._scratchV1);
+    } else if (dist > SphereBox.DEGENERATE_EPSILON) {
+        SphereBox._scratchV1.set(dx / dist, dy / dist, dz / dist);
+        boxPlaced.rotation.transformVectorInPlace(SphereBox._scratchV1);
+    } else {
+        SphereBox._scratchV1.set(0, 1, 0);
+        boxPlaced.rotation.transformVectorInPlace(SphereBox._scratchV1);
+    }
+    worldNx = SphereBox._scratchV1.x; worldNy = SphereBox._scratchV1.y; worldNz = SphereBox._scratchV1.z;
+    // Normal points sphere-side -> box-side in this local derivation; flip to A->B then to B->A
+    // (the pipeline convention) based on which placed side is actually the sphere.
+    if (!sphereFirst) { worldNx = -worldNx; worldNy = -worldNy; worldNz = -worldNz; }
+
+    const worldClosest = SphereBox._scratchV3;
+    worldClosest.copy(closest);
+    boxPlaced.rotation.transformVectorInPlace(worldClosest);
+    worldClosest.addInPlace(boxPlaced.position);
+
+    const signedDistance = inside ? (sphere.radius + penetration) : (sphere.radius - dist);
+
+    const pointOnSphere = SphereBox._scratchV4;
+    // Point on the sphere's own surface, along the normal from the box back toward the sphere.
+    const towardSphereX = sphereFirst ? worldNx : -worldNx, towardSphereY = sphereFirst ? worldNy : -worldNy, towardSphereZ = sphereFirst ? worldNz : -worldNz;
+    pointOnSphere.set(
+        spherePlaced.position.x - towardSphereX * sphere.radius,
+        spherePlaced.position.y - towardSphereY * sphere.radius,
+        spherePlaced.position.z - towardSphereZ * sphere.radius
+    );
+
+    if (sphereFirst) {
+        out.pointOnA.copy(pointOnSphere);
+        out.pointOnB.copy(worldClosest);
+    } else {
+        out.pointOnA.copy(worldClosest);
+        out.pointOnB.copy(pointOnSphere);
+    }
+    out.normal.set(worldNx, worldNy, worldNz);
+    out.signedDistance = signedDistance;
+    Vector3.addInto(out.point, out.pointOnA, out.pointOnB).scaleInPlace(0.5);
+    return out;
+};
+
+SphereBox._scratchQuat = new Quaternion();
+SphereBox._scratchV1 = new Vector3();
+SphereBox._scratchV2 = new Vector3();
+SphereBox._scratchV3 = new Vector3();
+SphereBox._scratchV4 = new Vector3();
+
+
 // ==== src/phases/PairTest.js ====
 // Per-tick pair dispatch and GJK/EPA testing for one primitive-shape pair.
 var proto = NarrowPhase.prototype;
@@ -5563,8 +5706,6 @@ proto.step = function (broadphasePairs, midphase, dt) {
 
         for (let i = 0; i < primitivePairs.length; i++) {
             const contact = this._testPrimitivePair(primitivePairs[i].a, primitivePairs[i].b);
-            contact.childA = primitivePairs[i].a.child;
-            contact.childB = primitivePairs[i].b.child;
             // signedDistance: positive = overlapping, negative = separated by that gap. Report
             // while overlapping or within the speculative margin; drop once the gap exceeds it.
             if (contact.signedDistance < -margin) continue;
@@ -5582,12 +5723,21 @@ proto.step = function (broadphasePairs, midphase, dt) {
     return this.manifolds;
 };
 
-// Runs GJK (and EPA if overlapping) for one primitive pair, returning a pooled ContactDetails
-// carrying its signed distance. Never culls - the caller (step) decides what's worth a manifold entry.
+// One pooled ContactDetails for one primitive pair. Dispatches to a closed-form test when one
+// applies (own numerics, no shared epsilon/iteration budget with any other pair type); falls
+// through to GJK/EPA otherwise. Never culls - the caller (step) decides what's worth a manifold entry.
 proto._testPrimitivePair = function (placedA, placedB) {
+    const contact = this._nextPooledContact();
+
+    if (SphereSphere.applies(placedA, placedB)) {
+        return SphereSphere.test(placedA, placedB, contact);
+    }
+    if (SphereBox.applies(placedA, placedB)) {
+        return SphereBox.test(placedA, placedB, contact);
+    }
+
     const support = new MinkowskiSupport(placedA, placedB);
     const gjkResult = this._gjk.run(support);
-    const contact = this._nextPooledContact();
     if (gjkResult.overlapping) {
         const epaResult = this._epa.run(support, gjkResult.simplex);
         contact.setFromEPA(epaResult);
@@ -5779,9 +5929,13 @@ class Solver {
     }
 }
 
-// Restitution slop multiplier: an approach speed below (gravityMag*h)*this doesn't bounce -
-// suppresses resting jitter, scaled to gravity/timestep so it stays correct across body scale.
-Solver.RESTITUTION_SLOP_FACTOR = 4;
+// Restitution slop multiplier: an approach speed below (gravityMag*h)*this factor doesn't bounce -
+// keeps a resting body's own one-substep gravity nudge from becoming perpetual micro-jitter,
+// scaled to gravity/timestep instead of a fixed absolute speed so it stays correct across body
+// scale (a fixed threshold silently killed real small/slow bounces - e.g. a marble dropped 5mm hit
+// the floor at 0.31 m/s, a genuine restitution-worthy impact, and got fully suppressed under a
+// flat 0.5 m/s cutoff).
+Solver.RESTITUTION_SLOP_FACTOR = 8;
 
 ActionPhysics.Solver = Solver;
 

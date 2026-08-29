@@ -1,6 +1,18 @@
-// Persistent contact state for one body pair, across ticks. Owns point lifetime; update() (once
-// per tick) matches/warm-starts/adds/removes, MAX_POINTS caps per (childA, childB) group so one
-// compound child can't evict another's points. See Update.js, Reduction.js.
+/**
+ * ContactManifold: persistent contact state for one pair of primitive shapes, across ticks.
+ *
+ * Owns point lifetime entirely. Narrowphase (via update(), called once per TICK, never per
+ * substep) only ever adds or refreshes points from that tick's GJK/EPA result; only the manifold
+ * itself removes a point, and only from update() - never mid-substep, which previously retired
+ * points still mid-correction (not actually separated), emptying manifolds and dropping bodies.
+ *
+ * PERSISTENCE / WARM-START: up to MAX_POINTS points. Each update() matches this tick's result
+ * against existing points by proximity in bodyA-local space (a contact feature's position relative
+ * to A's own frame stays close between ticks even as A moves). A match refreshes geometry on the
+ * EXISTING point object, preserving its accumulated lambda for the solver's warm start.
+ *
+ * See Update.js (the per-tick match/add/remove) and Reduction.js (4-point cap reduction).
+ */
 class ContactManifold {
     constructor(bodyA, bodyB) {
         this.bodyA = bodyA;
@@ -15,21 +27,16 @@ class ContactManifold {
 }
 
 ContactManifold.MAX_POINTS = 4;
-// Base floor; Update.js's _matchDistance widens by tangential travel per tick.
+// Base match distance (floor for a resting/slow contact) - see Update.js's _matchDistance, which
+// widens this by the contact point's own tangential travel per tick, the same shape
+// SpeculativeMargin.js already uses for the broadphase/narrowphase gap.
 ContactManifold.MATCH_DISTANCE = 0.05;
-// Half-width of the exact-touch band where GJK/EPA's normal is ambiguous (see Update.js).
+// Signed-distance half-width of the exact-touch band where GJK/EPA's normal is ambiguous and a
+// warm-matched point keeps its established normal instead (see Update.js).
 ContactManifold.EXACT_TOUCH_BAND = 0.001;
 
 ContactManifold._scratchNormal = new Vector3();
 ContactManifold._scratchRA = new Vector3();
 ContactManifold._scratchRB = new Vector3();
-
-// Stable group key for (childA, childB); null child = whole body. Lazily-assigned id per child.
-ContactManifold._nextChildId = 1;
-ContactManifold._groupKey = function (childA, childB) {
-    if (childA && childA._manifoldGroupId === undefined) childA._manifoldGroupId = ContactManifold._nextChildId++;
-    if (childB && childB._manifoldGroupId === undefined) childB._manifoldGroupId = ContactManifold._nextChildId++;
-    return (childA ? childA._manifoldGroupId : 0) + ':' + (childB ? childB._manifoldGroupId : 0);
-};
 
 ActionPhysics.ContactManifold = ContactManifold;

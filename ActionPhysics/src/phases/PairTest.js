@@ -21,8 +21,6 @@ proto.step = function (broadphasePairs, midphase, dt) {
 
         for (let i = 0; i < primitivePairs.length; i++) {
             const contact = this._testPrimitivePair(primitivePairs[i].a, primitivePairs[i].b);
-            contact.childA = primitivePairs[i].a.child;
-            contact.childB = primitivePairs[i].b.child;
             // signedDistance: positive = overlapping, negative = separated by that gap. Report
             // while overlapping or within the speculative margin; drop once the gap exceeds it.
             if (contact.signedDistance < -margin) continue;
@@ -40,12 +38,21 @@ proto.step = function (broadphasePairs, midphase, dt) {
     return this.manifolds;
 };
 
-// Runs GJK (and EPA if overlapping) for one primitive pair, returning a pooled ContactDetails
-// carrying its signed distance. Never culls - the caller (step) decides what's worth a manifold entry.
+// One pooled ContactDetails for one primitive pair. Dispatches to a closed-form test when one
+// applies (own numerics, no shared epsilon/iteration budget with any other pair type); falls
+// through to GJK/EPA otherwise. Never culls - the caller (step) decides what's worth a manifold entry.
 proto._testPrimitivePair = function (placedA, placedB) {
+    const contact = this._nextPooledContact();
+
+    if (SphereSphere.applies(placedA, placedB)) {
+        return SphereSphere.test(placedA, placedB, contact);
+    }
+    if (SphereBox.applies(placedA, placedB)) {
+        return SphereBox.test(placedA, placedB, contact);
+    }
+
     const support = new MinkowskiSupport(placedA, placedB);
     const gjkResult = this._gjk.run(support);
-    const contact = this._nextPooledContact();
     if (gjkResult.overlapping) {
         const epaResult = this._epa.run(support, gjkResult.simplex);
         contact.setFromEPA(epaResult);

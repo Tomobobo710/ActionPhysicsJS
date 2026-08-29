@@ -79,7 +79,11 @@ module.exports = [
 
     // Narrowphase dispatch - ties Midphase + GJK/EPA + ContactManifoldList together. NarrowPhase.js
     // is the class shell; the phases attach onto NarrowPhase.prototype from their own files.
+    // Closed-form pair tests (SphereSphere, SphereBox) load before PairTest.js, which dispatches to
+    // them ahead of GJK/EPA - own numerics, no shared epsilon/iteration budget with any other pair.
     'src/phases/NarrowPhase.js',
+    'src/phases/SphereSphere.js',
+    'src/phases/SphereBox.js',
     'src/phases/PairTest.js',
     'src/phases/SpeculativeMargin.js',
     'src/phases/GeometryRefresh.js',
