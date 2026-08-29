@@ -1,0 +1,242 @@
+// Body type, as a first-class concept (plan.md: "What mature engines have that Goblin doesn't" #2).
+// Checked in exactly one place per stage, never as scattered mass===Infinity comparisons.
+const BODY_STATIC = 0;
+const BODY_KINEMATIC = 1;
+const BODY_DYNAMIC = 2;
+
+let _nextBodyId = 1;
+
+/**
+ * A rigid body: shape + world transform + (for dynamic bodies) mass/motion state. Broadphase and
+ * midphase only need shape + transform + AABB; the mass/motion/material fields exist now rather
+ * than being bolted on at the solver stage, so this class is not rebuilt twice (plan.md's "one
+ * owner per concern" applies to the body's own field layout too - Mass is owned here, not
+ * scattered across whichever stage happens to need it first).
+ *
+ * Field groups match the API surface table in plan.md: Transform, Motion, Forces, Material, Mass,
+ * Filtering, Identity.
+ */
+class RigidBody {
+    constructor(shape, mass) {
+        // ---- Identity ----
+        this.id = _nextBodyId++;
+        this.shape = shape;
+        this.debugName = null;
+        this.world = null; // set by World.addRigidBody
+        this.bodyType = mass > 0 ? BODY_DYNAMIC : BODY_STATIC;
+
+        // ---- Transform ----
+        this.position = new Vector3(0, 0, 0);
+        this.rotation = new Quaternion(0, 0, 0, 1);
+        this._aabb = new AABB();            // tight geometric bound (getAABB)
+        this._broadphaseAABB = new AABB();  // fattened for speculative contacts (getBroadphaseAABB)
+        this._aabbDirty = true;
+
+        // ---- Mass ----
+        // mass===0 is a static/kinematic body: infinite effective mass, zero inverse.
+        this._mass = mass || 0;
+        this._massInverted = this._mass > 0 ? 1 / this._mass : 0;
+        this.inertiaTensor = new Matrix3();       // local-space, set by setMassFromShape()
+        this.inverseInertiaTensor = new Matrix3(); // local-space inverse
+        this._worldInverseInertiaTensor = new Matrix3(); // R * I^-1_local * R^T, refreshed by updateDerived()
+        if (shape && this._mass > 0) this.setMassFromShape(shape, this._mass);
+
+        // ---- Motion ----
+        this.linear_velocity = new Vector3(0, 0, 0);
+        this.angular_velocity = new Vector3(0, 0, 0);
+        this.linear_factor = new Vector3(1, 1, 1);   // per-axis velocity mask, e.g. lock an axis with 0
+        this.angular_factor = new Vector3(1, 1, 1);
+
+        // ---- Forces ----
+        this.accumulated_force = new Vector3(0, 0, 0);
+        this.accumulated_torque = new Vector3(0, 0, 0);
+        this.gravity = null; // null = use World.gravity; setGravity() overrides per-body
+
+        // ---- Material ----
+        this.friction = 0.5;
+        this.restitution = 0;
+        this.linear_damping = 0;
+        this.angular_damping = 0;
+
+        // ---- Filtering ----
+        this.collision_mask = 0xFFFFFFFF;
+        this.collision_groups = 1;
+
+        // ---- Events ----
+        this._listeners = {};
+
+        // Sleep (owned entirely by the sleep manager once it exists - plan.md, Sleep). Present
+        // here only as the state a body carries; no stage but the sleep manager writes to it.
+        this.isAwake = true;
+        this.sleepTimer = 0;
+    }
+
+    get is_static() { return this.bodyType === RigidBody.STATIC; }
+    get mass() { return this._mass; }
+
+    // Scales the shape's density-1 inertia by (mass / shape.volume()), per Shape's contract
+    // (src/shapes/Shape.js) — computeMassData() always returns density-1 values.
+    setMassFromShape(shape, mass) {
+        this._mass = mass;
+        this._massInverted = mass > 0 ? 1 / mass : 0;
+        if (mass <= 0) {
+            this.inertiaTensor.zero();
+            this.inverseInertiaTensor.zero();
+            return;
+        }
+        const data = shape.computeMassData();
+        const volume = shape.volume();
+        const scale = volume > 0 ? mass / volume : 0;
+        this.inertiaTensor.copy(data.inertia);
+        this.inertiaTensor.e00 *= scale; this.inertiaTensor.e01 *= scale; this.inertiaTensor.e02 *= scale;
+        this.inertiaTensor.e10 *= scale; this.inertiaTensor.e11 *= scale; this.inertiaTensor.e12 *= scale;
+        this.inertiaTensor.e20 *= scale; this.inertiaTensor.e21 *= scale; this.inertiaTensor.e22 *= scale;
+        this.inverseInertiaTensor.invertInto(this.inertiaTensor);
+    }
+
+    setGravity(x, y, z) {
+        this.gravity = new Vector3(x, y, z);
+        return this;
+    }
+
+    // Refresh everything derived from position/rotation: the world AABB (tight and broadphase
+    // variants) and the world-space inverse inertia tensor. Called once per body per tick by
+    // whichever stage owns "current" - narrowphase and the solver assume it has already run (Rule
+    // 1: stage contracts are absolute).
+    //
+    // `dt` (optional) is this tick's timestep, used only to size the broadphase AABB's velocity
+    // sweep (see _recomputeBroadphaseAABB). The tight AABB (getAABB) never depends on dt.
+    updateDerived(dt) {
+        this._recomputeAABB();
+        this._recomputeBroadphaseAABB(dt || 0);
+        this._recomputeWorldInverseInertia();
+        return this;
+    }
+
+    // The TIGHT world AABB: the exact rotated bound of the shape at the current transform, no
+    // margin. This is the body's geometric truth - what a raycast/query wants, and what getAABB()
+    // returns. Broadphase uses the fattened variant below instead (getBroadphaseAABB).
+    _recomputeAABB() {
+        const local = RigidBody._scratchLocalAABB;
+        this.shape.localAABBInto(local);
+        // Conservative rotated bound via the 8-corner sweep, same technique CompoundShape uses for
+        // its own children - correct for any rotation, not just axis-aligned ones.
+        const rotMat = RigidBody._scratchMat3;
+        rotMat.fromQuaternion(this.rotation);
+        const corner = RigidBody._scratchVec;
+        this._aabb.setEmpty();
+        for (let cx = 0; cx < 2; cx++) for (let cy = 0; cy < 2; cy++) for (let cz = 0; cz < 2; cz++) {
+            corner.x = cx ? local.max.x : local.min.x;
+            corner.y = cy ? local.max.y : local.min.y;
+            corner.z = cz ? local.max.z : local.min.z;
+            rotMat.transformVector3(corner);
+            corner.addInPlace(this.position);
+            if (corner.x < this._aabb.min.x) this._aabb.min.x = corner.x;
+            if (corner.y < this._aabb.min.y) this._aabb.min.y = corner.y;
+            if (corner.z < this._aabb.min.z) this._aabb.min.z = corner.z;
+            if (corner.x > this._aabb.max.x) this._aabb.max.x = corner.x;
+            if (corner.y > this._aabb.max.y) this._aabb.max.y = corner.y;
+            if (corner.z > this._aabb.max.z) this._aabb.max.z = corner.z;
+        }
+        this._aabbDirty = false;
+    }
+
+    // The BROADPHASE world AABB: the tight AABB fattened for speculative contacts by a fixed margin
+    // plus this tick's velocity sweep on each axis, so a fast approach is caught a full tick BEFORE
+    // the shapes actually overlap. That lookahead is what makes speculative contacts possible at
+    // all: narrowphase can only create a pre-overlap (still-separated) contact point for a pair
+    // broadphase actually reports, and a raw tight AABB doesn't overlap until the shapes already do
+    // (by which time the body has fallen straight through the speculative window). Fattening only
+    // ever ADDS candidate pairs, never removes one (Rule: broadphase no-false-negatives) -
+    // narrowphase then culls precisely with its own per-pair margin. Kept SEPARATE from the tight
+    // AABB so the body's geometric bound stays truthful for queries/rendering.
+    //
+    // Sweep is directional (grow the box only on the side the body is moving toward on each axis),
+    // keeping the fattened box tight rather than symmetric - a body moving down grows its box
+    // downward, not upward. SPECULATIVE_MARGIN is the absolute floor for the resting/slow case
+    // where velocity*dt alone is ~0.
+    _recomputeBroadphaseAABB(dt) {
+        const m = RigidBody.SPECULATIVE_MARGIN;
+        const sx = this.linear_velocity.x * dt, sy = this.linear_velocity.y * dt, sz = this.linear_velocity.z * dt;
+        // Angular sweep: a point at the body's bounding radius R moves at up to |omega|*R, so a
+        // spinning body's far corner sweeps that far this tick even when the CENTER (which the
+        // linear sweep above tracks) barely moves. Missing this was a real bug: a box that tips
+        // onto one corner spins up to a few rad/s, its OPPOSITE corner then approaches the ground
+        // at |omega|*R (a couple of m/s) with the center's linear velocity pointing elsewhere, so
+        // the linear sweep never grew the box toward that corner - the corner slammed in undetected
+        // and the one-shot correction of the resulting deep overlap injected more spin, diverging.
+        // Angular motion has no clean per-axis direction, so this term is applied ISOTROPICALLY
+        // (all six faces) - the conservative honest choice, never an under-estimate. R is taken from
+        // the tight AABB's own half-extent (its farthest corner from center).
+        const ex = (this._aabb.max.x - this._aabb.min.x) * 0.5;
+        const ey = (this._aabb.max.y - this._aabb.min.y) * 0.5;
+        const ez = (this._aabb.max.z - this._aabb.min.z) * 0.5;
+        const R = Math.sqrt(ex * ex + ey * ey + ez * ez);
+        const wMag = Math.sqrt(this.angular_velocity.x * this.angular_velocity.x +
+            this.angular_velocity.y * this.angular_velocity.y + this.angular_velocity.z * this.angular_velocity.z);
+        const a = wMag * R * dt;
+        this._broadphaseAABB.min.x = this._aabb.min.x - m - a - (sx < 0 ? -sx : 0);
+        this._broadphaseAABB.max.x = this._aabb.max.x + m + a + (sx > 0 ? sx : 0);
+        this._broadphaseAABB.min.y = this._aabb.min.y - m - a - (sy < 0 ? -sy : 0);
+        this._broadphaseAABB.max.y = this._aabb.max.y + m + a + (sy > 0 ? sy : 0);
+        this._broadphaseAABB.min.z = this._aabb.min.z - m - a - (sz < 0 ? -sz : 0);
+        this._broadphaseAABB.max.z = this._aabb.max.z + m + a + (sz > 0 ? sz : 0);
+    }
+
+    _recomputeWorldInverseInertia() {
+        if (this._massInverted === 0) { this._worldInverseInertiaTensor.zero(); return; }
+        const rotMat = RigidBody._scratchMat3;
+        rotMat.fromQuaternion(this.rotation);
+        const rotT = RigidBody._scratchMat3b;
+        rotT.transposeInto(rotMat);
+        this._worldInverseInertiaTensor.multiplyFrom(rotMat, this.inverseInertiaTensor);
+        this._worldInverseInertiaTensor.multiply(rotT);
+    }
+
+    // Broadphase's required primitive: the body's CURRENT world AABB. Assumes updateDerived() has
+    // already run this tick (Rule 1) - getAABB() never recomputes on its own, so a stale call is a
+    // caller bug surfaced as a stale box, not silently patched over here.
+    getAABB() {
+        return this._aabb;
+    }
+
+    // The fattened broadphase-query AABB (tight bound + speculative margin + velocity sweep).
+    // Broadphase and midphase read THIS, not getAABB(), so a pair surfaces the tick before overlap
+    // (see _recomputeBroadphaseAABB). Same staleness assumption as getAABB(): updateDerived() owns
+    // recomputing it once per tick.
+    getBroadphaseAABB() {
+        return this._broadphaseAABB;
+    }
+
+    addListener(event, fn) {
+        (this._listeners[event] || (this._listeners[event] = [])).push(fn);
+        return this;
+    }
+
+    emit(event, arg) {
+        const list = this._listeners[event];
+        if (!list) return;
+        for (let i = 0; i < list.length; i++) list[i](arg);
+    }
+}
+
+// Scratch objects for the allocation-free AABB/inertia recompute above. Per-class, not shared
+// across unrelated algorithms (plan.md: "scratch memory: per-stage arenas, never global") - these
+// three are private to RigidBody's own derived-state recompute and touched nowhere else.
+RigidBody._scratchLocalAABB = new AABB();
+RigidBody._scratchMat3 = new Matrix3();
+RigidBody._scratchMat3b = new Matrix3();
+RigidBody._scratchVec = new Vector3();
+
+RigidBody.STATIC = BODY_STATIC;
+RigidBody.KINEMATIC = BODY_KINEMATIC;
+RigidBody.DYNAMIC = BODY_DYNAMIC;
+
+// Fixed broadphase-AABB fattening for speculative contacts (metres). Matches the narrowphase
+// speculative base so the two stages agree on "how early is a contact worth seeing": broadphase
+// surfaces the pair at least this far before overlap, and narrowphase then creates the actual
+// pre-overlap point within its own (equal-or-larger, velocity-widened) margin. Kept as an
+// absolute floor here; the velocity sweep in _recomputeAABB handles fast approaches on top of it.
+RigidBody.SPECULATIVE_MARGIN = 0.02;
+
+ActionPhysics.RigidBody = RigidBody;
