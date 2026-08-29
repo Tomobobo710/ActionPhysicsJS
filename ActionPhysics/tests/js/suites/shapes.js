@@ -220,9 +220,12 @@
 		var s = new AP.CapsuleShape(1, 6);
 		var got = drawSupport(t, s, new V(1, 0, 0));
 		t.check(got.x, 1, 1e-9, 'radius reached at the equator');
-		// direction.y === 0 ties to the +Y pole (>= 0 branch), so the support sits at the top of
-		// the cylindrical segment (segmentHalfLength), not the capsule's true equator.
-		t.check(got.y, 2, 1e-9, 'zero y-component ties to the +Y segment cap');
+		// A purely horizontal direction is genuinely ambiguous between the two cap centers (both dot
+		// to the same value along it), and the true farthest point is the barrel equator itself -
+		// picking a cap center anyway (the naive >= 0 branch) puts every horizontal support on one
+		// ring instead of the equator, degenerate for a GJK/EPA simplex sampling several such
+		// directions. See CapsuleShape.supportInto's own comment.
+		t.check(got.y, 0, 1e-9, 'zero y-component sits at the true equator, not either cap');
 	}, { visual: true });
 
 	test('shapes/capsule', 'volume is cylinder core plus two hemisphere caps (one full sphere)', function (t) {

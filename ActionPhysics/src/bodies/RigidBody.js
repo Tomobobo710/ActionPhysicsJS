@@ -51,10 +51,27 @@ class RigidBody {
         this.gravity = null; // null = use World.gravity; setGravity() overrides per-body
 
         // ---- Material ----
-        this.friction = 0.5;
-        this.restitution = 0;
-        this.linear_damping = 0;
-        this.angular_damping = 0;
+        // These four match ActionEngineJS's own ActionRigidBody3D.MATERIAL_DEFAULTS exactly (the
+        // shipping game's real material, not a bare/theoretical one) - the consumer already settled
+        // on these as what a physics body should default to, and a body constructed directly against
+        // this engine (bypassing the ActionEngineJS wrapper - the test suite, or any other direct
+        // caller) should behave the same way as one built through it, not silently softer/bouncier/
+        // less-damped. angular_damping is not 0: ordinary Coulomb friction cannot stop a ROLLING
+        // contact on its own (it opposes tangential SLIP at the contact point, and a cleanly rolling
+        // round shape has ~zero slip there by construction - see rolling_friction below, and
+        // Solver._solveRollingResistance), so without angular damping a cylinder/capsule/ball that
+        // picks up any spin on landing keeps rolling indefinitely no matter how high friction is.
+        this.friction = 3.0;
+        this.restitution = 0.33;
+        this.linear_damping = 0.1;
+        this.angular_damping = 0.9;
+        // Rolling resistance coefficient (metres): opposes a round shape's spin AT a contact by
+        // capping the angular velocity component about the contact's tangent plane, the same way
+        // Coulomb friction caps tangential slip - see Solver._solveContactVelocity's rolling pass.
+        // Defaults to 0, matching Goblin's own RigidBody.rolling_friction default and ActionEngineJS's
+        // MATERIAL_DEFAULTS (which has no rollingFriction field at all - it relies on angular_damping
+        // alone). Opt-in, not part of either upstream default material.
+        this.rolling_friction = 0;
 
         // ---- Filtering ----
         this.collision_mask = 0xFFFFFFFF;

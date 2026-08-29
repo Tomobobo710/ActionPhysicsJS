@@ -15,9 +15,32 @@ class CapsuleShape extends Shape {
     }
 
     supportInto(out, direction) {
-        const centerY = direction.y >= 0 ? this.segmentHalfLength : -this.segmentHalfLength;
+        // A capsule's support point is radius*normalize(direction) offset by whichever cap CENTER
+        // (top or bottom) is farther along direction - the standard "sphere-swept segment" support
+        // function. At direction.y exactly 0 that choice is genuinely ambiguous (both cap centers
+        // dot to the same value along a purely horizontal direction, and the true farthest point is
+        // the barrel equator itself, not either cap center) - picking a cap center there anyway
+        // would put every purely-horizontal support on one ring instead of the equator, degenerate
+        // for a GJK/EPA simplex that samples several such directions. Zero-Y is handled first and
+        // explicitly rather than folded into the >= 0 branch below.
         const lsq = direction.x * direction.x + direction.y * direction.y + direction.z * direction.z;
-        if (lsq === 0) { out.x = this.radius; out.y = centerY; out.z = 0; return out; }
+        // A zero-length direction has no "farthest point" - any answer is arbitrary. Return the
+        // capsule's own center: finite, harmless, and never mistaken for a real support (the
+        // fallback the historical 0/0 NaN bug needed, not a physically meaningful point).
+        if (lsq === 0) { out.x = 0; out.y = 0; out.z = 0; return out; }
+        // Exact equality would miss a direction that is horizontal in intent but carries floating-
+        // point residue from an upstream rotation (e.g. a world-space horizontal direction inverse-
+        // rotated into a tilted capsule's local space lands at y ~ 1e-16, not exactly 0) - an epsilon
+        // catches that case too, and is tight enough to never misfire on a direction that is
+        // meaningfully off-axis (where the ordinary cap-center branch below is the right answer).
+        if (Math.abs(direction.y) < 1e-9) {
+            const s = this.radius / Math.sqrt(lsq);
+            out.x = direction.x * s;
+            out.y = 0;
+            out.z = direction.z * s;
+            return out;
+        }
+        const centerY = direction.y > 0 ? this.segmentHalfLength : -this.segmentHalfLength;
         const s = this.radius / Math.sqrt(lsq);
         out.x = direction.x * s;
         out.y = direction.y * s + centerY;

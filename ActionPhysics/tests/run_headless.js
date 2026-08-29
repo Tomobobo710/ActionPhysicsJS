@@ -40,6 +40,22 @@ fs.readdirSync(suitesDir)
 	.sort()
 	.forEach(function (f) { require(path.join(suitesDir, f)); });
 
+// Tom's suite: a separate directory (not folded into js/suites/) of scene-style FPS/physics
+// regression tests, kept apart because it has its own shared helpers (_util.js, _util_fps.js) and
+// naming conventions distinct from the base engine suite. Loaded the same way - _-prefixed files
+// first (as plain requires, not test files), then everything else.
+var tomDir = path.join(HERE, 'js', 'tom');
+if (fs.existsSync(tomDir)) {
+	fs.readdirSync(tomDir)
+		.filter(function (f) { return f.endsWith('.js') && f.charAt(0) === '_'; })
+		.sort()
+		.forEach(function (f) { require(path.join(tomDir, f)); });
+	fs.readdirSync(tomDir)
+		.filter(function (f) { return f.endsWith('.js') && f.charAt(0) !== '_' && !SKIP_FILES[f]; })
+		.sort()
+		.forEach(function (f) { require(path.join(tomDir, f)); });
+}
+
 var onlySuite = null, only = null, showLogs = false;
 process.argv.slice(2).forEach(function (a) {
 	if (a === '--logs') showLogs = true;

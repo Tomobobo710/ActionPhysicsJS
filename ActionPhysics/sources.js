@@ -89,5 +89,27 @@ module.exports = [
     // access), loaded last since they depend on everything above.
     'src/character/CharacterController.js',
 
+    // FPS character controller - a kinematic box mover with its own ground/wall/slope/ghost
+    // handling, excluded from the solver's own contact resolution entirely (see Body.js). Split
+    // across many files, each adding methods onto the same FPSCharacterController.prototype -
+    // FPSControllerConstants.js (tunable defaults) and FPSCharacterController.js (the constructor)
+    // must load first; Constants.js attaches FPSC/raycast statics onto the constructor function so
+    // it must load after that but before every file below, which all read FPSC.
+    'src/character/fps/FPSControllerConstants.js',
+    'src/character/fps/FPSCharacterController.js',
+    'src/character/fps/Constants.js',
+    'src/character/fps/Body.js',
+    'src/character/fps/Ghost.js',
+    'src/character/fps/Collision.js',
+    'src/character/fps/Probes.js',
+    'src/character/fps/View.js',
+    'src/character/fps/Netcode.js',
+    'src/character/fps/Movement/Airborne.js',
+    'src/character/fps/Movement/Vertical.js',
+    'src/character/fps/Movement/Step.js',
+    'src/character/fps/Movement/Slide.js',
+    'src/character/fps/Movement/Ladder.js',
+    'src/character/fps/Movement/Mantle.js',
+
     'src/outro.js'
 ];

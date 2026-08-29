@@ -8,10 +8,10 @@
 
 	Runner.test('collision/gravity', 'four bodies free-fall to vy=-20 (g=-10, t=2s)', function (t) {
 		var world = t.makeWorld({ gravity: -10 });
-		var sphere1 = t.sphere(world, 1, 1, { pos: [0, 0, 0], color: '#F4D35E' });
-		var sphere2 = t.sphere(world, 1, 10, { pos: [3, 0, 0], color: '#EE964B' });
-		var box1 = t.box(world, 1, 1, 1, 1, { pos: [6, 0, 0], color: '#45B7D1' });
-		var box2 = t.box(world, 1, 1, 1, 0.01, { pos: [9, 0, 0], color: '#8367C7' });
+		var sphere1 = t.sphere(world, 1, 1, { pos: [0, 0, 0], linear_damping: 0, angular_damping: 0, color: '#F4D35E' });
+		var sphere2 = t.sphere(world, 1, 10, { pos: [3, 0, 0], linear_damping: 0, angular_damping: 0, color: '#EE964B' });
+		var box1 = t.box(world, 1, 1, 1, 1, { pos: [6, 0, 0], linear_damping: 0, angular_damping: 0, color: '#45B7D1' });
+		var box2 = t.box(world, 1, 1, 1, 0.01, { pos: [9, 0, 0], linear_damping: 0, angular_damping: 0, color: '#8367C7' });
 
 		function reachesMinus20(b) {
 			return function () { return { ok: Math.abs(b.linear_velocity.y + 20) <= 1e-5, detail: 'vy=' + b.linear_velocity.y.toFixed(3) }; };

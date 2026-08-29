@@ -172,6 +172,30 @@ class Solver {
             for (let i = 0; i < manifold.points.length; i++) {
                 this._solveContactVelocity(manifold.points[i], bodyA, bodyB, h);
             }
+            // Rolling resistance is ONE torque acting on the pair as a whole, not a per-point contact
+            // force - applied once per manifold (via its deepest/first point's normal) rather than
+            // once per point. Splitting it across several manifold points (as friction/restitution
+            // correctly do, since those really are independent per-point contact forces) does not
+            // sum to the same torque: each point's correction changes the angular velocity the NEXT
+            // point reads, and on a multi-point manifold (a cylinder/capsule's curved contact reduces
+            // to several nearby points, not one) this became a genuine per-substep oscillation that
+            // never converged - confirmed by tracing a shoved cylinder to a stable non-zero angular
+            // velocity fixed point (0.026, 0, -0.046 rad/s, forever) rather than decaying to rest,
+            // with adjacent manifold points showing opposite-signed tangential relative velocity from
+            // the same body-level angular velocity pair, an artifact of sequential per-point solving
+            // rather than any real geometric difference between the points.
+            if (manifold.points.length > 0) {
+                // Reference point: the most-engaged one (largest |normalLambda|, i.e. the point this
+                // substep's normal solve actually pushed hardest) rather than always points[0] - a
+                // shallow/barely-touching point would otherwise starve the rolling-resistance budget
+                // (which scales off THAT point's own normalLambda) even while a neighbouring point on
+                // the same manifold is carrying the real load.
+                let ref = manifold.points[0];
+                for (let i = 1; i < manifold.points.length; i++) {
+                    if (Math.abs(manifold.points[i].normalLambda) > Math.abs(ref.normalLambda)) ref = manifold.points[i];
+                }
+                this._solveRollingResistance(ref, bodyA, bodyB, h);
+            }
         }
     }
 
@@ -457,6 +481,68 @@ class Solver {
         if (jt > maxImpulse) jt = maxImpulse;
         // Apply along -tangent (oppose the slip).
         this._applyVelocityImpulse(bodyA, bodyB, this._rA, this._rB, -tx, -ty, -tz, jt);
+    }
+
+    // Rolling resistance: a pure roll (no slip AT the contact point) has zero tangential contact
+    // velocity by definition, so the Coulomb friction pass above - which only ever acts on
+    // tangential contact-POINT velocity - is a correct no-op for it (this is real physics, not a
+    // gap: friction opposes slip, and rolling is the absence of slip). A round shape rolling forever
+    // is therefore not a friction bug; it needs its OWN mechanism, exactly as a real ball's contact
+    // patch resists rolling through surface/material deformation ("rolling resistance", distinct
+    // from Coulomb sliding friction). Modelled as a direct angular-velocity damping torque at the
+    // contact: caps the RELATIVE angular velocity component about each tangent direction, the same
+    // structure as the tangential-slip cap above (stop-fully-then-clamp), scaled by the same
+    // Coulomb-style normal-impulse budget so a barely-touching contact can't out-brake a hard-driven
+    // one. Combined per-pair via sqrt (same convention as friction/restitution above).
+    _solveRollingResistance(point, bodyA, bodyB, h) {
+        const rollingFriction = Math.sqrt(Math.max(bodyA.rolling_friction, 0) * Math.max(bodyB.rolling_friction, 0));
+        if (rollingFriction <= 0) return;
+
+        const nx = point.normal.x, ny = point.normal.y, nz = point.normal.z;
+        const rw = bodyA.angular_velocity, ww = bodyB.angular_velocity;
+        // Relative angular velocity, normal component removed (spin ABOUT the normal - e.g. a
+        // basketball spinning in place on one spot - is not rolling and rolling resistance has
+        // nothing to say about it; only the tangential spin components, which are exactly what
+        // carries a round shape's contact point across the surface, are damped here).
+        let relWx = ww.x - rw.x, relWy = ww.y - rw.y, relWz = ww.z - rw.z;
+        const relWn = relWx * nx + relWy * ny + relWz * nz;
+        relWx -= relWn * nx; relWy -= relWn * ny; relWz -= relWn * nz;
+        const relWMag = Math.sqrt(relWx * relWx + relWy * relWy + relWz * relWz);
+        if (relWMag < 1e-9) return;
+
+        const ax = relWx / relWMag, ay = relWy / relWMag, az = relWz / relWMag; // damping axis
+        // Effective inverse angular mass about this axis, both bodies (no linear term - this is a
+        // pure angular constraint, unlike _effectiveMass's linear+angular contact constraint).
+        let wSum = 0;
+        if (bodyA._massInverted > 0) {
+            const IA = bodyA._worldInverseInertiaTensor;
+            wSum += ax * (IA.e00 * ax + IA.e01 * ay + IA.e02 * az) + ay * (IA.e10 * ax + IA.e11 * ay + IA.e12 * az) + az * (IA.e20 * ax + IA.e21 * ay + IA.e22 * az);
+        }
+        if (bodyB._massInverted > 0) {
+            const IB = bodyB._worldInverseInertiaTensor;
+            wSum += ax * (IB.e00 * ax + IB.e01 * ay + IB.e02 * az) + ay * (IB.e10 * ax + IB.e11 * ay + IB.e12 * az) + az * (IB.e20 * ax + IB.e21 * ay + IB.e22 * az);
+        }
+        if (wSum < 1e-12) return;
+
+        const maxAngImpulse = rollingFriction * Math.abs(point.normalLambda) / h;
+        if (maxAngImpulse <= 0) return;
+        let j = relWMag / wSum;
+        if (j > maxAngImpulse) j = maxAngImpulse;
+
+        if (bodyA._massInverted > 0) {
+            const IA = bodyA._worldInverseInertiaTensor;
+            const tqx = ax * j, tqy = ay * j, tqz = az * j;
+            bodyA.angular_velocity.x += (IA.e00 * tqx + IA.e01 * tqy + IA.e02 * tqz) * bodyA.angular_factor.x;
+            bodyA.angular_velocity.y += (IA.e10 * tqx + IA.e11 * tqy + IA.e12 * tqz) * bodyA.angular_factor.y;
+            bodyA.angular_velocity.z += (IA.e20 * tqx + IA.e21 * tqy + IA.e22 * tqz) * bodyA.angular_factor.z;
+        }
+        if (bodyB._massInverted > 0) {
+            const IB = bodyB._worldInverseInertiaTensor;
+            const tqx = -ax * j, tqy = -ay * j, tqz = -az * j;
+            bodyB.angular_velocity.x += (IB.e00 * tqx + IB.e01 * tqy + IB.e02 * tqz) * bodyB.angular_factor.x;
+            bodyB.angular_velocity.y += (IB.e10 * tqx + IB.e11 * tqy + IB.e12 * tqz) * bodyB.angular_factor.y;
+            bodyB.angular_velocity.z += (IB.e20 * tqx + IB.e21 * tqy + IB.e22 * tqz) * bodyB.angular_factor.z;
+        }
     }
 
     // Contact-relative velocity (velocity of B's contact point minus A's), into `out`. rA/rB are the

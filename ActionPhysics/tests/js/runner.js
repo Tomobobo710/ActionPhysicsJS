@@ -28,13 +28,14 @@
 	function suite(key) { _currentSuite = key; }
 
 	// Display order. An unlisted suite still runs, it just sorts last.
-	var SUITE_ORDER = ['math', 'shapes', 'collision', 'solver', 'character'];
+	var SUITE_ORDER = ['math', 'shapes', 'collision', 'solver', 'character', 'tom'];
 	var SUITE_NAMES = {
 		math: 'Math',
 		shapes: 'Shapes',
 		collision: 'Collision',
 		solver: 'Solver',
-		character: 'Character'
+		character: 'Character',
+		tom: "Tom's Suite"
 	};
 
 	// A failed assertion throws this; a real code error is anything else. The runner distinguishes them.
@@ -250,6 +251,7 @@
 			if (opts.vel) b.linear_velocity.set(opts.vel[0] || 0, opts.vel[1] || 0, opts.vel[2] || 0);
 			if (opts.avel) b.angular_velocity.set(opts.avel[0] || 0, opts.avel[1] || 0, opts.avel[2] || 0);
 			if (opts.friction != null) b.friction = opts.friction;
+			if (opts.rolling_friction != null) b.rolling_friction = opts.rolling_friction;
 			if (opts.restitution != null) b.restitution = opts.restitution;
 			if (opts.linear_damping != null) b.linear_damping = opts.linear_damping;
 			if (opts.angular_damping != null) b.angular_damping = opts.angular_damping;

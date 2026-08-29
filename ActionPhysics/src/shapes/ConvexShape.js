@@ -5,6 +5,7 @@
 // from-scratch incremental 3D convex hull (Quickhull-style: start from an extreme tetrahedron,
 // repeatedly find the farthest outside point of the worst face and re-triangulate the horizon).
 class ConvexShape extends Shape {
+
     constructor(points) {
         super('convex');
         this.points = points;

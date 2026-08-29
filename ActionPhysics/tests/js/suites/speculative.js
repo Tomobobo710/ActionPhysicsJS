@@ -179,7 +179,7 @@
 		// Control for the test above: frictionless retains ~3 m/s rather than decelerating.
 		var world = t.makeWorld();
 		t.box(world, 40, 0.5, 40, 0, { pos: [0, -0.5, 0], friction: 0, color: '#556' }); // wide enough that the box stays on it
-		var box = t.box(world, 0.5, 0.5, 0.5, 1, { pos: [0, 0.5, 0], vel: [3, 0, 0], friction: 0, color: '#f84' });
+		var box = t.box(world, 0.5, 0.5, 0.5, 1, { pos: [0, 0.5, 0], vel: [3, 0, 0], friction: 0, linear_damping: 0, angular_damping: 0, color: '#f84' });
 
 		// Frictionless preserves the sliding speed; a sub-percent wobble from settling coupling into x
 		// is fine - the point is ~3 m/s retained, not bit-exactness.

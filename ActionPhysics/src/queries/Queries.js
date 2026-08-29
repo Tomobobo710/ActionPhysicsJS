@@ -57,6 +57,11 @@ class Queries {
     static shapeIntersect(bodies, shape, start, end, rotation, ignore) {
         const dirX = end.x - start.x, dirY = end.y - start.y, dirZ = end.z - start.z;
         const fullLen = Math.sqrt(dirX * dirX + dirY * dirY + dirZ * dirZ);
+        // A zero-length sweep is a stationary overlap test at `start` (unlike rayIntersect, where a
+        // zero-length ray is degenerate and reports a miss - a ZERO-RADIUS ray has no meaningful
+        // "am I overlapping something" question, but a real shape held still genuinely does). Handled
+        // separately because _advance divides by fullLen to get a unit direction, which is NaN here.
+        if (fullLen < 1e-12) return Queries._overlapTest(bodies, shape, start, rotation, ignore);
         const localAABB = Queries._scratchLocalAABB;
         shape.localAABBInto(localAABB);
         const radius = Math.sqrt(
@@ -110,6 +115,9 @@ class Queries {
         if (Queries._isCompound(body.shape)) {
             return Queries._sweepPointVsCompound(start, dirX, dirY, dirZ, fullLen, body);
         }
+        if (Queries._isMesh(body.shape)) {
+            return Queries._sweepPointVsMesh(start, dirX, dirY, dirZ, fullLen, body);
+        }
         const pointShape = Queries._scratchPointShape;
         const placedPoint = Queries._scratchPlacedA;
         placedPoint.shape = pointShape;
@@ -138,6 +146,9 @@ class Queries {
         if (Queries._isCompound(body.shape)) {
             return Queries._sweepShapeVsCompound(shape, rotation, start, dirX, dirY, dirZ, fullLen, body);
         }
+        if (Queries._isMesh(body.shape)) {
+            return Queries._sweepShapeVsMesh(shape, rotation, start, dirX, dirY, dirZ, fullLen, body);
+        }
         const placedShape = Queries._scratchPlacedA;
         placedShape.shape = shape;
         placedShape.position = Queries._scratchPos.set(start.x, start.y, start.z);
@@ -156,8 +167,140 @@ class Queries {
         return Queries._advance(support, placedShape, start, dirX, dirY, dirZ, fullLen);
     }
 
+    // Stationary overlap test: does `shape`, held fixed at `start`, touch anything? Used by
+    // shapeIntersect for a zero-length sweep (see its own comment). One GJK query per candidate body,
+    // same AABB-reject-then-GJK structure as the swept queries above, but with no travel direction -
+    // EPA runs on an overlapping result so a caller gets a real penetration depth/normal, not the
+    // swept path's reversed-travel-direction fallback (there is no travel here to fall back on).
+    static _overlapTest(bodies, shape, start, rotation, ignore) {
+        const localAABB = Queries._scratchLocalAABB;
+        shape.localAABBInto(localAABB);
+        const radius = Math.sqrt(
+            Math.max(localAABB.min.x * localAABB.min.x, localAABB.max.x * localAABB.max.x) +
+            Math.max(localAABB.min.y * localAABB.min.y, localAABB.max.y * localAABB.max.y) +
+            Math.max(localAABB.min.z * localAABB.min.z, localAABB.max.z * localAABB.max.z)
+        );
+        const rot = rotation || Queries._identityQuat;
+
+        for (let i = 0; i < bodies.length; i++) {
+            const body = bodies[i];
+            if (Queries._isIgnored(body, ignore)) continue;
+            if (Queries._isCompound(body.shape)) {
+                const hit = Queries._overlapTestCompound(shape, start, rot, body);
+                if (hit) return hit;
+                continue;
+            }
+            if (Queries._isMesh(body.shape)) {
+                const hit = Queries._overlapTestMesh(shape, start, rot, body);
+                if (hit) return hit;
+                continue;
+            }
+            const aabb = body.getAABB();
+            const expanded = Queries._scratchExpandedAABB;
+            expanded.copy(aabb).expandInPlace(radius);
+            if (start.x < expanded.min.x || start.x > expanded.max.x ||
+                start.y < expanded.min.y || start.y > expanded.max.y ||
+                start.z < expanded.min.z || start.z > expanded.max.z) continue;
+
+            const hit = Queries._overlapTestOne(shape, start, rot, body);
+            if (hit) return hit;
+        }
+        return null;
+    }
+
+    static _overlapTestOne(shape, start, rotation, body) {
+        const placedShape = Queries._scratchPlacedA;
+        placedShape.shape = shape;
+        placedShape.position = start;
+        placedShape.rotation = rotation;
+
+        const placedBody = Queries._scratchPlacedB;
+        placedBody.shape = body.shape;
+        placedBody.position = body.position;
+        placedBody.rotation = body.rotation;
+
+        const support = Queries._scratchSupport;
+        support.a = placedShape; support.b = placedBody;
+        support._invRotA.copy(rotation).invert();
+        support._invRotB.copy(body.rotation).invert();
+
+        const gjkResult = Queries._gjk.run(support);
+        if (!gjkResult.overlapping) return null;
+        const epaResult = Queries._epa.run(support, gjkResult.simplex);
+        return {
+            point: epaResult.pointA,
+            normal: epaResult.normal,
+            distance: 0,
+            fraction: 0,
+            body: body
+        };
+    }
+
+    static _overlapTestCompound(shape, start, rotation, body) {
+        const children = body.shape.children;
+        for (let i = 0; i < children.length; i++) {
+            const placedChild = Queries._placedChildInto(Queries._scratchCompoundChild, body, children[i]);
+            const placedShape = Queries._scratchPlacedA;
+            placedShape.shape = shape;
+            placedShape.position = start;
+            placedShape.rotation = rotation;
+
+            const support = Queries._scratchSupport;
+            support.a = placedShape; support.b = placedChild;
+            support._invRotA.copy(rotation).invert();
+            support._invRotB.copy(placedChild.rotation).invert();
+
+            const gjkResult = Queries._gjk.run(support);
+            if (!gjkResult.overlapping) continue;
+            const epaResult = Queries._epa.run(support, gjkResult.simplex);
+            return { point: epaResult.pointA, normal: epaResult.normal, distance: 0, fraction: 0, body: body };
+        }
+        return null;
+    }
+
+    static _overlapTestMesh(shape, start, rotation, body) {
+        const meshShape = body.shape;
+        const a = new Vector3(), b = new Vector3(), c = new Vector3();
+        for (let i = 0; i < meshShape.triangleCount; i++) {
+            meshShape.triangleAt(i, a, b, c);
+            const placedTri = Queries._placedTriangleInto(Queries._scratchCompoundChild, body, Queries._scratchTriangleShape, a, b, c);
+            const placedShape = Queries._scratchPlacedA;
+            placedShape.shape = shape;
+            placedShape.position = start;
+            placedShape.rotation = rotation;
+
+            const support = Queries._scratchSupport;
+            support.a = placedShape; support.b = placedTri;
+            support._invRotA.copy(rotation).invert();
+            support._invRotB.copy(placedTri.rotation).invert();
+
+            const gjkResult = Queries._gjk.run(support);
+            if (!gjkResult.overlapping) continue;
+            const epaResult = Queries._epa.run(support, gjkResult.simplex);
+            return { point: epaResult.pointA, normal: epaResult.normal, distance: 0, fraction: 0, body: body };
+        }
+        return null;
+    }
+
     static _isCompound(shape) {
         return typeof CompoundShape !== 'undefined' && shape instanceof CompoundShape;
+    }
+
+    static _isMesh(shape) {
+        return typeof MeshShape !== 'undefined' && shape instanceof MeshShape;
+    }
+
+    // World-space placement of one mesh triangle: the body's own transform applied to the triangle's
+    // three LOCAL-space vertices (mesh triangles carry no per-triangle local offset the way a compound
+    // child does - MeshShape.triangleAt already hands back body-local coordinates directly, same
+    // convention Midphase's own mesh dispatch uses). Rebuilds the TriangleShape's vertex fields
+    // in-place on a cached scratch instance rather than allocating a new TriangleShape per triangle.
+    static _placedTriangleInto(outPlaced, body, triShape, a, b, c) {
+        triShape.a = a; triShape.b = b; triShape.c = c;
+        outPlaced.shape = triShape;
+        outPlaced.position = body.position;
+        outPlaced.rotation = body.rotation;
+        return outPlaced;
     }
 
     // World-space placement of one compound child: parent body's rotation composed with the child's
@@ -219,6 +362,55 @@ class Queries {
         return best;
     }
 
+    static _sweepPointVsMesh(start, dirX, dirY, dirZ, fullLen, body) {
+        const shape = body.shape;
+        const a = new Vector3(), b = new Vector3(), c = new Vector3();
+        let best = null, bestFraction = Infinity;
+        for (let i = 0; i < shape.triangleCount; i++) {
+            shape.triangleAt(i, a, b, c);
+            const placedTri = Queries._placedTriangleInto(Queries._scratchCompoundChild, body, Queries._scratchTriangleShape, a, b, c);
+
+            const pointShape = Queries._scratchPointShape;
+            const placedPoint = Queries._scratchPlacedA;
+            placedPoint.shape = pointShape;
+            placedPoint.position = Queries._scratchPos.set(start.x, start.y, start.z);
+            placedPoint.rotation = Queries._identityQuat;
+
+            const support = Queries._scratchSupport;
+            support.a = placedPoint; support.b = placedTri;
+            support._invRotA.copy(Queries._identityQuat);
+            support._invRotB.copy(placedTri.rotation).invert();
+
+            const hit = Queries._advance(support, placedPoint, start, dirX, dirY, dirZ, fullLen);
+            if (hit && hit.fraction < bestFraction) { bestFraction = hit.fraction; best = hit; }
+        }
+        return best;
+    }
+
+    static _sweepShapeVsMesh(shape, rotation, start, dirX, dirY, dirZ, fullLen, body) {
+        const meshShape = body.shape;
+        const a = new Vector3(), b = new Vector3(), c = new Vector3();
+        let best = null, bestFraction = Infinity;
+        for (let i = 0; i < meshShape.triangleCount; i++) {
+            meshShape.triangleAt(i, a, b, c);
+            const placedTri = Queries._placedTriangleInto(Queries._scratchCompoundChild, body, Queries._scratchTriangleShape, a, b, c);
+
+            const placedShape = Queries._scratchPlacedA;
+            placedShape.shape = shape;
+            placedShape.position = Queries._scratchPos.set(start.x, start.y, start.z);
+            placedShape.rotation = rotation || Queries._identityQuat;
+
+            const support = Queries._scratchSupport;
+            support.a = placedShape; support.b = placedTri;
+            support._invRotA.copy(placedShape.rotation).invert();
+            support._invRotB.copy(placedTri.rotation).invert();
+
+            const hit = Queries._advance(support, placedShape, start, dirX, dirY, dirZ, fullLen);
+            if (hit && hit.fraction < bestFraction) { bestFraction = hit.fraction; best = hit; }
+        }
+        return best;
+    }
+
     // Casts `placedMover` (already positioned at `start`) toward `start + dir*fullLen` against one
     // body via CONSERVATIVE ADVANCEMENT USING GJK.run() AS THE DISTANCE ORACLE, not a hand-rolled
     // support-function walk. GJK's own separated-case `distance` between placedMover (wherever it
@@ -264,9 +456,25 @@ class Queries {
             if (result.overlapping) {
                 // The mover's current position is already inside/touching the body - report the hit
                 // here. An overlapping GJK result carries no witness normal of its own (see GJK.run's
-                // documented two outcomes), so the incoming travel direction, reversed, is the best
-                // available surface-facing estimate.
-                return Queries._finishHit(start, dirX, dirY, dirZ, traveled, fullLen, -ux, -uy, -uz);
+                // documented two outcomes), but EPA does: it expands the SAME simplex GJK just
+                // produced into a real surface normal (Queries._overlapTestOne/_overlapTestCompound
+                // already do exactly this for the stationary-overlap case, just below). Reusing that
+                // here - rather than falling back to the reversed travel direction - is the actual
+                // fix for a since-confirmed bug class: the reversed-direction fallback cannot tell
+                // "approaching a surface ahead" from "already past it and moving away", so a sweep
+                // that starts embedded (a character mounted on a ladder, two overlapping capsules, a
+                // ramp toe at the exact moment of contact) reported a normal that was sometimes
+                // backwards - root-caused to three separate downstream symptoms this session
+                // (character-vs-character pass-through, a ladder dismount that could never clear its
+                // own embedded start, a steep ramp misclassified as a wall) before being traced to
+                // this shared root rather than patched three times over. EPA's own degenerate/exact-
+                // touch path (_zeroDepthResult, using the simplex's own closest-point-to-origin) is
+                // the same fallback GJK.js's own "EXACT-TOUCHING IS UNDECIDABLE" case already
+                // documents as the right answer when even EPA cannot build a real enclosing
+                // tetrahedron - so this fix does not introduce a new fallback, it reuses the one
+                // already proven correct for narrowphase's identical problem.
+                const epaResult = Queries._epa.run(support, result.simplex);
+                return Queries._finishHit(start, dirX, dirY, dirZ, traveled, fullLen, epaResult.normal.x, epaResult.normal.y, epaResult.normal.z);
             }
             if (result.distance < 1e-4) {
                 return Queries._finishHit(start, dirX, dirY, dirZ, traveled, fullLen,
@@ -326,6 +534,7 @@ class Queries {
 }
 
 Queries._gjk = new GJK();
+Queries._epa = new EPA();
 Queries._identityQuat = new Quaternion(0, 0, 0, 1);
 Queries._scratchPos = new Vector3();
 Queries._scratchPlacedA = { shape: null, position: new Vector3(), rotation: new Quaternion(0, 0, 0, 1) };
@@ -335,5 +544,6 @@ Queries._scratchPointShape = new SphereShape(0); // zero-radius sphere: a point,
 Queries._scratchLocalAABB = new AABB();
 Queries._scratchExpandedAABB = new AABB();
 Queries._scratchCompoundChild = { shape: null, position: new Vector3(), rotation: new Quaternion(0, 0, 0, 1) };
+Queries._scratchTriangleShape = new TriangleShape(new Vector3(), new Vector3(), new Vector3());
 
 ActionPhysics.Queries = Queries;

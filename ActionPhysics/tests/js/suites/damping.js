@@ -48,9 +48,9 @@
 
 	test('collision/damping', 'nine damping cases (gravity/impulse/spin x none/0.5/0.9)', function (t) {
 		var world = t.makeWorld();
-		var b1 = t.sphere(world, 1, 1, { pos: [-12, 0, 0], color: '#F4D35E' });
-		var b2 = t.sphere(world, 1, 1, { pos: [-9, 0, 0], noGravity: true, color: '#F4D35E' }); b2.applyImpulse(t.vec(0, -10, 0));
-		var b3 = t.sphere(world, 1, 1, { pos: [-6, 0, 0], noGravity: true, avel: [0, 0, 5], color: '#F4D35E' });
+		var b1 = t.sphere(world, 1, 1, { pos: [-12, 0, 0], linear_damping: 0, angular_damping: 0, color: '#F4D35E' });
+		var b2 = t.sphere(world, 1, 1, { pos: [-9, 0, 0], noGravity: true, linear_damping: 0, angular_damping: 0, color: '#F4D35E' }); b2.applyImpulse(t.vec(0, -10, 0));
+		var b3 = t.sphere(world, 1, 1, { pos: [-6, 0, 0], noGravity: true, avel: [0, 0, 5], linear_damping: 0, angular_damping: 0, color: '#F4D35E' });
 		var b4 = t.sphere(world, 1, 1, { pos: [-3, 0, 0], linear_damping: 0.5, color: '#EE964B' });
 		var b5 = t.sphere(world, 1, 1, { pos: [0, 0, 0], noGravity: true, linear_damping: 0.5, color: '#EE964B' }); b5.applyImpulse(t.vec(0, -10, 0));
 		var b6 = t.sphere(world, 1, 1, { pos: [3, 0, 0], noGravity: true, angular_damping: 0.5, avel: [0, 0, 5], color: '#EE964B' });

@@ -128,6 +128,28 @@ class Midphase {
             if (corner.z > localQuery.max.z) localQuery.max.z = corner.z;
         }
 
+        // otherAABB carries the OTHER body's own speculative margin (broadphase always passes the
+        // fattened variant - see expandPair), but THIS body's own margin never entered the query
+        // above at all: the corners transformed are the other side's box, and body.position is this
+        // body's exact (unfattened) center. A compound/mesh body approaching a static target closes
+        // the gap under its OWN speculative margin same as any other body - broadphase already
+        // widened THIS body's AABB by that amount when it decided the pair was worth surfacing (see
+        // RigidBody._recomputeBroadphaseAABB), so a leaf query that ignores it silently narrows the
+        // pair back down and can miss real overlap broadphase already promised no false negatives on
+        // (confirmed: a compound falling onto a mesh floor got zero candidates for two full ticks
+        // while already overlapping by centimetres, because the compound side's own fattening was
+        // dropped, then resolved in one deep, high-velocity correction - the actual bug this margin
+        // widening fixes). Fatten symmetrically by this body's own broadphase-vs-tight AABB delta
+        // (already isotropic-safe per RigidBody's own angular-sweep comment), taking the largest
+        // per-axis delta so a rotated body's local-frame margin is never under-estimated.
+        const tightAABB = body.getAABB(), bpAABB = body.getBroadphaseAABB();
+        const marginX = Math.max(bpAABB.max.x - tightAABB.max.x, tightAABB.min.x - bpAABB.min.x);
+        const marginY = Math.max(bpAABB.max.y - tightAABB.max.y, tightAABB.min.y - bpAABB.min.y);
+        const marginZ = Math.max(bpAABB.max.z - tightAABB.max.z, tightAABB.min.z - bpAABB.min.z);
+        const ownMargin = Math.max(marginX, marginY, marginZ, 0);
+        localQuery.min.x -= ownMargin; localQuery.min.y -= ownMargin; localQuery.min.z -= ownMargin;
+        localQuery.max.x += ownMargin; localQuery.max.y += ownMargin; localQuery.max.z += ownMargin;
+
         const hits = this._queryLeaves(shape, otherBodyId, localQuery);
         const out = [];
         if (shape instanceof CompoundShape) {

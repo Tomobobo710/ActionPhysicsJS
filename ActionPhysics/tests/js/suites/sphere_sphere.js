@@ -6,8 +6,8 @@
 
 	Runner.test('collision/sphere-sphere', 'e=0.2 head-on: s1 -> -0.4, s2 -> +0.4', function (t) {
 		var world = t.makeWorld({ gravity: 0 });
-		var s1 = t.sphere(world, 1, 1, { pos: [0, 0, 0], vel: [0, 2, 0], restitution: 0.2, color: '#F4D35E' });
-		var s2 = t.sphere(world, 1, 1, { pos: [0, 3, 0], vel: [0, -2, 0], restitution: 0.2, color: '#45B7D1' });
+		var s1 = t.sphere(world, 1, 1, { pos: [0, 0, 0], vel: [0, 2, 0], restitution: 0.2, linear_damping: 0, angular_damping: 0, color: '#F4D35E' });
+		var s2 = t.sphere(world, 1, 1, { pos: [0, 3, 0], vel: [0, -2, 0], restitution: 0.2, linear_damping: 0, angular_damping: 0, color: '#45B7D1' });
 
 		function reachesVy(b, v) {
 			return function () { return { ok: Math.abs(b.linear_velocity.y - v) <= 0.001, detail: 'vy=' + b.linear_velocity.y.toFixed(3) }; };
