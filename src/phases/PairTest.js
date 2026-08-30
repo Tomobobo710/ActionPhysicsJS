@@ -113,6 +113,13 @@ proto._testPrimitivePair = function (placedA, placedB) {
         if (triResult !== null) return results;
     }
 
+    if (BoxTriFace.applies(placedA, placedB)) {
+        const self = this;
+        // Face patch when the box lies flat on the triangle; null = not a face case, keep going.
+        const bf = BoxTriFace.test(placedA, placedB, results, function () { return self._nextPooledContact(); }, this._ctHintNormal);
+        if (bf !== null) return results;
+    }
+
     if (ConvexTri.applies(placedA, placedB)) {
         const self = this;
         // _ctHintNormal is set per pair by step() from the existing manifold, null on first contact.

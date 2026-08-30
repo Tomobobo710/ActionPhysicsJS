@@ -2,23 +2,17 @@
 // predicted transforms. Geometry only - never adds, removes, or re-matches points.
 var proto = NarrowPhase.prototype;
 
-// Speed-squared below which a body's mesh-face contact geometry is left at tick-start values for
-// the substeps (same as the non-mesh compound/mesh path already does). Deliberately looser than
-// the solver's rest thresholds: a nearly-settled curved prop jitters a few cm/s across a tile
-// seam every tick, and re-clipping it each substep - only to have the fast path bail to a full
-// re-expansion because its deepest point crossed an edge - is pure cost for geometry that is not
-// meaningfully moving. Within this band the tick-start clip is refreshed once per tick by
-// NarrowPhase.step() anyway.
+// Speed-squared below which mesh-face contact geometry stays at tick-start values for the substeps.
+// Looser than the solver's rest thresholds: a nearly-settled curved prop jitters a few cm/s across a
+// tile seam, and re-clipping it each substep only to bail to a full re-expansion is pure cost.
+// NarrowPhase.step() still refreshes the tick-start clip once per tick.
 NarrowPhase.REFRESH_REST_LIN_SQ = 0.30 * 0.30;
 NarrowPhase.REFRESH_REST_ANG_SQ = 0.60 * 0.60;
 
 proto.refreshManifoldGeometry = function (manifolds) {
-    // Pooled contacts produced here (via _nextPooledContact / _testPrimitivePair) are all
-    // transient - copied into manifold points or the mesh-refresh accumulator within this call and
-    // never retained. step()'s contacts were already consumed by manifolds.refresh() before the
-    // solver started calling this. So rewind the pool each substep instead of letting _poolIndex
-    // climb monotonically all tick (which forced the pool to grow every tick -> new ContactDetails,
-    // the run's single biggest allocator).
+    // Contacts pooled here are transient - copied into manifold points or the accumulator within
+    // this call - and step()'s were already consumed by manifolds.refresh(). Rewinding each substep
+    // keeps _poolIndex from climbing all tick and growing the pool.
     this._poolIndex = 0;
     this._ctHintNormal = null; // stale from step()'s pair loop; each branch below sets it as needed
     for (const manifold of manifolds.values()) {
@@ -105,18 +99,24 @@ proto._allMeshTriTagged = function (manifold) {
     return true;
 };
 
-// Re-clip only the distinct source triangles the manifold's points came from, against the current
-// body transforms. The mesh side is static ground, so its stored world verts are still valid; only
-// the convex has moved. One closed-form test per distinct triangle - no BVH query, no re-expansion,
-// no GJK/EPA fallback on non-contact triangles. Only ConvexTri tags points (meshTriValid), and it
-// only fires for exactly one TriangleShape vs one curved convex, so the non-triangle body IS the
-// convex.
+// Re-clip only the distinct source triangles the manifold's points came from. The mesh side is
+// static ground, so its stored world verts are still valid; only the convex has moved. One
+// closed-form test per triangle - no BVH query, no re-expansion, no GJK/EPA fallback.
 proto._refreshMeshFaceManifoldFast = function (manifold, bodyA, bodyB) {
     const pts = manifold.points;
     const acc = this._meshRefreshAcc || (this._meshRefreshAcc = []);
     acc.length = 0;
 
     const cvx = pts[0].meshTriIsSideA ? bodyB : bodyA;
+    // This calls the closed-form test directly on the body's own shape, so the shape must be one
+    // those tests handle - a CompoundShape passed to a support-map test throws.
+    //
+    // Boxes are excluded: re-clipping only the stored triangles works for a curved convex, which
+    // rests on essentially one triangle, but a box face spans several tiles and the stored set can
+    // miss one that carries it, dropping that support and sinking the box through. Boxes take the
+    // slow route, which re-expands and finds every triangle under the face.
+    const isBox = cvx.shape instanceof BoxShape;
+    if (isBox || !ConvexTri._isCurvedConvex(cvx.shape)) return false;
     const cvxSide = { shape: cvx.shape, position: cvx.position, rotation: cvx.rotation };
     const triSide = this._meshRefreshTri || (this._meshRefreshTri = {
         shape: new TriangleShape(new Vector3(), new Vector3(), new Vector3()),
@@ -138,22 +138,20 @@ proto._refreshMeshFaceManifoldFast = function (manifold, bodyA, bodyB) {
         triSide.shape.c.copy(src.meshTriC);
         triSide.bodyCenter.copy(src.meshTriBodyCenter);
 
-        // Direct ConvexTri call (we know that's what tagged the point) with the established normal
-        // as the orientation hint - the convex-centre heuristic is unsafe for a nearly-settled
-        // body. It pushes pooled contacts into `fresh`; those stay valid for the rest of this tick
-        // (the pool isn't recycled until the next step()), so push them straight into `acc` - the
-        // one intervening ConvexTri.test call reuses `fresh` but not the contacts already in it.
+        // Established normal as the orientation hint - the convex-centre heuristic is unsafe for a
+        // nearly-settled body. Pooled contacts stay valid for the rest of the tick, so they go
+        // straight into `acc`; the next ConvexTri.test reuses `fresh` but not what it already holds.
         const self = this;
         const nc = function () { return self._nextPooledContact(); };
         const fresh = this._meshRefreshFresh || (this._meshRefreshFresh = []);
         fresh.length = 0;
-        const r = src.meshTriIsSideA
-            ? ConvexTri.test(triSide, cvxSide, fresh, nc, src.normal)
-            : ConvexTri.test(cvxSide, triSide, fresh, nc, src.normal);
-        // The stored triangle only stays trustworthy while the convex's true deepest point is
-        // still over it. Once it projects outside (body settling onto a neighbour tile), ConvexTri
-        // keeps only shallow edge-probe contacts - enough to look non-empty but missing the real
-        // depth, which starves then over-corrects the solver. Bail to the full re-expansion.
+        const a = src.meshTriIsSideA ? triSide : cvxSide;
+        const b = src.meshTriIsSideA ? cvxSide : triSide;
+        const r = ConvexTri.test(a, b, fresh, nc, src.normal);
+        // The stored triangle only stays trustworthy while the body's contact feature is still over
+        // it. Once it moves off (settling onto a neighbour tile) the re-clip returns nothing, or for
+        // ConvexTri only shallow edge probes - enough to look non-empty but missing the real depth,
+        // which starves then over-corrects the solver. Bail to the full re-expansion.
         if (!r || !ConvexTri.lastDeepestInTriangle) return false;
         for (let c = 0; c < r.length; c++) if (r[c].fromMeshFace) acc.push(r[c]);
     }
@@ -197,7 +195,8 @@ proto._refreshMeshFaceManifold = function (manifold, bodyA, bodyB) {
             const pa = sidesA[i], pb = sidesB[j];
             const pc = this._pairResultScratch;
             pc.length = 0;
-            if (ConvexTri.applies(pa, pb)) ConvexTri.test(pa, pb, pc, nc, this._ctHintNormal);
+            if (BoxTriFace.applies(pa, pb)) BoxTriFace.test(pa, pb, pc, nc, this._ctHintNormal);
+            else if (ConvexTri.applies(pa, pb)) ConvexTri.test(pa, pb, pc, nc, this._ctHintNormal);
             else if (TriTri.applies(pa, pb)) TriTri.test(pa, pb, pc, nc);
             else continue;
             for (let c = 0; c < pc.length; c++) if (pc[c].fromMeshFace) {

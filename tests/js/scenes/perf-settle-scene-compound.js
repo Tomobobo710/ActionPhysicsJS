@@ -116,6 +116,15 @@
 		var fastestFinalSpeed = 0;
 		var fastestFinalSpeedBody = -1;
 
+		// A prop still moving fast on the final tick has not settled. Tracked per kind because the
+		// kinds take different contact paths and fail differently. A launched prop is often back near
+		// the ground by tick 260, so the CEILING check above misses it; speed catches it.
+		var STILL_MOVING_SPEED = 1.0;
+		var kindNames = ['box', 'cylinder', 'cone'];
+		var movingByKind = [0, 0, 0];
+		var maxSpeedByKind = [0, 0, 0];
+		var maxSpeedBodyByKind = [-1, -1, -1];
+
 		var lastStepMs = 0;
 		var now = function () { return (typeof performance !== 'undefined' ? performance.now() : Date.now()); };
 		var origStep = w.step.bind(w);
@@ -146,6 +155,9 @@
 					if (fp.y > highestFinalY) { highestFinalY = fp.y; highestFinalYBody = fi; }
 					var sp = U.speed(bodies[fi]);
 					if (sp > fastestFinalSpeed) { fastestFinalSpeed = sp; fastestFinalSpeedBody = fi; }
+					var kind = fi % 3;
+					if (sp > STILL_MOVING_SPEED) movingByKind[kind]++;
+					if (sp > maxSpeedByKind[kind]) { maxSpeedByKind[kind] = sp; maxSpeedBodyByKind[kind] = fi; }
 				}
 			}
 
@@ -192,6 +204,26 @@
 				', ceiling=' + CEILING.toFixed(2) + ')  fastest final |v|=' + fastestFinalSpeed.toFixed(2) +
 				' (body #' + fastestFinalSpeedBody + ')';
 			if (highestFinalY > CEILING) return { ok: false, detail: 'LAUNCHED: ' + detail };
+			return { ok: true, detail: detail };
+		});
+
+		// Every kind lands on the same tiles, so a kind still moving at the end points at that kind's
+		// contact path rather than at the scene.
+		var MAX_STILL_MOVING_PER_KIND = 20;
+		t.expect('every shape kind comes to rest (no kind keeps gaining energy)', function (world) {
+			if (lastTick < TOTAL_TICKS) return { ok: false, detail: 'still running (tick ' + lastTick + '/' + TOTAL_TICKS + ')' };
+			var parts = [];
+			var worstKind = -1;
+			for (var k = 0; k < 3; k++) {
+				parts.push(kindNames[k] + ': ' + movingByKind[k] + ' moving (|v|>' + STILL_MOVING_SPEED.toFixed(1) +
+					'), max |v|=' + maxSpeedByKind[k].toFixed(2) + ' (body #' + maxSpeedBodyByKind[k] + ')');
+				if (movingByKind[k] > MAX_STILL_MOVING_PER_KIND && (worstKind < 0 || movingByKind[k] > movingByKind[worstKind])) worstKind = k;
+			}
+			var detail = parts.join('   ');
+			if (worstKind >= 0) {
+				return { ok: false, detail: 'NOT SETTLING (' + kindNames[worstKind] + '): ' + detail +
+					'   limit=' + MAX_STILL_MOVING_PER_KIND + ' per kind' };
+			}
 			return { ok: true, detail: detail };
 		});
 

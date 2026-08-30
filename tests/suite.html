@@ -115,6 +115,7 @@
 			                        "speculative.js", "friction_restitution.js"],
 			"stacking":            ["pyramid.js", "sphere_pyramid_scene.js", "sphere_stack_scene.js",
 			                        "sphere_stack_spawn_scene.js"],
+			"compound-floor":      ["settle.js"],
 			"constraints":         ["constraints.js", "constraint_point_scene.js", "constraint_hinge_scene.js",
 			                        "constraint_weld_scene.js", "constraint_slider_scene.js"],
 			"queries":             ["queries.js", "raytracing.js", "sweptshapes.js"],
@@ -124,10 +125,9 @@
 			                        "fps-movement.js", "fps-netcode.js", "fps-platform.js", "fps-push.js",
 			                        "fps-ramp.js", "fps-state.js", "fps-walls.js"],
 			"scenes":              ["balance.js", "bounce-energy.js", "compound-mesh.js", "compound-mesh-cache.js",
-			                        "menagerie.js", "meshmesh-collision.js", "rest.js", "roll.js",
+			                        "menagerie.js", "meshmesh-collision.js", "rest.js", "roll.js", "sleep.js",
 			                        "shapes-drop.js", "smear.js", "special-shapes.js", "swept-mesh-query.js",
 			                        "swept-shape-matrix.js", "perf-settle-scene.js", "perf-settle-scene-compound.js"]
-			// "scenes" also holds sleep.js — omitted: IslandManager isn't wired into the world step yet, every test fails.
 		};
 		var v = "?v=" + Date.now();
 		function emit(src) { document.write('<script src="' + src + v + '"><\/script>'); }

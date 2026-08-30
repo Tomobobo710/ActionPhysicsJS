@@ -1,17 +1,10 @@
-// Closed-form curved-convex-vs-triangle face contact. A round convex (sphere / cylinder / cone /
-// capsule) resting on a MeshShape triangle otherwise goes through GJK/EPA, which yields a single
-// witness point whose normal degenerates near a triangle edge or the seam between two tiles: the
-// point wanders, kicks the body sideways, and once the convex's reference point crosses to the
-// back of the (zero-thickness, one-sided) triangle no contact is generated at all and the body
-// free-falls forever. This path instead treats the triangle as a one-sided face: the contact
-// normal is the triangle normal oriented toward the side the convex's CENTRE is on, and a contact
-// is kept while the convex's deepest point is anywhere from SEPARATION_LIMIT in front of that
-// face to PENETRATION_LIMIT behind it - so a convex that dipped below the plane is pushed back
-// out along the face normal rather than lost.
+// Closed-form curved-convex-vs-triangle face contact, replacing GJK/EPA's single witness point,
+// whose normal degenerates near a triangle edge or a tile seam. The triangle is treated as a
+// one-sided face: the normal is the triangle normal oriented toward the convex's centre, and a
+// contact is kept from SEPARATION_LIMIT in front of the face to PENETRATION_LIMIT behind it.
 //
-// Flat-faced convexes (BoxShape, ConvexShape) are deliberately NOT handled here: GJK/EPA already
-// gives them a stable face contact against a triangle, and routing them through this
-// deepest-point path regresses a rotated box landing across a seam.
+// Flat-faced convexes (BoxShape, ConvexShape) are not handled here - GJK/EPA already gives them a
+// stable face contact, and this deepest-point path regresses a rotated box landing across a seam.
 const ConvexTri = {};
 
 ConvexTri._isCurvedConvex = function (shape) {
@@ -32,6 +25,13 @@ ConvexTri.MIN_CULL_LIMIT = 0.05;    // floor on the margin-derived 'separated' c
 ConvexTri.EDGE_SLACK = 0.06;        // how far outside the triangle a support point may project and still count
 ConvexTri.AREA_EPSILON = 1e-12;
 ConvexTri.DEDUPE_DIST_SQ = 1e-6;
+// Support probes tilted off the contact normal, spaced evenly around it. Four gives a flat-based
+// convex a square patch; the tilt is how far off-normal each probe leans.
+ConvexTri.PROBE_COUNT = 4;
+ConvexTri.PROBE_TILT = 0.5;
+// cos/sin of the probe angles scaled by PROBE_TILT, written out because build.js rejects Math.sin/cos.
+ConvexTri._PROBE_U = [ConvexTri.PROBE_TILT, 0, -ConvexTri.PROBE_TILT, 0];
+ConvexTri._PROBE_V = [0, ConvexTri.PROBE_TILT, 0, -ConvexTri.PROBE_TILT];
 
 // Unit winding normal of a world-space triangle into `out`. Returns false if degenerate.
 ConvexTri._normalInto = function (out, a, b, c) {
@@ -74,12 +74,10 @@ ConvexTri._pointInTri = function (hx, hy, hz, t0, t1, t2, tn, slack) {
 // out: array to push ContactDetails into (pooled via nextContact()). Returns out on success (may
 // be empty, which still vetoes the GJK/EPA fallback), or null to fall through to GJK/EPA.
 //
-// hintNormalBToA (optional): the established contact normal (B -> A) from an existing manifold
-// point. When given, the reference face is oriented to match it instead of the convex-centre
-// heuristic. GeometryRefresh passes this every substep: a settling convex's centroid can creep to
-// within a hair of the (heightfield) triangle plane, at which point the centre heuristic flips the
-// normal and the contact shoves the body through. The established normal doesn't drift, so the
-// re-clip stays stable.
+// hintNormalBToA (optional): established contact normal (B -> A) from an existing manifold point,
+// used to orient the reference face instead of the convex-centre heuristic. GeometryRefresh passes
+// it every substep - a settling convex's centroid can creep to within a hair of the triangle plane,
+// where the centre heuristic flips the normal and shoves the body through.
 // margin (optional): the pair's speculative margin. Only tightens the 'separated' verdict.
 ConvexTri.test = function (placedA, placedB, out, nextContact, hintNormalBToA, margin) {
     const aIsTri = placedA.shape instanceof TriangleShape;
@@ -88,12 +86,9 @@ ConvexTri.test = function (placedA, placedB, out, nextContact, hintNormalBToA, m
     const tri = triPlaced.shape;
     const t0 = tri.a, t1 = tri.b, t2 = tri.c;
 
-    // refN = the triangle's normal, oriented toward the convex's resting/free side. When an
-    // established contact normal is supplied, match it (contact.normal is B -> A, and the emitted
-    // normal below is -refN when the triangle is A / +refN when the triangle is B - so refN points
-    // opposite the B->A normal on the A-triangle branch). Otherwise fall back to the convex-centre
-    // heuristic: a convex approaching from clearly outside has its centre a full radius off the
-    // plane, so the sign is unambiguous at first contact (which is the only place this branch runs).
+    // refN = the triangle normal oriented toward the convex. Match an established contact normal
+    // when one is supplied; otherwise use the convex's centre, which is unambiguous at first
+    // contact - the only place that branch runs.
     const refN = ConvexTri._refN;
     if (!ConvexTri._normalInto(refN, t0, t1, t2)) return null;
     if (hintNormalBToA) {
@@ -107,20 +102,13 @@ ConvexTri.test = function (placedA, placedB, out, nextContact, hintNormalBToA, m
         }
     }
 
-    // Diagnostics read by GeometryRefresh's fast per-triangle re-clip to decide whether the stored
-    // triangle is still trustworthy. lastDeepestInTriangle: the true deepest point projects inside
-    // the triangle (+ EDGE_SLACK). lastDeepestOutsideDist: how far outside it projects, in metres
-    // (0 when inside). A settled body jittering at a tile edge keeps this tiny; a body that has
-    // drifted onto a neighbour tile pushes it past a fraction of the tile size, at which point the
-    // caller must re-expand to pick up the new supporting triangle.
+    // Read by GeometryRefresh's fast re-clip to decide whether a stored triangle is still the one
+    // carrying the body. lastDeepestOutsideDist is how far outside the triangle the deepest point
+    // projects, in metres (0 when inside).
     ConvexTri.lastDeepestInTriangle = false;
     ConvexTri.lastDeepestOutsideDist = Infinity;
-    // 'contact' | 'separated' | 'maybe'. 'separated' means the convex provably has no contact with
-    // this triangle (its nearest point toward the plane is clear of the speculative band), so the
-    // caller can skip the GJK/EPA fallback entirely - that fallback would just re-derive the same
-    // separation at ~100x the cost, and for a prop resting on one tile of a big compound ground
-    // that is the overwhelmingly common case. 'maybe' means no face contact but an edge/vertex hit
-    // is still possible - fall through to GJK/EPA.
+    // 'separated' = provably no contact, caller may skip the GJK/EPA fallback. 'maybe' = no face
+    // contact but an edge/vertex hit is still possible.
     ConvexTri.lastVerdict = 'maybe';
 
     // Deepest convex point toward the triangle = support along -refN.
@@ -130,7 +118,7 @@ ConvexTri.test = function (placedA, placedB, out, nextContact, hintNormalBToA, m
     const scratchDir = ConvexTri._scratchDir;
 
     // PairTest.step discards contacts past the pair's margin, so past that the GJK/EPA fallback is
-    // wasted work. Marginless callers keep the old flat SEPARATION_LIMIT.
+    // wasted work. Marginless callers keep the flat SEPARATION_LIMIT.
     const cullLimit = (margin === undefined || margin === null)
         ? ConvexTri.SEPARATION_LIMIT
         : Math.min(ConvexTri.SEPARATION_LIMIT, Math.max(margin, ConvexTri.MIN_CULL_LIMIT));
@@ -139,35 +127,43 @@ ConvexTri.test = function (placedA, placedB, out, nextContact, hintNormalBToA, m
     MinkowskiSupport.supportOfInto(dp, cvxPlaced, invRot, probeDir, scratchDir);
     const gap = (dp.x - t0.x) * refN.x + (dp.y - t0.y) * refN.y + (dp.z - t0.z) * refN.z;
     if (gap > ConvexTri.SEPARATION_LIMIT) {
-        // Every point of the convex is at least `gap` in front of the triangle's plane, so it
-        // cannot be touching the triangle (which lies in that plane). Definitively separated.
-        // Not cullLimit: this branch also gates whether the pair gets a speculative face contact,
-        // so narrowing it changes trajectories.
+        // SEPARATION_LIMIT, not cullLimit: this branch also gates whether the pair gets a
+        // speculative face contact, so narrowing it changes trajectories.
         ConvexTri.lastVerdict = 'separated';
         return null;
     }
     if (gap < -ConvexTri.PENETRATION_LIMIT) return null; // deep behind - let GJK/EPA judge
 
-    // Gather up to four candidate points: the true deepest point, plus a probe tilted toward each
-    // triangle edge midpoint. The tilted probes give a flat-faced or side-lying convex a
-    // multi-point manifold (no rocking on a single point); a sphere/curved rest collapses them
-    // back to one after dedupe.
+    // The deepest point, plus tilted probes giving a flat-based or side-lying convex a multi-point
+    // patch. Probe directions come from the convex's own frame, not the triangle's, so a prop
+    // straddling a seam gets the same set from every triangle under it.
+    //
+    // A sphere takes the deepest point alone: it touches a plane at one point, and a probe tilted
+    // PROBE_TILT off the normal lands r*(1-cos(TILT)) off the plane - far past DEDUPE_DIST_SQ, so
+    // the probes would survive as a phantom flat base.
     const cand = ConvexTri._cand;
     let nCand = 0;
     cand[nCand++].copy(dp);
 
-    const centroidX = (t0.x + t1.x + t2.x) / 3, centroidY = (t0.y + t1.y + t2.y) / 3, centroidZ = (t0.z + t1.z + t2.z) / 3;
-    const edgeMid = ConvexTri._edgeMid;
-    for (let e = 0; e < 3; e++) {
-        const va = e === 0 ? t0 : (e === 1 ? t1 : t2);
-        const vb = e === 0 ? t1 : (e === 1 ? t2 : t0);
-        edgeMid.set((va.x + vb.x) * 0.5 - centroidX, (va.y + vb.y) * 0.5 - centroidY, (va.z + vb.z) * 0.5 - centroidZ);
-        const lat = edgeMid.x * refN.x + edgeMid.y * refN.y + edgeMid.z * refN.z; // strip any normal component
-        edgeMid.set(edgeMid.x - lat * refN.x, edgeMid.y - lat * refN.y, edgeMid.z - lat * refN.z);
-        const el = Math.sqrt(edgeMid.x * edgeMid.x + edgeMid.y * edgeMid.y + edgeMid.z * edgeMid.z);
-        if (el < 1e-9) continue;
-        const s = 0.5 / el;
-        probeDir.set(-refN.x + edgeMid.x * s, -refN.y + edgeMid.y * s, -refN.z + edgeMid.z * s);
+    // Tangent basis for refN, chosen deterministically from refN alone so it does not rotate with
+    // the body or the triangle.
+    const tanU = ConvexTri._tanU, tanV = ConvexTri._tanV;
+    const ax = Math.abs(refN.x), ay = Math.abs(refN.y), az = Math.abs(refN.z);
+    if (ax <= ay && ax <= az) tanU.set(0, -refN.z, refN.y);
+    else if (ay <= az) tanU.set(-refN.z, 0, refN.x);
+    else tanU.set(-refN.y, refN.x, 0);
+    const tl = Math.sqrt(tanU.x * tanU.x + tanU.y * tanU.y + tanU.z * tanU.z) || 1;
+    tanU.scaleInPlace(1 / tl);
+    tanV.set(refN.y * tanU.z - refN.z * tanU.y,
+        refN.z * tanU.x - refN.x * tanU.z,
+        refN.x * tanU.y - refN.y * tanU.x);
+
+    const probeCount = (cvxPlaced.shape instanceof SphereShape) ? 0 : ConvexTri.PROBE_COUNT;
+    for (let e = 0; e < probeCount; e++) {
+        const cu = ConvexTri._PROBE_U[e], cv = ConvexTri._PROBE_V[e];
+        probeDir.set(-refN.x + tanU.x * cu + tanV.x * cv,
+            -refN.y + tanU.y * cu + tanV.y * cv,
+            -refN.z + tanU.z * cu + tanV.z * cv);
         const pl = Math.sqrt(probeDir.x * probeDir.x + probeDir.y * probeDir.y + probeDir.z * probeDir.z) || 1;
         probeDir.scaleInPlace(1 / pl);
         MinkowskiSupport.supportOfInto(cand[nCand], cvxPlaced, invRot, probeDir, scratchDir);
@@ -227,14 +223,9 @@ ConvexTri.test = function (placedA, placedB, out, nextContact, hintNormalBToA, m
     }
 
     if (emitted === 0) {
-        // No face contact. Decide whether the convex is nonetheless provably clear of the
-        // triangle so the caller can skip GJK/EPA. The nearest triangle feature to the convex's
-        // deepest point is an edge (the point projects outside), so a lower bound on the
-        // convex-to-triangle distance is hypot(along-plane gap, how-far-outside). When that bound
-        // clears the speculative band, it is 'separated'; otherwise an edge/vertex contact is
-        // still possible and we leave the verdict at 'maybe' for the GJK/EPA fallback. This is the
-        // common case for a prop resting on one tile of a big compound ground: its AABB overlaps
-        // the neighbouring coplanar tiles (gap ~ 0) but it sits laterally outside them.
+        // The deepest point projects outside the triangle, so its nearest feature is an edge and
+        // hypot(along-plane gap, how-far-outside) lower-bounds the distance. Clearing the
+        // speculative band by that bound proves separation and lets the caller skip GJK/EPA.
         const outside = ConvexTri.lastDeepestOutsideDist;
         const along = gap > 0 ? gap : 0;
         if (isFinite(outside) && Math.sqrt(along * along + outside * outside) > cullLimit) {
@@ -251,14 +242,17 @@ ConvexTri._scratchDir = new Vector3();
 ConvexTri._invRot = new Quaternion();
 ConvexTri._dp = new Vector3();
 ConvexTri._edgeMid = new Vector3();
-ConvexTri._cand = [new Vector3(), new Vector3(), new Vector3(), new Vector3()];
+ConvexTri._tanU = new Vector3();
+ConvexTri._tanV = new Vector3();
+// One slot for the deepest point plus one per probe.
+ConvexTri._cand = [];
+for (var _ci = 0; _ci <= ConvexTri.PROBE_COUNT; _ci++) ConvexTri._cand.push(new Vector3());
 ConvexTri.lastDeepestInTriangle = false;
 ConvexTri.lastDeepestOutsideDist = Infinity;
 ConvexTri._lastOutside = 0;
 ConvexTri.lastVerdict = 'maybe';
-// Fast re-clip may trust a stored triangle while the convex's deepest point sits at most this far
-// (metres) outside it - covers settled-body jitter and a shallow overhang, but not a real slide
-// onto the neighbouring tile.
+// Metres the deepest point may sit outside a stored triangle and still let the fast re-clip trust
+// it: covers jitter and a shallow overhang, not a slide onto the neighbouring tile.
 ConvexTri.REFRESH_DRIFT_TOLERANCE = 0.35;
 
 ActionPhysics.ConvexTri = ConvexTri;

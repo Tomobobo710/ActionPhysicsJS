@@ -4,6 +4,7 @@ var proto = RigidBody.prototype;
 
 proto.applyImpulse = function (impulse) {
     if (this._massInverted <= 0) return this;
+    if (!this.isAwake) this.wakeUp();
     this.linear_velocity.x += impulse.x * this._massInverted * this.linear_factor.x;
     this.linear_velocity.y += impulse.y * this._massInverted * this.linear_factor.y;
     this.linear_velocity.z += impulse.z * this._massInverted * this.linear_factor.z;
@@ -26,6 +27,7 @@ proto.applyImpulseAtPoint = function (impulse, worldPoint) {
 
 proto.applyTorqueImpulse = function (torqueImpulse) {
     if (this._massInverted <= 0) return this;
+    if (!this.isAwake) this.wakeUp();
     const I = this._worldInverseInertiaTensor;
     const tx = torqueImpulse.x, ty = torqueImpulse.y, tz = torqueImpulse.z;
     this.angular_velocity.x += (I.e00 * tx + I.e01 * ty + I.e02 * tz) * this.angular_factor.x;
@@ -37,6 +39,7 @@ proto.applyTorqueImpulse = function (torqueImpulse) {
 // Continuous force, integrated by the solver every substep until cleared. Adds, not overwrites -
 // multiple calls in the same tick (gravity plus thrust plus wind) all contribute.
 proto.applyForce = function (force) {
+    if (!this.isAwake && (force.x !== 0 || force.y !== 0 || force.z !== 0)) this.wakeUp();
     this.accumulated_force.x += force.x;
     this.accumulated_force.y += force.y;
     this.accumulated_force.z += force.z;
@@ -44,6 +47,7 @@ proto.applyForce = function (force) {
 };
 
 proto.applyTorque = function (torque) {
+    if (!this.isAwake && (torque.x !== 0 || torque.y !== 0 || torque.z !== 0)) this.wakeUp();
     this.accumulated_torque.x += torque.x;
     this.accumulated_torque.y += torque.y;
     this.accumulated_torque.z += torque.z;

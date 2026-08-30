@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-29T23:33:59.275Z
+// ActionPhysics 0.1.0 — built 2026-08-30T22:32:14.698Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine. Ships as one concatenated
@@ -3583,6 +3583,9 @@ class RigidBody {
         // Sleep state, owned entirely by the sleep manager.
         this.isAwake = true;
         this.sleepTimer = 0;
+        // Set by the solver when a moving body pushes on this one; consumed by the rest-pin logic in
+        // Solver._reconcileRestVelocity to release a pinned body the tick it is disturbed.
+        this._restDisturbed = false;
     }
 
     get is_static() { return this.bodyType === RigidBody.STATIC; }
@@ -3612,6 +3615,27 @@ class RigidBody {
         this.gravity = new Vector3(x, y, z);
         return this;
     }
+
+    // Park this body: the solver skips it until something wakes it. A sleeping body holds still by
+    // definition, so its velocity is zeroed here. No-op for non-dynamic bodies (they are never awake
+    // in the sleep sense) and for an already-sleeping body.
+    sleep() {
+        if (this.bodyType !== BODY_DYNAMIC || !this.isAwake) return this;
+        this.isAwake = false;
+        this.sleepTimer = 0;
+        this.linear_velocity.set(0, 0, 0);
+        this.angular_velocity.set(0, 0, 0);
+        return this;
+    }
+
+    // Wake this body and restart its sleep countdown. Called by the sleep manager when an island is
+    // disturbed, and by the force/impulse API so a push on a sleeping body takes effect.
+    wakeUp() {
+        if (this.bodyType !== BODY_DYNAMIC) return this;
+        this.isAwake = true;
+        this.sleepTimer = 0;
+        return this;
+    }
 }
 
 // Scratch for DerivedState.js's allocation-free recompute.
@@ -3638,6 +3662,7 @@ var proto = RigidBody.prototype;
 
 proto.applyImpulse = function (impulse) {
     if (this._massInverted <= 0) return this;
+    if (!this.isAwake) this.wakeUp();
     this.linear_velocity.x += impulse.x * this._massInverted * this.linear_factor.x;
     this.linear_velocity.y += impulse.y * this._massInverted * this.linear_factor.y;
     this.linear_velocity.z += impulse.z * this._massInverted * this.linear_factor.z;
@@ -3660,6 +3685,7 @@ proto.applyImpulseAtPoint = function (impulse, worldPoint) {
 
 proto.applyTorqueImpulse = function (torqueImpulse) {
     if (this._massInverted <= 0) return this;
+    if (!this.isAwake) this.wakeUp();
     const I = this._worldInverseInertiaTensor;
     const tx = torqueImpulse.x, ty = torqueImpulse.y, tz = torqueImpulse.z;
     this.angular_velocity.x += (I.e00 * tx + I.e01 * ty + I.e02 * tz) * this.angular_factor.x;
@@ -3671,6 +3697,7 @@ proto.applyTorqueImpulse = function (torqueImpulse) {
 // Continuous force, integrated by the solver every substep until cleared. Adds, not overwrites -
 // multiple calls in the same tick (gravity plus thrust plus wind) all contribute.
 proto.applyForce = function (force) {
+    if (!this.isAwake && (force.x !== 0 || force.y !== 0 || force.z !== 0)) this.wakeUp();
     this.accumulated_force.x += force.x;
     this.accumulated_force.y += force.y;
     this.accumulated_force.z += force.z;
@@ -3678,6 +3705,7 @@ proto.applyForce = function (force) {
 };
 
 proto.applyTorque = function (torque) {
+    if (!this.isAwake && (torque.x !== 0 || torque.y !== 0 || torque.z !== 0)) this.wakeUp();
     this.accumulated_torque.x += torque.x;
     this.accumulated_torque.y += torque.y;
     this.accumulated_torque.z += torque.z;
@@ -6272,20 +6300,13 @@ ActionPhysics.TriTri = TriTri;
 
 
 // ==== src/phases/ConvexTri.js ====
-// Closed-form curved-convex-vs-triangle face contact. A round convex (sphere / cylinder / cone /
-// capsule) resting on a MeshShape triangle otherwise goes through GJK/EPA, which yields a single
-// witness point whose normal degenerates near a triangle edge or the seam between two tiles: the
-// point wanders, kicks the body sideways, and once the convex's reference point crosses to the
-// back of the (zero-thickness, one-sided) triangle no contact is generated at all and the body
-// free-falls forever. This path instead treats the triangle as a one-sided face: the contact
-// normal is the triangle normal oriented toward the side the convex's CENTRE is on, and a contact
-// is kept while the convex's deepest point is anywhere from SEPARATION_LIMIT in front of that
-// face to PENETRATION_LIMIT behind it - so a convex that dipped below the plane is pushed back
-// out along the face normal rather than lost.
+// Closed-form curved-convex-vs-triangle face contact, replacing GJK/EPA's single witness point,
+// whose normal degenerates near a triangle edge or a tile seam. The triangle is treated as a
+// one-sided face: the normal is the triangle normal oriented toward the convex's centre, and a
+// contact is kept from SEPARATION_LIMIT in front of the face to PENETRATION_LIMIT behind it.
 //
-// Flat-faced convexes (BoxShape, ConvexShape) are deliberately NOT handled here: GJK/EPA already
-// gives them a stable face contact against a triangle, and routing them through this
-// deepest-point path regresses a rotated box landing across a seam.
+// Flat-faced convexes (BoxShape, ConvexShape) are not handled here - GJK/EPA already gives them a
+// stable face contact, and this deepest-point path regresses a rotated box landing across a seam.
 const ConvexTri = {};
 
 ConvexTri._isCurvedConvex = function (shape) {
@@ -6306,6 +6327,13 @@ ConvexTri.MIN_CULL_LIMIT = 0.05;    // floor on the margin-derived 'separated' c
 ConvexTri.EDGE_SLACK = 0.06;        // how far outside the triangle a support point may project and still count
 ConvexTri.AREA_EPSILON = 1e-12;
 ConvexTri.DEDUPE_DIST_SQ = 1e-6;
+// Support probes tilted off the contact normal, spaced evenly around it. Four gives a flat-based
+// convex a square patch; the tilt is how far off-normal each probe leans.
+ConvexTri.PROBE_COUNT = 4;
+ConvexTri.PROBE_TILT = 0.5;
+// cos/sin of the probe angles scaled by PROBE_TILT, written out because build.js rejects Math.sin/cos.
+ConvexTri._PROBE_U = [ConvexTri.PROBE_TILT, 0, -ConvexTri.PROBE_TILT, 0];
+ConvexTri._PROBE_V = [0, ConvexTri.PROBE_TILT, 0, -ConvexTri.PROBE_TILT];
 
 // Unit winding normal of a world-space triangle into `out`. Returns false if degenerate.
 ConvexTri._normalInto = function (out, a, b, c) {
@@ -6348,12 +6376,10 @@ ConvexTri._pointInTri = function (hx, hy, hz, t0, t1, t2, tn, slack) {
 // out: array to push ContactDetails into (pooled via nextContact()). Returns out on success (may
 // be empty, which still vetoes the GJK/EPA fallback), or null to fall through to GJK/EPA.
 //
-// hintNormalBToA (optional): the established contact normal (B -> A) from an existing manifold
-// point. When given, the reference face is oriented to match it instead of the convex-centre
-// heuristic. GeometryRefresh passes this every substep: a settling convex's centroid can creep to
-// within a hair of the (heightfield) triangle plane, at which point the centre heuristic flips the
-// normal and the contact shoves the body through. The established normal doesn't drift, so the
-// re-clip stays stable.
+// hintNormalBToA (optional): established contact normal (B -> A) from an existing manifold point,
+// used to orient the reference face instead of the convex-centre heuristic. GeometryRefresh passes
+// it every substep - a settling convex's centroid can creep to within a hair of the triangle plane,
+// where the centre heuristic flips the normal and shoves the body through.
 // margin (optional): the pair's speculative margin. Only tightens the 'separated' verdict.
 ConvexTri.test = function (placedA, placedB, out, nextContact, hintNormalBToA, margin) {
     const aIsTri = placedA.shape instanceof TriangleShape;
@@ -6362,12 +6388,9 @@ ConvexTri.test = function (placedA, placedB, out, nextContact, hintNormalBToA, m
     const tri = triPlaced.shape;
     const t0 = tri.a, t1 = tri.b, t2 = tri.c;
 
-    // refN = the triangle's normal, oriented toward the convex's resting/free side. When an
-    // established contact normal is supplied, match it (contact.normal is B -> A, and the emitted
-    // normal below is -refN when the triangle is A / +refN when the triangle is B - so refN points
-    // opposite the B->A normal on the A-triangle branch). Otherwise fall back to the convex-centre
-    // heuristic: a convex approaching from clearly outside has its centre a full radius off the
-    // plane, so the sign is unambiguous at first contact (which is the only place this branch runs).
+    // refN = the triangle normal oriented toward the convex. Match an established contact normal
+    // when one is supplied; otherwise use the convex's centre, which is unambiguous at first
+    // contact - the only place that branch runs.
     const refN = ConvexTri._refN;
     if (!ConvexTri._normalInto(refN, t0, t1, t2)) return null;
     if (hintNormalBToA) {
@@ -6381,20 +6404,13 @@ ConvexTri.test = function (placedA, placedB, out, nextContact, hintNormalBToA, m
         }
     }
 
-    // Diagnostics read by GeometryRefresh's fast per-triangle re-clip to decide whether the stored
-    // triangle is still trustworthy. lastDeepestInTriangle: the true deepest point projects inside
-    // the triangle (+ EDGE_SLACK). lastDeepestOutsideDist: how far outside it projects, in metres
-    // (0 when inside). A settled body jittering at a tile edge keeps this tiny; a body that has
-    // drifted onto a neighbour tile pushes it past a fraction of the tile size, at which point the
-    // caller must re-expand to pick up the new supporting triangle.
+    // Read by GeometryRefresh's fast re-clip to decide whether a stored triangle is still the one
+    // carrying the body. lastDeepestOutsideDist is how far outside the triangle the deepest point
+    // projects, in metres (0 when inside).
     ConvexTri.lastDeepestInTriangle = false;
     ConvexTri.lastDeepestOutsideDist = Infinity;
-    // 'contact' | 'separated' | 'maybe'. 'separated' means the convex provably has no contact with
-    // this triangle (its nearest point toward the plane is clear of the speculative band), so the
-    // caller can skip the GJK/EPA fallback entirely - that fallback would just re-derive the same
-    // separation at ~100x the cost, and for a prop resting on one tile of a big compound ground
-    // that is the overwhelmingly common case. 'maybe' means no face contact but an edge/vertex hit
-    // is still possible - fall through to GJK/EPA.
+    // 'separated' = provably no contact, caller may skip the GJK/EPA fallback. 'maybe' = no face
+    // contact but an edge/vertex hit is still possible.
     ConvexTri.lastVerdict = 'maybe';
 
     // Deepest convex point toward the triangle = support along -refN.
@@ -6404,7 +6420,7 @@ ConvexTri.test = function (placedA, placedB, out, nextContact, hintNormalBToA, m
     const scratchDir = ConvexTri._scratchDir;
 
     // PairTest.step discards contacts past the pair's margin, so past that the GJK/EPA fallback is
-    // wasted work. Marginless callers keep the old flat SEPARATION_LIMIT.
+    // wasted work. Marginless callers keep the flat SEPARATION_LIMIT.
     const cullLimit = (margin === undefined || margin === null)
         ? ConvexTri.SEPARATION_LIMIT
         : Math.min(ConvexTri.SEPARATION_LIMIT, Math.max(margin, ConvexTri.MIN_CULL_LIMIT));
@@ -6413,35 +6429,43 @@ ConvexTri.test = function (placedA, placedB, out, nextContact, hintNormalBToA, m
     MinkowskiSupport.supportOfInto(dp, cvxPlaced, invRot, probeDir, scratchDir);
     const gap = (dp.x - t0.x) * refN.x + (dp.y - t0.y) * refN.y + (dp.z - t0.z) * refN.z;
     if (gap > ConvexTri.SEPARATION_LIMIT) {
-        // Every point of the convex is at least `gap` in front of the triangle's plane, so it
-        // cannot be touching the triangle (which lies in that plane). Definitively separated.
-        // Not cullLimit: this branch also gates whether the pair gets a speculative face contact,
-        // so narrowing it changes trajectories.
+        // SEPARATION_LIMIT, not cullLimit: this branch also gates whether the pair gets a
+        // speculative face contact, so narrowing it changes trajectories.
         ConvexTri.lastVerdict = 'separated';
         return null;
     }
     if (gap < -ConvexTri.PENETRATION_LIMIT) return null; // deep behind - let GJK/EPA judge
 
-    // Gather up to four candidate points: the true deepest point, plus a probe tilted toward each
-    // triangle edge midpoint. The tilted probes give a flat-faced or side-lying convex a
-    // multi-point manifold (no rocking on a single point); a sphere/curved rest collapses them
-    // back to one after dedupe.
+    // The deepest point, plus tilted probes giving a flat-based or side-lying convex a multi-point
+    // patch. Probe directions come from the convex's own frame, not the triangle's, so a prop
+    // straddling a seam gets the same set from every triangle under it.
+    //
+    // A sphere takes the deepest point alone: it touches a plane at one point, and a probe tilted
+    // PROBE_TILT off the normal lands r*(1-cos(TILT)) off the plane - far past DEDUPE_DIST_SQ, so
+    // the probes would survive as a phantom flat base.
     const cand = ConvexTri._cand;
     let nCand = 0;
     cand[nCand++].copy(dp);
 
-    const centroidX = (t0.x + t1.x + t2.x) / 3, centroidY = (t0.y + t1.y + t2.y) / 3, centroidZ = (t0.z + t1.z + t2.z) / 3;
-    const edgeMid = ConvexTri._edgeMid;
-    for (let e = 0; e < 3; e++) {
-        const va = e === 0 ? t0 : (e === 1 ? t1 : t2);
-        const vb = e === 0 ? t1 : (e === 1 ? t2 : t0);
-        edgeMid.set((va.x + vb.x) * 0.5 - centroidX, (va.y + vb.y) * 0.5 - centroidY, (va.z + vb.z) * 0.5 - centroidZ);
-        const lat = edgeMid.x * refN.x + edgeMid.y * refN.y + edgeMid.z * refN.z; // strip any normal component
-        edgeMid.set(edgeMid.x - lat * refN.x, edgeMid.y - lat * refN.y, edgeMid.z - lat * refN.z);
-        const el = Math.sqrt(edgeMid.x * edgeMid.x + edgeMid.y * edgeMid.y + edgeMid.z * edgeMid.z);
-        if (el < 1e-9) continue;
-        const s = 0.5 / el;
-        probeDir.set(-refN.x + edgeMid.x * s, -refN.y + edgeMid.y * s, -refN.z + edgeMid.z * s);
+    // Tangent basis for refN, chosen deterministically from refN alone so it does not rotate with
+    // the body or the triangle.
+    const tanU = ConvexTri._tanU, tanV = ConvexTri._tanV;
+    const ax = Math.abs(refN.x), ay = Math.abs(refN.y), az = Math.abs(refN.z);
+    if (ax <= ay && ax <= az) tanU.set(0, -refN.z, refN.y);
+    else if (ay <= az) tanU.set(-refN.z, 0, refN.x);
+    else tanU.set(-refN.y, refN.x, 0);
+    const tl = Math.sqrt(tanU.x * tanU.x + tanU.y * tanU.y + tanU.z * tanU.z) || 1;
+    tanU.scaleInPlace(1 / tl);
+    tanV.set(refN.y * tanU.z - refN.z * tanU.y,
+        refN.z * tanU.x - refN.x * tanU.z,
+        refN.x * tanU.y - refN.y * tanU.x);
+
+    const probeCount = (cvxPlaced.shape instanceof SphereShape) ? 0 : ConvexTri.PROBE_COUNT;
+    for (let e = 0; e < probeCount; e++) {
+        const cu = ConvexTri._PROBE_U[e], cv = ConvexTri._PROBE_V[e];
+        probeDir.set(-refN.x + tanU.x * cu + tanV.x * cv,
+            -refN.y + tanU.y * cu + tanV.y * cv,
+            -refN.z + tanU.z * cu + tanV.z * cv);
         const pl = Math.sqrt(probeDir.x * probeDir.x + probeDir.y * probeDir.y + probeDir.z * probeDir.z) || 1;
         probeDir.scaleInPlace(1 / pl);
         MinkowskiSupport.supportOfInto(cand[nCand], cvxPlaced, invRot, probeDir, scratchDir);
@@ -6501,14 +6525,9 @@ ConvexTri.test = function (placedA, placedB, out, nextContact, hintNormalBToA, m
     }
 
     if (emitted === 0) {
-        // No face contact. Decide whether the convex is nonetheless provably clear of the
-        // triangle so the caller can skip GJK/EPA. The nearest triangle feature to the convex's
-        // deepest point is an edge (the point projects outside), so a lower bound on the
-        // convex-to-triangle distance is hypot(along-plane gap, how-far-outside). When that bound
-        // clears the speculative band, it is 'separated'; otherwise an edge/vertex contact is
-        // still possible and we leave the verdict at 'maybe' for the GJK/EPA fallback. This is the
-        // common case for a prop resting on one tile of a big compound ground: its AABB overlaps
-        // the neighbouring coplanar tiles (gap ~ 0) but it sits laterally outside them.
+        // The deepest point projects outside the triangle, so its nearest feature is an edge and
+        // hypot(along-plane gap, how-far-outside) lower-bounds the distance. Clearing the
+        // speculative band by that bound proves separation and lets the caller skip GJK/EPA.
         const outside = ConvexTri.lastDeepestOutsideDist;
         const along = gap > 0 ? gap : 0;
         if (isFinite(outside) && Math.sqrt(along * along + outside * outside) > cullLimit) {
@@ -6525,17 +6544,255 @@ ConvexTri._scratchDir = new Vector3();
 ConvexTri._invRot = new Quaternion();
 ConvexTri._dp = new Vector3();
 ConvexTri._edgeMid = new Vector3();
-ConvexTri._cand = [new Vector3(), new Vector3(), new Vector3(), new Vector3()];
+ConvexTri._tanU = new Vector3();
+ConvexTri._tanV = new Vector3();
+// One slot for the deepest point plus one per probe.
+ConvexTri._cand = [];
+for (var _ci = 0; _ci <= ConvexTri.PROBE_COUNT; _ci++) ConvexTri._cand.push(new Vector3());
 ConvexTri.lastDeepestInTriangle = false;
 ConvexTri.lastDeepestOutsideDist = Infinity;
 ConvexTri._lastOutside = 0;
 ConvexTri.lastVerdict = 'maybe';
-// Fast re-clip may trust a stored triangle while the convex's deepest point sits at most this far
-// (metres) outside it - covers settled-body jitter and a shallow overhang, but not a real slide
-// onto the neighbouring tile.
+// Metres the deepest point may sit outside a stored triangle and still let the fast re-clip trust
+// it: covers jitter and a shallow overhang, not a slide onto the neighbouring tile.
 ConvexTri.REFRESH_DRIFT_TOLERANCE = 0.35;
 
 ActionPhysics.ConvexTri = ConvexTri;
+
+
+// ==== src/phases/BoxTriFace.js ====
+// Closed-form contact for a BoxShape face lying flat on a mesh triangle.
+//
+// GJK/EPA reports one witness point per (box, triangle) pair. A mesh quad is two triangles and a
+// resting box usually overlaps both, so each side contributes one wandering point, the manifold
+// flickers between one and two points, and every dropped point loses its warm-start lambda - the
+// box rocks and gains energy instead of settling.
+//
+// When the box face is near-parallel to the triangle plane, the contact is instead the box face
+// polygon clipped to the triangle: a stable 3-6 point patch. Anything else (box on edge, on a
+// corner, or tilted past PARALLEL_COS_LIMIT) returns null and falls through to GJK/EPA, which is
+// correct for those - they are single-feature contacts.
+const BoxTriFace = {};
+
+BoxTriFace.applies = function (placedA, placedB) {
+    const aTri = placedA.shape instanceof TriangleShape;
+    const bTri = placedB.shape instanceof TriangleShape;
+    if (aTri === bTri) return false; // need exactly one triangle
+    // Strictly a BoxShape on the other side. A CompoundShape is not itself convex - its children are
+    // dispatched individually by the midphase - so it must never reach the support-map code here.
+    const other = aTri ? placedB.shape : placedA.shape;
+    return other instanceof BoxShape;
+};
+
+// cos of the angle between the box face normal and the triangle normal, above which they count as
+// parallel. 0.90 ~ 26 degrees: past that the box is on an edge, not a face. Wide on purpose - a
+// tighter limit lets a one-tick landing wobble drop the patch, and the single GJK point that
+// replaces it torques the box further over, so the dot never recovers.
+BoxTriFace.PARALLEL_COS_LIMIT = 0.90;
+// Same speculative band as ConvexTri, so the two paths report contacts over the same range.
+BoxTriFace.SEPARATION_LIMIT = 0.5;
+BoxTriFace.PENETRATION_LIMIT = 1.0;
+// A clipped vertex this far outside the triangle plane's band is dropped.
+BoxTriFace.EDGE_SLACK = 0.02;
+BoxTriFace.DEDUPE_DIST_SQ = 1e-8;
+// Box face area must be within this multiple of the triangle's area for the face patch to apply.
+BoxTriFace.MAX_FACE_AREA_RATIO = 4;
+
+BoxTriFace.lastVerdict = 'maybe';
+// Fraction of the box face still over this triangle after clipping (1 = entirely inside). Read by
+// GeometryRefresh's fast re-clip to tell whether the stored triangle still carries the box.
+BoxTriFace.lastFaceCoverage = 0;
+BoxTriFace.lastBestDot = 0;
+
+// Returns `out` when it produced a face patch (vetoing GJK/EPA), else null to fall through.
+// hintNormalBToA: established manifold normal, used to orient the reference face (same contract as
+// ConvexTri.test - the box-centre heuristic flips once a settling box's centre nears the plane).
+BoxTriFace.test = function (placedA, placedB, out, nextContact, hintNormalBToA) {
+    BoxTriFace.lastVerdict = 'maybe';
+    BoxTriFace.lastFaceCoverage = 0;
+BoxTriFace.lastBestDot = 0;
+    const aIsTri = placedA.shape instanceof TriangleShape;
+    const triPlaced = aIsTri ? placedA : placedB;
+    const boxPlaced = aIsTri ? placedB : placedA;
+    const tri = triPlaced.shape;
+    const t0 = tri.a, t1 = tri.b, t2 = tri.c;
+
+    const refN = BoxTriFace._refN;
+    if (!ConvexTri._normalInto(refN, t0, t1, t2)) return null;
+    if (hintNormalBToA) {
+        const d = refN.x * hintNormalBToA.x + refN.y * hintNormalBToA.y + refN.z * hintNormalBToA.z;
+        if ((aIsTri && d > 0) || (!aIsTri && d < 0)) refN.scaleInPlace(-1);
+    } else {
+        const c = boxPlaced.position;
+        if ((c.x - t0.x) * refN.x + (c.y - t0.y) * refN.y + (c.z - t0.z) * refN.z < 0) refN.scaleInPlace(-1);
+    }
+
+    // Pick the box face whose outward normal is most opposed to refN - the face pointing at the
+    // triangle. Bail unless it is near parallel; a tilted box is a single-feature contact.
+    const rot = boxPlaced.rotation;
+    const axis = BoxTriFace._axis;
+    let bestAxis = -1, bestDot = 0, bestSign = 1;
+    for (let a = 0; a < 3; a++) {
+        axis.set(a === 0 ? 1 : 0, a === 1 ? 1 : 0, a === 2 ? 1 : 0);
+        rot.transformVectorInPlace(axis);
+        const d = axis.x * refN.x + axis.y * refN.y + axis.z * refN.z;
+        const ad = d < 0 ? -d : d;
+        if (ad > bestDot) { bestDot = ad; bestAxis = a; bestSign = d < 0 ? 1 : -1; }
+    }
+    BoxTriFace.lastBestDot = bestDot; // diagnostic: how parallel the chosen face was
+    if (bestDot < BoxTriFace.PARALLEL_COS_LIMIT) return null; // not lying flat - let GJK/EPA judge
+
+    // Build the face's four world-space corners: centre + sign*halfExtent along the face axis, then
+    // +/- the other two half-extents.
+    const shape = boxPlaced.shape;
+    const hx = BoxTriFace._hx;
+    hx[0] = shape.halfWidth; hx[1] = shape.halfHeight; hx[2] = shape.halfDepth;
+
+    // The patch is the BOX face clipped to the triangle, so it is only the right contact when the
+    // box face is the smaller feature. A large static box (a ground slab) under a small mesh
+    // triangle is the reverse case: the triangle lies entirely within the face, clipping yields the
+    // triangle back, and the resulting patch fights the mesh's own contacts. Fall through to GJK/EPA
+    // whenever the box face is not comfortably smaller than the triangle.
+    if (!BoxTriFace._boxFaceIsSmaller(hx, bestAxis, t0, t1, t2)) return null;
+
+    const u = BoxTriFace._u, v = BoxTriFace._v, nAxis = BoxTriFace._nAxis;
+    const iu = (bestAxis + 1) % 3, iv = (bestAxis + 2) % 3;
+    nAxis.set(bestAxis === 0 ? 1 : 0, bestAxis === 1 ? 1 : 0, bestAxis === 2 ? 1 : 0);
+    u.set(iu === 0 ? 1 : 0, iu === 1 ? 1 : 0, iu === 2 ? 1 : 0);
+    v.set(iv === 0 ? 1 : 0, iv === 1 ? 1 : 0, iv === 2 ? 1 : 0);
+    rot.transformVectorInPlace(nAxis);
+    rot.transformVectorInPlace(u);
+    rot.transformVectorInPlace(v);
+
+    const cx = boxPlaced.position.x + nAxis.x * hx[bestAxis] * bestSign;
+    const cy = boxPlaced.position.y + nAxis.y * hx[bestAxis] * bestSign;
+    const cz = boxPlaced.position.z + nAxis.z * hx[bestAxis] * bestSign;
+    const eu = hx[iu], ev = hx[iv];
+
+    const poly = BoxTriFace._poly;
+    let n = 0;
+    for (let su = -1; su <= 1; su += 2) {
+        for (let sv = -1; sv <= 1; sv += 2) {
+            // wind the quad consistently: (-,-), (+,-), (+,+), (-,+)
+            const s2 = su < 0 ? sv : -sv;
+            const p = poly[n++];
+            p.set(cx + u.x * eu * su + v.x * ev * s2,
+                cy + u.y * eu * su + v.y * ev * s2,
+                cz + u.z * eu * su + v.z * ev * s2);
+        }
+    }
+
+    // Clip the face quad against the triangle's three edge half-planes, in the triangle's plane.
+    let src = poly, srcN = 4, dst = BoxTriFace._clip, dstN = 0;
+    const eA = BoxTriFace._eA, eN = BoxTriFace._eN;
+    const triVerts = [t0, t1, t2];
+    for (let e = 0; e < 3; e++) {
+        const va = triVerts[e], vb = triVerts[(e + 1) % 3];
+        eA.set(vb.x - va.x, vb.y - va.y, vb.z - va.z);
+        // Inward half-plane normal: edge x faceNormal, oriented toward the opposite vertex.
+        eN.set(eA.y * refN.z - eA.z * refN.y, eA.z * refN.x - eA.x * refN.z, eA.x * refN.y - eA.y * refN.x);
+        const vc = triVerts[(e + 2) % 3];
+        if ((vc.x - va.x) * eN.x + (vc.y - va.y) * eN.y + (vc.z - va.z) * eN.z < 0) eN.scaleInPlace(-1);
+        const inv = 1 / (Math.sqrt(eN.x * eN.x + eN.y * eN.y + eN.z * eN.z) || 1);
+        eN.scaleInPlace(inv);
+
+        dstN = 0;
+        for (let i = 0; i < srcN; i++) {
+            const cur = src[i], nxt = src[(i + 1) % srcN];
+            const dCur = (cur.x - va.x) * eN.x + (cur.y - va.y) * eN.y + (cur.z - va.z) * eN.z + BoxTriFace.EDGE_SLACK;
+            const dNxt = (nxt.x - va.x) * eN.x + (nxt.y - va.y) * eN.y + (nxt.z - va.z) * eN.z + BoxTriFace.EDGE_SLACK;
+            if (dCur >= 0) dst[dstN++].copy(cur);
+            if ((dCur >= 0) !== (dNxt >= 0)) {
+                const tt = dCur / (dCur - dNxt);
+                dst[dstN++].set(cur.x + (nxt.x - cur.x) * tt, cur.y + (nxt.y - cur.y) * tt, cur.z + (nxt.z - cur.z) * tt);
+            }
+        }
+        if (dstN === 0) return null; // face does not overlap this triangle at all
+        const tmp = src; src = dst; srcN = dstN; dst = tmp;
+    }
+    // Coverage = clipped polygon area / full face area, both measured in the triangle's plane.
+    BoxTriFace.lastFaceCoverage = BoxTriFace._polyArea(src, srcN, refN) / (4 * eu * ev);
+
+    // Emit the surviving polygon vertices that are within the speculative band.
+    const cvxIsA = !aIsTri;
+    const normX = cvxIsA ? refN.x : -refN.x;
+    const normY = cvxIsA ? refN.y : -refN.y;
+    const normZ = cvxIsA ? refN.z : -refN.z;
+
+    let emitted = 0;
+    for (let i = 0; i < srcN; i++) {
+        const p = src[i];
+        const g = (p.x - t0.x) * refN.x + (p.y - t0.y) * refN.y + (p.z - t0.z) * refN.z;
+        if (g > BoxTriFace.SEPARATION_LIMIT || g < -BoxTriFace.PENETRATION_LIMIT) continue;
+        const projX = p.x - g * refN.x, projY = p.y - g * refN.y, projZ = p.z - g * refN.z;
+
+        let dup = false;
+        for (let j = 0; j < emitted; j++) {
+            const q = out[out.length - 1 - j];
+            const qa = cvxIsA ? q.pointOnA : q.pointOnB;
+            const dx = qa.x - p.x, dy = qa.y - p.y, dz = qa.z - p.z;
+            if (dx * dx + dy * dy + dz * dz < BoxTriFace.DEDUPE_DIST_SQ) { dup = true; break; }
+        }
+        if (dup) continue;
+
+        const contact = nextContact();
+        if (aIsTri) {
+            contact.pointOnB.set(p.x, p.y, p.z);
+            contact.pointOnA.set(projX, projY, projZ);
+        } else {
+            contact.pointOnA.set(p.x, p.y, p.z);
+            contact.pointOnB.set(projX, projY, projZ);
+        }
+        contact.normal.set(normX, normY, normZ);
+        contact.signedDistance = -g;
+        contact.fromMeshFace = true;
+        contact.setMeshTriangle(t0, t1, t2, triPlaced.bodyCenter, aIsTri);
+        Vector3.addInto(contact.point, contact.pointOnA, contact.pointOnB).scaleInPlace(0.5);
+        out.push(contact);
+        emitted++;
+    }
+
+    if (emitted === 0) return null;
+    return out;
+};
+
+// Area of a planar polygon with the given face normal (fan sum of cross products).
+BoxTriFace._polyArea = function (p, n, nrm) {
+    if (n < 3) return 0;
+    let sx = 0, sy = 0, sz = 0;
+    for (let i = 1; i < n - 1; i++) {
+        const ax = p[i].x - p[0].x, ay = p[i].y - p[0].y, az = p[i].z - p[0].z;
+        const bx = p[i + 1].x - p[0].x, by = p[i + 1].y - p[0].y, bz = p[i + 1].z - p[0].z;
+        sx += ay * bz - az * by; sy += az * bx - ax * bz; sz += ax * by - ay * bx;
+    }
+    return 0.5 * Math.abs(sx * nrm.x + sy * nrm.y + sz * nrm.z);
+};
+
+// Is the box face (the two half-extents perpendicular to `axis`) smaller than the triangle? Compares
+// the face's area against the triangle's; a ground slab under a small mesh triangle fails this.
+BoxTriFace._boxFaceIsSmaller = function (hx, axis, t0, t1, t2) {
+    const faceArea = 4 * hx[(axis + 1) % 3] * hx[(axis + 2) % 3];
+    const ax = t1.x - t0.x, ay = t1.y - t0.y, az = t1.z - t0.z;
+    const bx = t2.x - t0.x, by = t2.y - t0.y, bz = t2.z - t0.z;
+    const cx = ay * bz - az * by, cy = az * bx - ax * bz, cz = ax * by - ay * bx;
+    const triArea = 0.5 * Math.sqrt(cx * cx + cy * cy + cz * cz);
+    return faceArea <= triArea * BoxTriFace.MAX_FACE_AREA_RATIO;
+};
+
+BoxTriFace._refN = new Vector3();
+BoxTriFace._axis = new Vector3();
+BoxTriFace._hx = [0, 0, 0];
+BoxTriFace._u = new Vector3();
+BoxTriFace._v = new Vector3();
+BoxTriFace._nAxis = new Vector3();
+BoxTriFace._eA = new Vector3();
+BoxTriFace._eN = new Vector3();
+// Clip buffers: a quad clipped by three half-planes can reach 7 vertices.
+BoxTriFace._poly = [];
+BoxTriFace._clip = [];
+for (let i = 0; i < 8; i++) { BoxTriFace._poly.push(new Vector3()); BoxTriFace._clip.push(new Vector3()); }
+
+ActionPhysics.BoxTriFace = BoxTriFace;
 
 
 // ==== src/phases/TriPlaneCull.js ====
@@ -6714,6 +6971,13 @@ proto._testPrimitivePair = function (placedA, placedB) {
         if (triResult !== null) return results;
     }
 
+    if (BoxTriFace.applies(placedA, placedB)) {
+        const self = this;
+        // Face patch when the box lies flat on the triangle; null = not a face case, keep going.
+        const bf = BoxTriFace.test(placedA, placedB, results, function () { return self._nextPooledContact(); }, this._ctHintNormal);
+        if (bf !== null) return results;
+    }
+
     if (ConvexTri.applies(placedA, placedB)) {
         const self = this;
         // _ctHintNormal is set per pair by step() from the existing manifold, null on first contact.
@@ -6780,23 +7044,17 @@ NarrowPhase._angularCornerSpeed = function (body) {
 // predicted transforms. Geometry only - never adds, removes, or re-matches points.
 var proto = NarrowPhase.prototype;
 
-// Speed-squared below which a body's mesh-face contact geometry is left at tick-start values for
-// the substeps (same as the non-mesh compound/mesh path already does). Deliberately looser than
-// the solver's rest thresholds: a nearly-settled curved prop jitters a few cm/s across a tile
-// seam every tick, and re-clipping it each substep - only to have the fast path bail to a full
-// re-expansion because its deepest point crossed an edge - is pure cost for geometry that is not
-// meaningfully moving. Within this band the tick-start clip is refreshed once per tick by
-// NarrowPhase.step() anyway.
+// Speed-squared below which mesh-face contact geometry stays at tick-start values for the substeps.
+// Looser than the solver's rest thresholds: a nearly-settled curved prop jitters a few cm/s across a
+// tile seam, and re-clipping it each substep only to bail to a full re-expansion is pure cost.
+// NarrowPhase.step() still refreshes the tick-start clip once per tick.
 NarrowPhase.REFRESH_REST_LIN_SQ = 0.30 * 0.30;
 NarrowPhase.REFRESH_REST_ANG_SQ = 0.60 * 0.60;
 
 proto.refreshManifoldGeometry = function (manifolds) {
-    // Pooled contacts produced here (via _nextPooledContact / _testPrimitivePair) are all
-    // transient - copied into manifold points or the mesh-refresh accumulator within this call and
-    // never retained. step()'s contacts were already consumed by manifolds.refresh() before the
-    // solver started calling this. So rewind the pool each substep instead of letting _poolIndex
-    // climb monotonically all tick (which forced the pool to grow every tick -> new ContactDetails,
-    // the run's single biggest allocator).
+    // Contacts pooled here are transient - copied into manifold points or the accumulator within
+    // this call - and step()'s were already consumed by manifolds.refresh(). Rewinding each substep
+    // keeps _poolIndex from climbing all tick and growing the pool.
     this._poolIndex = 0;
     this._ctHintNormal = null; // stale from step()'s pair loop; each branch below sets it as needed
     for (const manifold of manifolds.values()) {
@@ -6883,18 +7141,24 @@ proto._allMeshTriTagged = function (manifold) {
     return true;
 };
 
-// Re-clip only the distinct source triangles the manifold's points came from, against the current
-// body transforms. The mesh side is static ground, so its stored world verts are still valid; only
-// the convex has moved. One closed-form test per distinct triangle - no BVH query, no re-expansion,
-// no GJK/EPA fallback on non-contact triangles. Only ConvexTri tags points (meshTriValid), and it
-// only fires for exactly one TriangleShape vs one curved convex, so the non-triangle body IS the
-// convex.
+// Re-clip only the distinct source triangles the manifold's points came from. The mesh side is
+// static ground, so its stored world verts are still valid; only the convex has moved. One
+// closed-form test per triangle - no BVH query, no re-expansion, no GJK/EPA fallback.
 proto._refreshMeshFaceManifoldFast = function (manifold, bodyA, bodyB) {
     const pts = manifold.points;
     const acc = this._meshRefreshAcc || (this._meshRefreshAcc = []);
     acc.length = 0;
 
     const cvx = pts[0].meshTriIsSideA ? bodyB : bodyA;
+    // This calls the closed-form test directly on the body's own shape, so the shape must be one
+    // those tests handle - a CompoundShape passed to a support-map test throws.
+    //
+    // Boxes are excluded: re-clipping only the stored triangles works for a curved convex, which
+    // rests on essentially one triangle, but a box face spans several tiles and the stored set can
+    // miss one that carries it, dropping that support and sinking the box through. Boxes take the
+    // slow route, which re-expands and finds every triangle under the face.
+    const isBox = cvx.shape instanceof BoxShape;
+    if (isBox || !ConvexTri._isCurvedConvex(cvx.shape)) return false;
     const cvxSide = { shape: cvx.shape, position: cvx.position, rotation: cvx.rotation };
     const triSide = this._meshRefreshTri || (this._meshRefreshTri = {
         shape: new TriangleShape(new Vector3(), new Vector3(), new Vector3()),
@@ -6916,22 +7180,20 @@ proto._refreshMeshFaceManifoldFast = function (manifold, bodyA, bodyB) {
         triSide.shape.c.copy(src.meshTriC);
         triSide.bodyCenter.copy(src.meshTriBodyCenter);
 
-        // Direct ConvexTri call (we know that's what tagged the point) with the established normal
-        // as the orientation hint - the convex-centre heuristic is unsafe for a nearly-settled
-        // body. It pushes pooled contacts into `fresh`; those stay valid for the rest of this tick
-        // (the pool isn't recycled until the next step()), so push them straight into `acc` - the
-        // one intervening ConvexTri.test call reuses `fresh` but not the contacts already in it.
+        // Established normal as the orientation hint - the convex-centre heuristic is unsafe for a
+        // nearly-settled body. Pooled contacts stay valid for the rest of the tick, so they go
+        // straight into `acc`; the next ConvexTri.test reuses `fresh` but not what it already holds.
         const self = this;
         const nc = function () { return self._nextPooledContact(); };
         const fresh = this._meshRefreshFresh || (this._meshRefreshFresh = []);
         fresh.length = 0;
-        const r = src.meshTriIsSideA
-            ? ConvexTri.test(triSide, cvxSide, fresh, nc, src.normal)
-            : ConvexTri.test(cvxSide, triSide, fresh, nc, src.normal);
-        // The stored triangle only stays trustworthy while the convex's true deepest point is
-        // still over it. Once it projects outside (body settling onto a neighbour tile), ConvexTri
-        // keeps only shallow edge-probe contacts - enough to look non-empty but missing the real
-        // depth, which starves then over-corrects the solver. Bail to the full re-expansion.
+        const a = src.meshTriIsSideA ? triSide : cvxSide;
+        const b = src.meshTriIsSideA ? cvxSide : triSide;
+        const r = ConvexTri.test(a, b, fresh, nc, src.normal);
+        // The stored triangle only stays trustworthy while the body's contact feature is still over
+        // it. Once it moves off (settling onto a neighbour tile) the re-clip returns nothing, or for
+        // ConvexTri only shallow edge probes - enough to look non-empty but missing the real depth,
+        // which starves then over-corrects the solver. Bail to the full re-expansion.
         if (!r || !ConvexTri.lastDeepestInTriangle) return false;
         for (let c = 0; c < r.length; c++) if (r[c].fromMeshFace) acc.push(r[c]);
     }
@@ -6975,7 +7237,8 @@ proto._refreshMeshFaceManifold = function (manifold, bodyA, bodyB) {
             const pa = sidesA[i], pb = sidesB[j];
             const pc = this._pairResultScratch;
             pc.length = 0;
-            if (ConvexTri.applies(pa, pb)) ConvexTri.test(pa, pb, pc, nc, this._ctHintNormal);
+            if (BoxTriFace.applies(pa, pb)) BoxTriFace.test(pa, pb, pc, nc, this._ctHintNormal);
+            else if (ConvexTri.applies(pa, pb)) ConvexTri.test(pa, pb, pc, nc, this._ctHintNormal);
             else if (TriTri.applies(pa, pb)) TriTri.test(pa, pb, pc, nc);
             else continue;
             for (let c = 0; c < pc.length; c++) if (pc[c].fromMeshFace) {
@@ -7053,28 +7316,64 @@ class Solver {
     }
 
     // Zeroes the velocity of a body whose sustained motion over the last REST_WINDOW ticks is below
-    // the rest thresholds, from a per-body ring buffer of recent transforms. See NOTES.md.
+    // the rest thresholds, from a per-body ring buffer of recent transforms. Once a body has stayed
+    // that quiet for REST_PIN_STREAK consecutive ticks it is also transform-pinned: each tick's
+    // residual drift is reverted to the previous sampled pose. The per-point Gauss-Seidel contact
+    // solve leaks a little tangential drift every substep for non-box shapes (box patches are already
+    // centroid-solved, see VelocitySolve.js), so a "settled" cylinder/cone/sphere slowly walks across
+    // its support with its reported velocity reading zero. The streak gate keeps this off any body
+    // that is only briefly quiet - a rider settling onto a carrier, a shape between bounces - so only
+    // a genuinely parked body gets pinned, and a sleeping body then matches a never-slept one exactly.
+    // See NOTES.md.
     _reconcileRestVelocity(bodies, dt) {
         const win = REST_WINDOW;
         for (let i = 0; i < bodies.length; i++) {
             const b = bodies[i];
-            if (b.bodyType !== RigidBody.DYNAMIC) continue;
+            if (b.bodyType !== RigidBody.DYNAMIC || !b.isAwake) continue;
             let r = this._restRing.get(b.id);
             if (!r) {
-                r = { pos: [], rot: [], head: 0, count: 0 };
+                r = { pos: [], rot: [], head: 0, count: 0, quietStreak: 0,
+                      pinPos: new Vector3(), pinRot: new Quaternion(), pinned: false };
                 for (let k = 0; k < win; k++) { r.pos.push(new Vector3()); r.rot.push(new Quaternion()); }
                 this._restRing.set(b.id, r);
             }
 
             if (r.count === win) {
-                // Oldest sample is the one about to be overwritten at head.
+                // Oldest sample is the one about to be overwritten at head; newest was written last tick.
                 const oldPos = r.pos[r.head], oldRot = r.rot[r.head];
                 const span = win * dt;
                 const ndx = b.position.x - oldPos.x, ndy = b.position.y - oldPos.y, ndz = b.position.z - oldPos.z;
                 const windowedLinSpeed = Math.sqrt(ndx * ndx + ndy * ndy + ndz * ndz) / span;
-                if (windowedLinSpeed < REST_LINEAR_SPEED) b.linear_velocity.set(0, 0, 0);
+                const linQuiet = windowedLinSpeed < REST_LINEAR_SPEED;
                 Solver._deriveAngularVelocity(this._tmpDispA, oldRot, b.rotation, span);
-                if (this._tmpDispA.length() < REST_ANGULAR_SPEED) b.angular_velocity.set(0, 0, 0);
+                const angQuiet = this._tmpDispA.length() < REST_ANGULAR_SPEED;
+
+                if (linQuiet) b.linear_velocity.set(0, 0, 0);
+                if (angQuiet) b.angular_velocity.set(0, 0, 0);
+
+                const disturbed = b._restDisturbed;
+                b._restDisturbed = false;
+                if (disturbed) { r.quietStreak = 0; r.pinned = false; }
+
+                if (linQuiet && angQuiet && !disturbed) {
+                    r.quietStreak++;
+                    if (r.quietStreak >= REST_PIN_STREAK) {
+                        if (!r.pinned) {
+                            // First pinned tick: capture the pose to hold. Use the oldest ring sample
+                            // (REST_WINDOW ticks back) - it predates most of the drift accumulated
+                            // during this quiet stretch, so holding it cancels the walk rather than
+                            // freezing wherever the walk had reached.
+                            r.pinPos.copy(oldPos);
+                            r.pinRot.copy(oldRot);
+                            r.pinned = true;
+                        }
+                        b.position.copy(r.pinPos);
+                        b.rotation.copy(r.pinRot);
+                    }
+                } else {
+                    r.quietStreak = 0;
+                    r.pinned = false;
+                }
             } else {
                 r.count++;
             }
@@ -7089,10 +7388,42 @@ class Solver {
 
         if (refresh) refresh(manifolds);
 
+        this._markRestDisturbances(manifolds);
         this._resetLambdas(manifolds);
         this._solvePositions(manifolds, constraints, h);
         this._deriveVelocities(bodies, h);
         this._solveContactVelocities(manifolds, gravity, h);
+    }
+
+    // Flags a dynamic body as disturbed when it shares a touching manifold with an externally-driven
+    // mover (see _bodyIsMoving). _reconcileRestVelocity reads the flag to break the body's rest pin
+    // the same tick it is pushed, rather than waiting out the trailing window while the pin holds the
+    // push out (which reads as an "unpushable" resting object).
+    _markRestDisturbances(manifolds) {
+        for (const manifold of manifolds.values()) {
+            const a = manifold.bodyA, b = manifold.bodyB;
+            let touching = false;
+            for (let i = 0; i < manifold.points.length; i++) {
+                if (manifold.points[i].signedDistance >= -REST_TOUCH_BAND) { touching = true; break; }
+            }
+            if (!touching) continue;
+            if (a.bodyType === RigidBody.DYNAMIC && Solver._bodyIsMoving(b)) a._restDisturbed = true;
+            if (b.bodyType === RigidBody.DYNAMIC && Solver._bodyIsMoving(a)) b._restDisturbed = true;
+        }
+    }
+
+    // Is `body` an externally-driven mover whose contact should break a resting neighbour's pin? A
+    // moving kinematic (platform), or a character controller's velocity-driven ghost body (dynamic in
+    // type but commanded every tick, flagged isKinematicCharacter), both qualify while actually
+    // moving. A plain dynamic body does NOT: a still-settling pile carries residual velocity that must
+    // not chatter its neighbours' pins, and a real dynamic-on-dynamic impact wakes and unpins through
+    // the ordinary sleep/streak path.
+    static _bodyIsMoving(body) {
+        const driven = body.bodyType === RigidBody.KINEMATIC || body.isKinematicCharacter === true;
+        if (!driven) return false;
+        const lv = body.linear_velocity, av = body.angular_velocity;
+        return lv.x * lv.x + lv.y * lv.y + lv.z * lv.z > REST_LINEAR_SPEED * REST_LINEAR_SPEED ||
+            av.x * av.x + av.y * av.y + av.z * av.z > REST_ANGULAR_SPEED * REST_ANGULAR_SPEED;
     }
 
     _resetLambdas(manifolds) {
@@ -7118,8 +7449,22 @@ class Solver {
         }
     }
 
+    // A contact can only do work if at least one of its bodies is free to move: an awake dynamic
+    // body. Two static bodies, or a sleeping body against a static one, form an inert manifold - and
+    // solving it anyway lets sub-micron narrowphase drift accumulate into the sleeping body's
+    // resting-surface penetration, which then discharges as a position pop when it wakes. A sleeping
+    // body against an AWAKE dynamic one is not inert here, but the island manager has already woken
+    // it this tick (a touching contact with a restless neighbour force-wakes), so that case does not
+    // actually reach the solver with one side still asleep.
+    static _manifoldIsInert(bodyA, bodyB) {
+        const aFree = bodyA.bodyType === RigidBody.DYNAMIC && bodyA.isAwake;
+        const bFree = bodyB.bodyType === RigidBody.DYNAMIC && bodyB.isAwake;
+        return !aFree && !bFree;
+    }
+
     _solveManifold(manifold, h) {
         const bodyA = manifold.bodyA, bodyB = manifold.bodyB;
+        if (Solver._manifoldIsInert(bodyA, bodyB)) return;
         const n = manifold.points.length;
         if (n <= 1) {
             if (n === 1) this._solvePoint(manifold.points[0], bodyA, bodyB, h);
@@ -7133,6 +7478,7 @@ class Solver {
     _solveContactVelocities(manifolds, gravity, h) {
         for (const manifold of manifolds.values()) {
             const bodyA = manifold.bodyA, bodyB = manifold.bodyB;
+            if (Solver._manifoldIsInert(bodyA, bodyB)) continue;
             // A flat face patch solves once at its centroid; everything else per-point.
             if (!this._boxFacePatchVelocity(manifold, bodyA, bodyB, gravity, h)) {
                 for (let i = 0; i < manifold.points.length; i++) {
@@ -7164,6 +7510,8 @@ Solver.MAX_PENETRATION_PER_SUBSTEP = 0.005;
 var REST_WINDOW = 8;              // ticks in the trailing velocity window
 var REST_LINEAR_SPEED = 0.02;     // units/s windowed speed below which a settled body is zeroed
 var REST_ANGULAR_SPEED = 0.05;    // rad/s windowed speed below which a settled body is zeroed
+var REST_PIN_STREAK = 12;         // consecutive fully-quiet ticks before a body's transform is pinned
+var REST_TOUCH_BAND = 0.005;      // gap (m) within which a manifold point counts as real contact
 
 ActionPhysics.Solver = Solver;
 
@@ -7175,7 +7523,7 @@ var proto = Solver.prototype;
 proto._integrate = function (bodies, gravity, h) {
     for (let i = 0; i < bodies.length; i++) {
         const b = bodies[i];
-        if (b.bodyType !== RigidBody.DYNAMIC) continue;
+        if (b.bodyType !== RigidBody.DYNAMIC || !b.isAwake) continue;
 
         // These snapshots only need to survive within the substep (derived-velocity + restitution
         // read them later this substep, never across substeps), so reuse the per-body slot rather
@@ -7227,7 +7575,7 @@ proto._integrate = function (bodies, gravity, h) {
 proto._deriveVelocities = function (bodies, h) {
     for (let i = 0; i < bodies.length; i++) {
         const b = bodies[i];
-        if (b.bodyType !== RigidBody.DYNAMIC) continue;
+        if (b.bodyType !== RigidBody.DYNAMIC || !b.isAwake) continue;
         const prevPos = this._prevPos.get(b.id);
         const prevRot = this._prevRot.get(b.id);
         const bias = this._biasDelta.get(b.id);
@@ -7764,7 +8112,7 @@ class IslandManager {
                 }
             } else {
                 for (const body of island.members) {
-                    if (!body.isAwake) body.isAwake = true;
+                    if (!body.isAwake) body.wakeUp();
                     body.sleepTimer = 0;
                 }
             }
@@ -8849,6 +9197,11 @@ class World {
         this.narrowphase = narrowphase;
         this.solver = solver;
         this.midphase = new Midphase();
+        this.islandManager = new IslandManager();
+        // When false, the island manager is skipped and every dynamic body is solved every tick -
+        // nothing ever parks. Sleeping is otherwise transparent (a parked body resumes exactly where
+        // it stopped), so this is only for debugging or for a scene that wants to rule sleep out.
+        this.allowSleeping = true;
         this.gravity = new Vector3(0, -9.81, 0);
         this.bodies = [];
         this.constraints = [];
@@ -8899,6 +9252,9 @@ class World {
 
         const pairs = this.broadphase.computePairs();
         const manifolds = this.narrowphase.step(pairs, this.midphase, dt);
+
+        // Decide sleep state before the solver runs; it skips !isAwake dynamic bodies.
+        if (this.allowSleeping) this.islandManager.update(this.bodies, manifolds, this.constraints, dt);
 
         const narrowphase = this.narrowphase;
         this.solver.step(this.bodies, manifolds, this.gravity, dt, function (mans) {

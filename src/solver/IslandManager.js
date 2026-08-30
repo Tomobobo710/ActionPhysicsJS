@@ -104,7 +104,7 @@ class IslandManager {
                 }
             } else {
                 for (const body of island.members) {
-                    if (!body.isAwake) body.isAwake = true;
+                    if (!body.isAwake) body.wakeUp();
                     body.sleepTimer = 0;
                 }
             }

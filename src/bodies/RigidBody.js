@@ -60,6 +60,9 @@ class RigidBody {
         // Sleep state, owned entirely by the sleep manager.
         this.isAwake = true;
         this.sleepTimer = 0;
+        // Set by the solver when a moving body pushes on this one; consumed by the rest-pin logic in
+        // Solver._reconcileRestVelocity to release a pinned body the tick it is disturbed.
+        this._restDisturbed = false;
     }
 
     get is_static() { return this.bodyType === RigidBody.STATIC; }
@@ -87,6 +90,27 @@ class RigidBody {
 
     setGravity(x, y, z) {
         this.gravity = new Vector3(x, y, z);
+        return this;
+    }
+
+    // Park this body: the solver skips it until something wakes it. A sleeping body holds still by
+    // definition, so its velocity is zeroed here. No-op for non-dynamic bodies (they are never awake
+    // in the sleep sense) and for an already-sleeping body.
+    sleep() {
+        if (this.bodyType !== BODY_DYNAMIC || !this.isAwake) return this;
+        this.isAwake = false;
+        this.sleepTimer = 0;
+        this.linear_velocity.set(0, 0, 0);
+        this.angular_velocity.set(0, 0, 0);
+        return this;
+    }
+
+    // Wake this body and restart its sleep countdown. Called by the sleep manager when an island is
+    // disturbed, and by the force/impulse API so a push on a sleeping body takes effect.
+    wakeUp() {
+        if (this.bodyType !== BODY_DYNAMIC) return this;
+        this.isAwake = true;
+        this.sleepTimer = 0;
         return this;
     }
 }

@@ -34,7 +34,7 @@
 	// scenes. An unlisted suite still runs, it just sorts last.
 	var SUITE_ORDER = [
 		'math', 'shapes', 'collision-detection', 'contacts', 'solver', 'stacking',
-		'constraints', 'queries', 'character', 'fps', 'scenes'
+		'compound-floor', 'constraints', 'queries', 'character', 'fps', 'scenes'
 	];
 	var SUITE_NAMES = {
 		math: 'Math',
@@ -43,6 +43,7 @@
 		contacts: 'Contacts',
 		solver: 'Solver',
 		stacking: 'Stacking',
+		'compound-floor': 'Compound Floor',
 		constraints: 'Constraints',
 		queries: 'Queries',
 		character: 'Character',

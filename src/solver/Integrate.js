@@ -4,7 +4,7 @@ var proto = Solver.prototype;
 proto._integrate = function (bodies, gravity, h) {
     for (let i = 0; i < bodies.length; i++) {
         const b = bodies[i];
-        if (b.bodyType !== RigidBody.DYNAMIC) continue;
+        if (b.bodyType !== RigidBody.DYNAMIC || !b.isAwake) continue;
 
         // These snapshots only need to survive within the substep (derived-velocity + restitution
         // read them later this substep, never across substeps), so reuse the per-body slot rather
@@ -56,7 +56,7 @@ proto._integrate = function (bodies, gravity, h) {
 proto._deriveVelocities = function (bodies, h) {
     for (let i = 0; i < bodies.length; i++) {
         const b = bodies[i];
-        if (b.bodyType !== RigidBody.DYNAMIC) continue;
+        if (b.bodyType !== RigidBody.DYNAMIC || !b.isAwake) continue;
         const prevPos = this._prevPos.get(b.id);
         const prevRot = this._prevRot.get(b.id);
         const bias = this._biasDelta.get(b.id);

@@ -44,12 +44,8 @@ console.log(stampLine.replace(/^\/\/\s*/, '=== ') + ' ===');
 // as the primary correctness stress target for box-box: it is pure box-on-box, at scale, with hard
 // asserts (no sink, no rise, exact layer spacing, no drift, no tilt, full rest) rather than soft ones.
 //
-// sleep.js exercises island-based body sleeping (src/solver/IslandManager.js). The manager module is
-// complete but not yet called from the world step, so every sleep test fails. Skipped until that call
-// site lands - fold it back in by removing this entry.
 var SKIP_FILES = {
 	'perf-settle-scene.js': true,
-	'sleep.js': true,
 };
 
 // The suite IS the folder. tests/js/ holds the runner, the renderer, the shared _*.js helpers, and
