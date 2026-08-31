@@ -8,6 +8,7 @@ class ContactManifold {
         this.bodyB = bodyB;
         this.points = []; // ContactDetails[], 0..MAX_POINTS
         this._localAnchors = []; // bodyA-local anchor per point, for next-tick matching
+        this.next_manifold = null; // linked-list view, maintained by ContactManifoldList._relink()
     }
 
     get pointCount() { return this.points.length; }

@@ -157,11 +157,11 @@ proto._solveAngularFriction = function (point, bodyA, bodyB, h) {
 
     const ax = relWx / relWMag, ay = relWy / relWMag, az = relWz / relWMag;
     let wSum = 0;
-    if (bodyA._massInverted > 0) {
+    if (bodyA._mass_inverted > 0) {
         const IA = bodyA._worldInverseInertiaTensor;
         wSum += ax * (IA.e00 * ax + IA.e01 * ay + IA.e02 * az) + ay * (IA.e10 * ax + IA.e11 * ay + IA.e12 * az) + az * (IA.e20 * ax + IA.e21 * ay + IA.e22 * az);
     }
-    if (bodyB._massInverted > 0) {
+    if (bodyB._mass_inverted > 0) {
         const IB = bodyB._worldInverseInertiaTensor;
         wSum += ax * (IB.e00 * ax + IB.e01 * ay + IB.e02 * az) + ay * (IB.e10 * ax + IB.e11 * ay + IB.e12 * az) + az * (IB.e20 * ax + IB.e21 * ay + IB.e22 * az);
     }
@@ -172,14 +172,14 @@ proto._solveAngularFriction = function (point, bodyA, bodyB, h) {
     let j = relWMag / wSum;
     if (j > maxAngImpulse) j = maxAngImpulse;
 
-    if (bodyA._massInverted > 0) {
+    if (bodyA._mass_inverted > 0) {
         const IA = bodyA._worldInverseInertiaTensor;
         const tqx = ax * j, tqy = ay * j, tqz = az * j;
         bodyA.angular_velocity.x += (IA.e00 * tqx + IA.e01 * tqy + IA.e02 * tqz) * bodyA.angular_factor.x;
         bodyA.angular_velocity.y += (IA.e10 * tqx + IA.e11 * tqy + IA.e12 * tqz) * bodyA.angular_factor.y;
         bodyA.angular_velocity.z += (IA.e20 * tqx + IA.e21 * tqy + IA.e22 * tqz) * bodyA.angular_factor.z;
     }
-    if (bodyB._massInverted > 0) {
+    if (bodyB._mass_inverted > 0) {
         const IB = bodyB._worldInverseInertiaTensor;
         const tqx = -ax * j, tqy = -ay * j, tqz = -az * j;
         bodyB.angular_velocity.x += (IB.e00 * tqx + IB.e01 * tqy + IB.e02 * tqz) * bodyB.angular_factor.x;
@@ -243,16 +243,16 @@ proto._contactRelativeNormalVelocityPreGravity = function (point, bodyA, bodyB) 
 // Applies velocity-space impulse j*(dx,dy,dz) at contact offsets rA/rB (A: -j, B: +j).
 proto._applyVelocityImpulse = function (bodyA, bodyB, rA, rB, dx, dy, dz, j) {
     const px = dx * j, py = dy * j, pz = dz * j;
-    if (bodyA._massInverted > 0) {
-        bodyA.linear_velocity.x -= px * bodyA._massInverted * bodyA.linear_factor.x;
-        bodyA.linear_velocity.y -= py * bodyA._massInverted * bodyA.linear_factor.y;
-        bodyA.linear_velocity.z -= pz * bodyA._massInverted * bodyA.linear_factor.z;
+    if (bodyA._mass_inverted > 0) {
+        bodyA.linear_velocity.x -= px * bodyA._mass_inverted * bodyA.linear_factor.x;
+        bodyA.linear_velocity.y -= py * bodyA._mass_inverted * bodyA.linear_factor.y;
+        bodyA.linear_velocity.z -= pz * bodyA._mass_inverted * bodyA.linear_factor.z;
         this._applyAngularVelocityImpulse(bodyA, rA, -px, -py, -pz);
     }
-    if (bodyB._massInverted > 0) {
-        bodyB.linear_velocity.x += px * bodyB._massInverted * bodyB.linear_factor.x;
-        bodyB.linear_velocity.y += py * bodyB._massInverted * bodyB.linear_factor.y;
-        bodyB.linear_velocity.z += pz * bodyB._massInverted * bodyB.linear_factor.z;
+    if (bodyB._mass_inverted > 0) {
+        bodyB.linear_velocity.x += px * bodyB._mass_inverted * bodyB.linear_factor.x;
+        bodyB.linear_velocity.y += py * bodyB._mass_inverted * bodyB.linear_factor.y;
+        bodyB.linear_velocity.z += pz * bodyB._mass_inverted * bodyB.linear_factor.z;
         this._applyAngularVelocityImpulse(bodyB, rB, px, py, pz);
     }
 };

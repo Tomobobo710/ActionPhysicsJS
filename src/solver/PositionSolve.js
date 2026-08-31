@@ -42,19 +42,19 @@ proto._solvePoint = function (point, bodyA, bodyB, h, capPenetration) {
 
 // Generalized inverse mass along direction (dx,dy,dz): linear + angular contribution from both bodies.
 proto._effectiveMass = function (bodyA, bodyB, rA, rB, dx, dy, dz) {
-    let w = bodyA._massInverted + bodyB._massInverted;
+    let w = bodyA._mass_inverted + bodyB._mass_inverted;
 
     const rax = rA.y * dz - rA.z * dy, ray = rA.z * dx - rA.x * dz, raz = rA.x * dy - rA.y * dx;
     const rbx = rB.y * dz - rB.z * dy, rby = rB.z * dx - rB.x * dz, rbz = rB.x * dy - rB.y * dx;
 
-    if (bodyA._massInverted > 0) {
+    if (bodyA._mass_inverted > 0) {
         const IA = bodyA._worldInverseInertiaTensor;
         const ix = IA.e00 * rax + IA.e01 * ray + IA.e02 * raz;
         const iy = IA.e10 * rax + IA.e11 * ray + IA.e12 * raz;
         const iz = IA.e20 * rax + IA.e21 * ray + IA.e22 * raz;
         w += rax * ix + ray * iy + raz * iz;
     }
-    if (bodyB._massInverted > 0) {
+    if (bodyB._mass_inverted > 0) {
         const IB = bodyB._worldInverseInertiaTensor;
         const ix = IB.e00 * rbx + IB.e01 * rby + IB.e02 * rbz;
         const iy = IB.e10 * rbx + IB.e11 * rby + IB.e12 * rbz;
@@ -69,10 +69,10 @@ proto._effectiveMass = function (bodyA, bodyB, rA, rB, dx, dy, dz) {
 proto._applyPositionalCorrection = function (bodyA, bodyB, rA, rB, nx, ny, nz, dLambda, bias) {
     const px = nx * dLambda, py = ny * dLambda, pz = nz * dLambda;
 
-    if (bodyA._massInverted > 0) {
-        const dx = -px * bodyA._massInverted * bodyA.linear_factor.x;
-        const dy = -py * bodyA._massInverted * bodyA.linear_factor.y;
-        const dz = -pz * bodyA._massInverted * bodyA.linear_factor.z;
+    if (bodyA._mass_inverted > 0) {
+        const dx = -px * bodyA._mass_inverted * bodyA.linear_factor.x;
+        const dy = -py * bodyA._mass_inverted * bodyA.linear_factor.y;
+        const dz = -pz * bodyA._mass_inverted * bodyA.linear_factor.z;
         bodyA.position.x += dx; bodyA.position.y += dy; bodyA.position.z += dz;
         if (bias) {
             const b = this._biasDelta.get(bodyA.id);
@@ -80,10 +80,10 @@ proto._applyPositionalCorrection = function (bodyA, bodyB, rA, rB, nx, ny, nz, d
         }
         this._applyAngularCorrection(bodyA, rA, -px, -py, -pz);
     }
-    if (bodyB._massInverted > 0) {
-        const dx = px * bodyB._massInverted * bodyB.linear_factor.x;
-        const dy = py * bodyB._massInverted * bodyB.linear_factor.y;
-        const dz = pz * bodyB._massInverted * bodyB.linear_factor.z;
+    if (bodyB._mass_inverted > 0) {
+        const dx = px * bodyB._mass_inverted * bodyB.linear_factor.x;
+        const dy = py * bodyB._mass_inverted * bodyB.linear_factor.y;
+        const dz = pz * bodyB._mass_inverted * bodyB.linear_factor.z;
         bodyB.position.x += dx; bodyB.position.y += dy; bodyB.position.z += dz;
         if (bias) {
             const b = this._biasDelta.get(bodyB.id);

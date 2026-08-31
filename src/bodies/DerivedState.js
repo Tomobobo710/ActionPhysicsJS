@@ -58,7 +58,7 @@ proto._recomputeBroadphaseAABB = function (dt) {
 };
 
 proto._recomputeWorldInverseInertia = function () {
-    if (this._massInverted === 0) { this._worldInverseInertiaTensor.zero(); return; }
+    if (this._mass_inverted === 0) { this._worldInverseInertiaTensor.zero(); return; }
     const rotMat = RigidBody._scratchMat3;
     rotMat.fromQuaternion(this.rotation);
     const rotT = RigidBody._scratchMat3b;

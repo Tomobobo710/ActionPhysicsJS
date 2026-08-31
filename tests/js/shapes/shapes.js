@@ -260,8 +260,8 @@
 
 	test('shapes/compound', 'combines child volumes and mass', function (t) {
 		var c = new AP.CompoundShape();
-		c.addChild(new AP.SphereShape(1), new V(2, 0, 0), new AP.Quaternion());
-		c.addChild(new AP.SphereShape(1), new V(-2, 0, 0), new AP.Quaternion());
+		c.addChildShape(new AP.SphereShape(1), new V(2, 0, 0), new AP.Quaternion());
+		c.addChildShape(new AP.SphereShape(1), new V(-2, 0, 0), new AP.Quaternion());
 		t.bodies.push({ shape: c, position: new V(0, 0, 0), rotation: new AP.Quaternion(), _color: '#4af' });
 		var sphereVolume = (4 / 3) * Math.PI;
 		t.check(c.volume(), sphereVolume * 2, 1e-6, 'summed volume');
@@ -272,8 +272,8 @@
 
 	test('shapes/compound', 'parallel-axis theorem increases inertia for offset children', function (t) {
 		var c = new AP.CompoundShape();
-		c.addChild(new AP.SphereShape(1), new V(5, 0, 0), new AP.Quaternion());
-		c.addChild(new AP.SphereShape(1), new V(-5, 0, 0), new AP.Quaternion());
+		c.addChildShape(new AP.SphereShape(1), new V(5, 0, 0), new AP.Quaternion());
+		c.addChildShape(new AP.SphereShape(1), new V(-5, 0, 0), new AP.Quaternion());
 		var data = c.computeMassData();
 		var singleSphereI = new AP.SphereShape(1).computeMassData().inertia.e00;
 

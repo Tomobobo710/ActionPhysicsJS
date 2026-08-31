@@ -73,7 +73,7 @@
 					new AP.Vector3(cx + th, h0, cz + th),
 					new AP.Vector3(cx - th, h0, cz + th)
 				];
-				compound.addChild(new AP.MeshShape(v, [0, 2, 1, 0, 3, 2]), zero, ident);
+				compound.addChildShape(new AP.MeshShape(v, [0, 2, 1, 0, 3, 2]), zero, ident);
 			}
 		}
 		var body = new AP.RigidBody(compound, 0);

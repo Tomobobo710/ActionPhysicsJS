@@ -3,6 +3,10 @@
 class ContactManifoldList {
     constructor() {
         this._manifolds = new Map(); // "idA:idB" (idA < idB) -> ContactManifold
+        // Singly-linked-list view over the live (non-empty) manifolds, relinked at the end of every
+        // refresh(). Walk it as: for (let m = list.first; m; m = m.next_manifold). The canonical
+        // iteration is values(); this exists for consumers that expect the linked-list shape.
+        this.first = null;
     }
 
     static _key(bodyA, bodyB) {
@@ -29,6 +33,20 @@ class ContactManifoldList {
             const contacts = contactsByPair.get(key) || [];
             manifold.update(contacts, dt);
             if (manifold.pointCount === 0) this._manifolds.delete(key);
+        }
+        this._relink();
+    }
+
+    // Rebuild the .first / .next_manifold chain over the surviving manifolds, in Map insertion
+    // order (same order values() yields), so the linked-list view and values() agree.
+    _relink() {
+        let prev = null;
+        this.first = null;
+        for (const manifold of this._manifolds.values()) {
+            manifold.next_manifold = null;
+            if (prev) prev.next_manifold = manifold;
+            else this.first = manifold;
+            prev = manifold;
         }
     }
 

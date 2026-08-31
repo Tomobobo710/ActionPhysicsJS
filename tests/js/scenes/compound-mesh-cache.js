@@ -33,7 +33,7 @@
 			[ LEG_SPAN, 0, -LEG_SPAN], [-LEG_SPAN, 0, -LEG_SPAN]
 		];
 		offsets.forEach(function (o) {
-			shape.addChild(new G.BoxShape(LEG_HALF, LEG_HALF, LEG_HALF), new G.Vector3(o[0], o[1], o[2]), ident);
+			shape.addChildShape(new G.BoxShape(LEG_HALF, LEG_HALF, LEG_HALF), new G.Vector3(o[0], o[1], o[2]), ident);
 		});
 		opts = U.withMat(opts || {});
 		var b = new G.RigidBody(shape, mass);

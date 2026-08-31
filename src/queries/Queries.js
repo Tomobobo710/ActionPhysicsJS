@@ -50,5 +50,12 @@ Queries._scratchLocalAABB = new AABB();
 Queries._scratchExpandedAABB = new AABB();
 Queries._scratchCompoundChild = { shape: null, position: new Vector3(), rotation: new Quaternion(0, 0, 0, 1) };
 Queries._scratchTriangleShape = new TriangleShape(new Vector3(), new Vector3(), new Vector3());
+// Mesh/compound BVH-prune scratch (RayIntersect.js / ShapeIntersect.js).
+Queries._scratchInvRot = new Quaternion(0, 0, 0, 1);
+Queries._scratchCorner = new Vector3();
+Queries._scratchLeafList = [];
+Queries._scratchTriA = new Vector3();
+Queries._scratchTriB = new Vector3();
+Queries._scratchTriC = new Vector3();
 
 ActionPhysics.Queries = Queries;

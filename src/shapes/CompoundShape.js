@@ -17,7 +17,7 @@ class CompoundShape extends Shape {
         this.children = children || []; // CompoundShapeChild[]
     }
 
-    addChild(shape, localPosition, localRotation) {
+    addChildShape(shape, localPosition, localRotation) {
         this.children.push(new CompoundShapeChild(shape, localPosition, localRotation));
         return this;
     }

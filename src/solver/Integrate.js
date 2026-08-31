@@ -4,6 +4,20 @@ var proto = Solver.prototype;
 proto._integrate = function (bodies, gravity, h) {
     for (let i = 0; i < bodies.length; i++) {
         const b = bodies[i];
+
+        // A KINEMATIC body is code-driven: no gravity, no forces, no damping, and its velocity is
+        // authoritative (never derived back from position). Just carry its transform along its
+        // current velocity so contacts this substep see it where it will be, exactly as a dynamic
+        // body's predicted position is used. A driver that writes position directly instead of
+        // setting velocity leaves linear/angular velocity at zero and this is a no-op.
+        if (b.bodyType === RigidBody.KINEMATIC) {
+            const lv = b.linear_velocity;
+            if (lv.x !== 0 || lv.y !== 0 || lv.z !== 0) b.position.addScaledInPlace(lv, h);
+            const av = b.angular_velocity;
+            if (av.x !== 0 || av.y !== 0 || av.z !== 0) Solver._integrateRotation(b.rotation, av, h);
+            continue;
+        }
+
         if (b.bodyType !== RigidBody.DYNAMIC || !b.isAwake) continue;
 
         // These snapshots only need to survive within the substep (derived-velocity + restitution
@@ -31,9 +45,9 @@ proto._integrate = function (bodies, gravity, h) {
 
         const af = b.accumulated_force;
         if (af.x !== 0 || af.y !== 0 || af.z !== 0) {
-            b.linear_velocity.x += af.x * b._massInverted * h * b.linear_factor.x;
-            b.linear_velocity.y += af.y * b._massInverted * h * b.linear_factor.y;
-            b.linear_velocity.z += af.z * b._massInverted * h * b.linear_factor.z;
+            b.linear_velocity.x += af.x * b._mass_inverted * h * b.linear_factor.x;
+            b.linear_velocity.y += af.y * b._mass_inverted * h * b.linear_factor.y;
+            b.linear_velocity.z += af.z * b._mass_inverted * h * b.linear_factor.z;
         }
         const at = b.accumulated_torque;
         if (at.x !== 0 || at.y !== 0 || at.z !== 0) {

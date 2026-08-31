@@ -35,7 +35,7 @@ class PointConstraint extends Constraint {
     solve(h) {
         if (!this.enabled) return;
         const bodyA = this.bodyA, bodyB = this.bodyB;
-        const hasB = !!(bodyB && bodyB._massInverted > 0);
+        const hasB = !!(bodyB && bodyB._mass_inverted > 0);
 
         this._anchorAWorld(this._worldA);
         this._anchorBWorld(this._worldB);
@@ -70,12 +70,12 @@ class PointConstraint extends Constraint {
 
     // K = (1/mA + 1/mB)*I3 - [rA×]*IA^-1*[rA×] - [rB×]*IB^-1*[rB×].
     _buildEffectiveMassMatrix(out, bodyA, bodyB, rA, rB) {
-        const mSum = bodyA._massInverted + (bodyB ? bodyB._massInverted : 0);
+        const mSum = bodyA._mass_inverted + (bodyB ? bodyB._mass_inverted : 0);
         out.e00 = mSum; out.e01 = 0; out.e02 = 0;
         out.e10 = 0; out.e11 = mSum; out.e12 = 0;
         out.e20 = 0; out.e21 = 0; out.e22 = mSum;
-        if (bodyA._massInverted > 0) PointConstraint._subtractSkewInertiaSkew(out, rA, bodyA._worldInverseInertiaTensor);
-        if (bodyB && bodyB._massInverted > 0) PointConstraint._subtractSkewInertiaSkew(out, rB, bodyB._worldInverseInertiaTensor);
+        if (bodyA._mass_inverted > 0) PointConstraint._subtractSkewInertiaSkew(out, rA, bodyA._worldInverseInertiaTensor);
+        if (bodyB && bodyB._mass_inverted > 0) PointConstraint._subtractSkewInertiaSkew(out, rB, bodyB._worldInverseInertiaTensor);
     }
 
     // out -= [r×]^T * I * [r×]
@@ -91,10 +91,10 @@ class PointConstraint extends Constraint {
 
     // sign: -1 for bodyA, +1 for bodyB (matches C = worldB - worldA).
     _applyCorrection(body, r, delta, sign) {
-        if (body._massInverted <= 0) return;
-        body.position.x += sign * delta.x * body._massInverted * body.linear_factor.x;
-        body.position.y += sign * delta.y * body._massInverted * body.linear_factor.y;
-        body.position.z += sign * delta.z * body._massInverted * body.linear_factor.z;
+        if (body._mass_inverted <= 0) return;
+        body.position.x += sign * delta.x * body._mass_inverted * body.linear_factor.x;
+        body.position.y += sign * delta.y * body._mass_inverted * body.linear_factor.y;
+        body.position.z += sign * delta.z * body._mass_inverted * body.linear_factor.z;
 
         const px = sign * delta.x, py = sign * delta.y, pz = sign * delta.z;
         const torqueX = r.y * pz - r.z * py, torqueY = r.z * px - r.x * pz, torqueZ = r.x * py - r.y * px;

@@ -7,13 +7,21 @@ let _nextBodyId = 1;
 // Shape + world transform + (for dynamic bodies) mass/motion state. See Forces.js, DerivedState.js,
 // Accessors.js.
 class RigidBody {
-    constructor(shape, mass) {
+    // new RigidBody(shape, mass) - mass > 0 makes a DYNAMIC body, mass <= 0 a STATIC one.
+    // new RigidBody(shape, mass, { kinematic: true }) makes a KINEMATIC body: infinite effective
+    // mass (contacts never move it, forces/impulses are ignored), but the integrator advances its
+    // position from linear_velocity and its rotation from angular_velocity every tick, and a direct
+    // position/rotation write is honoured. Drive it by setting its velocity (or writing its
+    // transform) each tick - moving platforms, elevators, doors.
+    constructor(shape, mass, options) {
+        const kinematic = !!(options && options.kinematic);
+
         // ---- Identity ----
         this.id = _nextBodyId++;
         this.shape = shape;
         this.debugName = null;
         this.world = null; // set by World.addRigidBody
-        this.bodyType = mass > 0 ? BODY_DYNAMIC : BODY_STATIC;
+        this.bodyType = kinematic ? BODY_KINEMATIC : (mass > 0 ? BODY_DYNAMIC : BODY_STATIC);
 
         // ---- Transform ----
         this.position = new Vector3(0, 0, 0);
@@ -23,9 +31,11 @@ class RigidBody {
         this._aabbDirty = true;
 
         // ---- Mass ----
-        // mass===0 is a static/kinematic body: infinite effective mass, zero inverse.
-        this._mass = mass || 0;
-        this._massInverted = this._mass > 0 ? 1 / this._mass : 0;
+        // A KINEMATIC or mass<=0 body has infinite effective mass: zero inverse mass, zero inertia.
+        // A KINEMATIC body still moves - the integrator drives its transform from its velocity - it
+        // just does not RESPOND to contacts or forces.
+        this._mass = kinematic ? 0 : (mass || 0);
+        this._mass_inverted = this._mass > 0 ? 1 / this._mass : 0;
         this.inertiaTensor = new Matrix3();       // local-space, set by setMassFromShape()
         this.inverseInertiaTensor = new Matrix3(); // local-space inverse
         this._worldInverseInertiaTensor = new Matrix3(); // R * I^-1_local * R^T, refreshed by updateDerived()
@@ -68,23 +78,45 @@ class RigidBody {
     get is_static() { return this.bodyType === RigidBody.STATIC; }
     get mass() { return this._mass; }
 
-    // Scales the shape's density-1 inertia by (mass / shape.volume()), per Shape's contract -
-    // computeMassData() always returns density-1 values.
+    // Assigning mass re-derives the inertia tensor from the current shape. mass <= 0 (including
+    // Infinity, treated as "no dynamics") makes the body STATIC; a positive mass makes it DYNAMIC.
+    // A KINEMATIC body's type is not changed by a mass write (it is code-driven regardless).
+    set mass(value) {
+        const m = (value === Infinity || !(value > 0)) ? 0 : value;
+        this.setMassFromShape(this.shape, m);
+        if (this.bodyType !== RigidBody.KINEMATIC) {
+            this.bodyType = m > 0 ? RigidBody.DYNAMIC : RigidBody.STATIC;
+        }
+    }
+
+    // This tick's linear acceleration from applied force: F * m^-1. Zero for a body with infinite
+    // effective mass (static/kinematic). Read it after applying forces and before step() for "how
+    // hard is this being pushed"; it is not a stored integration value (XPBD has no 'a' term), it
+    // is recomputed into a per-body vector on each read.
+    get acceleration() {
+        const a = this._acceleration || (this._acceleration = new Vector3());
+        const mi = this._mass_inverted;
+        a.x = this.accumulated_force.x * mi;
+        a.y = this.accumulated_force.y * mi;
+        a.z = this.accumulated_force.z * mi;
+        return a;
+    }
+
+    // The tight world AABB (same object getAABB() returns). Assumes updateDerived() has run this
+    // tick - a stale read is a caller bug, not patched over here.
+    get aabb() { return this._aabb; }
+
+    // Sets mass and re-derives the local inertia tensor from the shape (Shape.getInertiaTensor does
+    // the density-1 -> mass scaling). mass <= 0 gives the zero tensor (infinite effective mass).
     setMassFromShape(shape, mass) {
         this._mass = mass;
-        this._massInverted = mass > 0 ? 1 / mass : 0;
+        this._mass_inverted = mass > 0 ? 1 / mass : 0;
         if (mass <= 0) {
             this.inertiaTensor.zero();
             this.inverseInertiaTensor.zero();
             return;
         }
-        const data = shape.computeMassData();
-        const volume = shape.volume();
-        const scale = volume > 0 ? mass / volume : 0;
-        this.inertiaTensor.copy(data.inertia);
-        this.inertiaTensor.e00 *= scale; this.inertiaTensor.e01 *= scale; this.inertiaTensor.e02 *= scale;
-        this.inertiaTensor.e10 *= scale; this.inertiaTensor.e11 *= scale; this.inertiaTensor.e12 *= scale;
-        this.inertiaTensor.e20 *= scale; this.inertiaTensor.e21 *= scale; this.inertiaTensor.e22 *= scale;
+        this.inertiaTensor.copy(shape.getInertiaTensor(mass));
         this.inverseInertiaTensor.invertInto(this.inertiaTensor);
     }
 
@@ -122,6 +154,7 @@ RigidBody._scratchMat3b = new Matrix3();
 RigidBody._scratchVec = new Vector3();
 RigidBody._scratchInvRot = new Quaternion();
 RigidBody._scratchSupportDir = new Vector3();
+RigidBody._scratchForcePoint = new Vector3(); // Forces.js applyForceAtLocalPoint
 
 RigidBody.STATIC = BODY_STATIC;
 RigidBody.KINEMATIC = BODY_KINEMATIC;

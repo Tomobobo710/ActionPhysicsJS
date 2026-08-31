@@ -21,6 +21,27 @@ Queries.rayIntersect = function (bodies, start, end, ignore) {
     return best;
 };
 
+// rayIntersectAll(bodies, start, end, ignore) -> array of { body, point, normal, distance, fraction },
+// EVERY body the segment crosses, sorted nearest-first (empty array = no hit). Same per-body test as
+// rayIntersect; use this when the caller filters hits itself (e.g. skip-my-own-body-then-take-the-next).
+Queries.rayIntersectAll = function (bodies, start, end, ignore) {
+    const dirX = end.x - start.x, dirY = end.y - start.y, dirZ = end.z - start.z;
+    const fullLen = Math.sqrt(dirX * dirX + dirY * dirY + dirZ * dirZ);
+    const out = [];
+    if (fullLen < 1e-12) return out;
+
+    for (let i = 0; i < bodies.length; i++) {
+        const body = bodies[i];
+        if (Queries._isIgnored(body, ignore)) continue;
+        if (!Queries._rayIntersectsAABB(start, end, body.getAABB())) continue;
+
+        const hit = Queries._sweepPointVsBody(start, dirX, dirY, dirZ, fullLen, body);
+        if (hit) { hit.body = body; out.push(hit); }
+    }
+    out.sort(function (a, b) { return a.fraction - b.fraction; });
+    return out;
+};
+
 // Same result shape, against exactly one known body - no candidate filtering/AABB reject. What
 // RigidBody.rayIntersect delegates to.
 Queries.rayIntersectBody = function (start, end, body) {
@@ -58,16 +79,60 @@ Queries._sweepPointVsBody = function (start, dirX, dirY, dirZ, fullLen, body) {
     return Queries._advance(support, placedPoint, start, dirX, dirY, dirZ, fullLen);
 };
 
+// The AABB of the ray segment [start, start + dir*fullLen], transformed into `body`'s local space
+// (8-corner inverse transform, conservative), written into `out`. Used to prune a mesh/compound
+// BVH so a cast doesn't sweep every triangle/child.
+Queries._localRayAABBInto = function (out, body, start, dirX, dirY, dirZ, fullLen) {
+    const ex = start.x, ey = start.y, ez = start.z;
+    const fx = start.x + dirX, fy = start.y + dirY, fz = start.z + dirZ; // dir is already scaled to fullLen by the callers
+    const invRot = Queries._scratchInvRot.copy(body.rotation).invert();
+    out.setEmpty();
+    for (let k = 0; k < 2; k++) {
+        const wx = k ? fx : ex, wy = k ? fy : ey, wz = k ? fz : ez;
+        Queries._scratchCorner.set(wx - body.position.x, wy - body.position.y, wz - body.position.z);
+        invRot.transformVectorInPlace(Queries._scratchCorner);
+        const cx = Queries._scratchCorner.x, cy = Queries._scratchCorner.y, cz = Queries._scratchCorner.z;
+        if (cx < out.min.x) out.min.x = cx; if (cx > out.max.x) out.max.x = cx;
+        if (cy < out.min.y) out.min.y = cy; if (cy > out.max.y) out.max.y = cy;
+        if (cz < out.min.z) out.min.z = cz; if (cz > out.max.z) out.max.z = cz;
+    }
+    return out;
+};
+
 Queries._sweepPointVsCompound = function (start, dirX, dirY, dirZ, fullLen, body) {
-    const children = body.shape.children;
+    const shape = body.shape;
     let best = null, bestFraction = Infinity;
-    for (let i = 0; i < children.length; i++) {
-        const child = children[i];
+
+    // BVH-prune: only test children whose local AABB the ray's local AABB overlaps.
+    let indices = null;
+    if (shape.children.length > Midphase.SMALL_MESH_TRIS) {
+        const bvh = ActionPhysics.ensureShapeBVH(shape);
+        Queries._localRayAABBInto(Queries._scratchLocalAABB, body, start, dirX, dirY, dirZ, fullLen);
+        indices = Queries._scratchLeafList; indices.length = 0;
+        bvh.query(Queries._scratchLocalAABB, function (i) { indices.push(i); });
+    }
+    const count = indices ? indices.length : shape.children.length;
+
+    // Snapshot the child index list before the loop: a mesh/compound child recurses, and the
+    // recursion reuses Queries._scratchLeafList.
+    const childIndices = indices ? indices.slice() : null;
+    for (let k = 0; k < count; k++) {
+        const child = shape.children[childIndices ? childIndices[k] : k];
+
+        // A child that is itself a mesh or a nested compound is NOT a convex primitive - GJK would
+        // hit MeshShape.supportInto and throw. Recurse into it at its own world placement, exactly
+        // as the midphase expands such a child.
+        if (Queries._isMesh(child.shape) || Queries._isCompound(child.shape)) {
+            const sub = Queries._childAsBody(body, child);
+            const hit = Queries._sweepPointVsBody(start, dirX, dirY, dirZ, fullLen, sub);
+            if (hit && hit.fraction < bestFraction) { bestFraction = hit.fraction; best = hit; }
+            continue;
+        }
+
         const placedChild = Queries._placedChildInto(Queries._scratchCompoundChild, body, child);
 
-        const pointShape = Queries._scratchPointShape;
         const placedPoint = Queries._scratchPlacedA;
-        placedPoint.shape = pointShape;
+        placedPoint.shape = Queries._scratchPointShape;
         placedPoint.position = Queries._scratchPos.set(start.x, start.y, start.z);
         placedPoint.rotation = Queries._identityQuat;
 
@@ -82,17 +147,46 @@ Queries._sweepPointVsCompound = function (start, dirX, dirY, dirZ, fullLen, body
     return best;
 };
 
+// A one-off body object placing `child` (a CompoundShapeChild) at its world transform under
+// `parentBody`, so a mesh/compound child can be run through the same per-body query path as a
+// top-level body. Allocates - only hit when a query ray actually crosses a compound-of-meshes,
+// which is rare (a static model collider, once per probe).
+Queries._childAsBody = function (parentBody, child) {
+    const pos = new Vector3();
+    parentBody.rotation.transformVectorInto(child.localPosition, pos);
+    pos.addInPlace(parentBody.position);
+    const rot = new Quaternion();
+    rot.multiplyQuaternions(parentBody.rotation, child.localRotation);
+    return {
+        shape: child.shape,
+        position: pos,
+        rotation: rot,
+        getAABB: function () { return parentBody.getAABB(); } // conservative; only used for the mesh BVH-prune's own placement math, which reads position/rotation
+    };
+};
+
 Queries._sweepPointVsMesh = function (start, dirX, dirY, dirZ, fullLen, body) {
     const shape = body.shape;
-    const a = new Vector3(), b = new Vector3(), c = new Vector3();
+    const a = Queries._scratchTriA, b = Queries._scratchTriB, c = Queries._scratchTriC;
     let best = null, bestFraction = Infinity;
-    for (let i = 0; i < shape.triangleCount; i++) {
-        shape.triangleAt(i, a, b, c);
+
+    // BVH-prune: only sweep triangles whose local AABB the ray's local AABB overlaps. A tiny mesh
+    // scans all - a couple of triangles is cheaper than building/walking a tree.
+    let indices = null;
+    if (shape.triangleCount > Midphase.SMALL_MESH_TRIS) {
+        const bvh = ActionPhysics.ensureShapeBVH(shape);
+        Queries._localRayAABBInto(Queries._scratchLocalAABB, body, start, dirX, dirY, dirZ, fullLen);
+        indices = Queries._scratchLeafList; indices.length = 0;
+        bvh.query(Queries._scratchLocalAABB, function (i) { indices.push(i); });
+    }
+    const count = indices ? indices.length : shape.triangleCount;
+
+    for (let k = 0; k < count; k++) {
+        shape.triangleAt(indices ? indices[k] : k, a, b, c);
         const placedTri = Queries._placedTriangleInto(Queries._scratchCompoundChild, body, Queries._scratchTriangleShape, a, b, c);
 
-        const pointShape = Queries._scratchPointShape;
         const placedPoint = Queries._scratchPlacedA;
-        placedPoint.shape = pointShape;
+        placedPoint.shape = Queries._scratchPointShape;
         placedPoint.position = Queries._scratchPos.set(start.x, start.y, start.z);
         placedPoint.rotation = Queries._identityQuat;
 

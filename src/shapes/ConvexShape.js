@@ -9,6 +9,23 @@ class ConvexShape extends Shape {
         this._massData = null;  // lazy: { mass, inertia, centerOfMass } for density 1
     }
 
+    // Triangulated hull faces, as { a, b, c } where each of a/b/c is { point: Vector3 } - the
+    // point being a vertex of that triangle, outward-wound. Built lazily from the same Quickhull
+    // pass the mass integration uses. Useful for building a render mesh of the hull.
+    get faces() {
+        if (this._facesView) return this._facesView;
+        const hull = this._hull();
+        const pts = this.points;
+        this._facesView = hull.map(function (tri) {
+            return {
+                a: { point: pts[tri[0]] },
+                b: { point: pts[tri[1]] },
+                c: { point: pts[tri[2]] }
+            };
+        });
+        return this._facesView;
+    }
+
     supportInto(out, direction) {
         const pts = this.points;
         let bestDot = -Infinity, bestIndex = 0;

@@ -2,7 +2,9 @@
 var proto = Midphase.prototype;
 
 // Builds shape._midphaseBVH on first use: one leaf per compound child, or per mesh triangle.
-proto._ensureBVH = function (shape) {
+// Free function (no Midphase state) so the query path (Queries.js) can build/get the same cached
+// tree - a mesh/compound ray or shape cast otherwise linear-scans every triangle.
+function ensureShapeBVH(shape) {
     if (shape._midphaseBVH) return shape._midphaseBVH;
     const bvh = new BVH();
     if (shape instanceof CompoundShape) {
@@ -40,7 +42,12 @@ proto._ensureBVH = function (shape) {
     }
     shape._midphaseBVH = bvh;
     return bvh;
-};
+}
+
+proto._ensureBVH = function (shape) { return ensureShapeBVH(shape); };
+
+// Exposed so Queries.js (ray/shape casts) can reuse the same per-shape tree the midphase builds.
+ActionPhysics.ensureShapeBVH = ensureShapeBVH;
 
 // Leaf indices of `shape` whose AABB overlaps `localQueryAABB` (in shape-local space). Cached per
 // (other body, shape): expanding one body pair queries many shapes under the same otherBodyId -

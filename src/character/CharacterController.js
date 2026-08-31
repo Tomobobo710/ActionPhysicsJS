@@ -212,7 +212,7 @@ class CharacterController {
     /** Projects `direction` onto the current ground (or air) and drives velocity toward it. */
     move(direction, deltaTime) {
         this.moveVector.copy(direction);
-        this.moveVector.scale(this.moveSpeed);
+        this.moveVector.scaleInPlace(this.moveSpeed);
         this._lastMoveDelta.copy(this.moveVector);
 
         if (this.currentState.name === 'falling' || this.currentState.name === 'jumping') {
@@ -224,8 +224,8 @@ class CharacterController {
             const dot = this.moveVector.dot(this.contactNormal);
             this.projectedMove.copy(this.moveVector);
             this.tempVector.copy(this.contactNormal);
-            this.tempVector.scale(dot);
-            this.projectedMove.subtract(this.tempVector);
+            this.tempVector.scaleInPlace(dot);
+            this.projectedMove.subInPlace(this.tempVector);
             this._lastProjectedMove.copy(this.projectedMove);
 
             this.body.linear_velocity.x += (this.projectedMove.x - this.body.linear_velocity.x) * this.groundAcceleration;

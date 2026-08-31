@@ -15,7 +15,7 @@
 			case 'convex':   return new AP.ConvexShape(PYR.map(function (v) { return new AP.Vector3(v[0], v[1], v[2]); }));
 			case 'compound':
 				var cs = new AP.CompoundShape();
-				cs.addChild(new AP.SphereShape(2), new AP.Vector3(0, 2, -1), new AP.Quaternion(0, 0, 1, 1).normalize());
+				cs.addChildShape(new AP.SphereShape(2), new AP.Vector3(0, 2, -1), new AP.Quaternion(0, 0, 1, 1).normalize());
 				return cs;
 		}
 	}

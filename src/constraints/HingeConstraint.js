@@ -101,14 +101,14 @@ class HingeConstraint extends Constraint {
         bodyA.rotation.transformVectorInPlace(axis);
 
         let wSum = 0;
-        const hasB = !!(bodyB && bodyB._massInverted > 0);
-        if (bodyA._massInverted > 0) wSum += HingeConstraint._angularEffectiveMass(bodyA, axis.x, axis.y, axis.z);
+        const hasB = !!(bodyB && bodyB._mass_inverted > 0);
+        if (bodyA._mass_inverted > 0) wSum += HingeConstraint._angularEffectiveMass(bodyA, axis.x, axis.y, axis.z);
         if (hasB) wSum += HingeConstraint._angularEffectiveMass(bodyB, axis.x, axis.y, axis.z);
         if (wSum < 1e-12) return;
 
         const scale = -violation / wSum;
         const tx = axis.x * scale, ty = axis.y * scale, tz = axis.z * scale;
-        if (bodyA._massInverted > 0) HingeConstraint._applyAngularDelta(bodyA, tx, ty, tz);
+        if (bodyA._mass_inverted > 0) HingeConstraint._applyAngularDelta(bodyA, tx, ty, tz);
         if (hasB) HingeConstraint._applyAngularDelta(bodyB, -tx, -ty, -tz);
     }
 
@@ -120,8 +120,8 @@ class HingeConstraint extends Constraint {
         bodyA.rotation.transformVectorInPlace(axis);
 
         let wSum = 0;
-        const hasB = !!(bodyB && bodyB._massInverted > 0);
-        if (bodyA._massInverted > 0) wSum += HingeConstraint._angularEffectiveMass(bodyA, axis.x, axis.y, axis.z);
+        const hasB = !!(bodyB && bodyB._mass_inverted > 0);
+        if (bodyA._mass_inverted > 0) wSum += HingeConstraint._angularEffectiveMass(bodyA, axis.x, axis.y, axis.z);
         if (hasB) wSum += HingeConstraint._angularEffectiveMass(bodyB, axis.x, axis.y, axis.z);
         if (wSum < 1e-12) return;
 
@@ -146,7 +146,7 @@ class HingeConstraint extends Constraint {
 
         const scale = step / wSum;
         const tx = axis.x * scale, ty = axis.y * scale, tz = axis.z * scale;
-        if (bodyA._massInverted > 0) HingeConstraint._applyAngularDelta(bodyA, tx, ty, tz);
+        if (bodyA._mass_inverted > 0) HingeConstraint._applyAngularDelta(bodyA, tx, ty, tz);
         if (hasB) HingeConstraint._applyAngularDelta(bodyB, -tx, -ty, -tz);
     }
 
@@ -177,15 +177,15 @@ class HingeConstraint extends Constraint {
         const errLen = Math.sqrt(errLenSq);
         const dx = ex / errLen, dy = ey / errLen, dz = ez / errLen;
         let wSum = 0;
-        const hasB = !!(bodyB && bodyB._massInverted > 0);
-        if (bodyA._massInverted > 0) wSum += HingeConstraint._angularEffectiveMass(bodyA, dx, dy, dz);
+        const hasB = !!(bodyB && bodyB._mass_inverted > 0);
+        if (bodyA._mass_inverted > 0) wSum += HingeConstraint._angularEffectiveMass(bodyA, dx, dy, dz);
         if (hasB) wSum += HingeConstraint._angularEffectiveMass(bodyB, dx, dy, dz);
         if (wSum < 1e-12) return;
 
         const scale = -1 / wSum;
         const tx = ex * scale, ty = ey * scale, tz = ez * scale;
 
-        if (bodyA._massInverted > 0) HingeConstraint._applyAngularDelta(bodyA, -tx, -ty, -tz);
+        if (bodyA._mass_inverted > 0) HingeConstraint._applyAngularDelta(bodyA, -tx, -ty, -tz);
         if (hasB) HingeConstraint._applyAngularDelta(bodyB, tx, ty, tz);
     }
 

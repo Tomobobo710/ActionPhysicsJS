@@ -12,8 +12,8 @@
 	function crossCompound(t, w) {
 		var G = t.AP, z = new G.Vector3(0,0,0), q = new G.Quaternion(0,0,0,1);
 		var shape = new G.CompoundShape();
-		shape.addChild(new G.BoxShape(1, 0.3, 0.3), z, q);
-		shape.addChild(new G.BoxShape(0.3, 0.3, 1), z, q);
+		shape.addChildShape(new G.BoxShape(1, 0.3, 0.3), z, q);
+		shape.addChildShape(new G.BoxShape(0.3, 0.3, 1), z, q);
 		var b = new G.RigidBody(shape, 0);
 		w.addRigidBody(b); b._color = '#a86'; t.bodies.push(b);
 		return b;

@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-08-30T22:32:14.698Z
+// ActionPhysics 0.1.0 — built 2026-08-31T10:40:27.605Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine. Ships as one concatenated
@@ -2646,6 +2646,22 @@ class Shape {
     volume() {
         throw new Error('Shape.volume not implemented for ' + this.type);
     }
+
+    // The local-space inertia tensor for this shape at total mass `mass`. computeMassData() returns
+    // density-1 values, so this rescales by mass/volume - the same scaling RigidBody.setMassFromShape
+    // applies. Returns a fresh Matrix3. mass <= 0 (or zero volume) gives the zero tensor.
+    getInertiaTensor(mass) {
+        const out = new Matrix3();
+        const vol = this.volume();
+        if (!(mass > 0) || !(vol > 0)) { out.zero(); return out; }
+        const s = mass / vol;
+        const i = this.computeMassData().inertia;
+        out.copy(i);
+        out.e00 *= s; out.e01 *= s; out.e02 *= s;
+        out.e10 *= s; out.e11 *= s; out.e12 *= s;
+        out.e20 *= s; out.e21 *= s; out.e22 *= s;
+        return out;
+    }
 }
 
 ActionPhysics.Shape = Shape;
@@ -2932,6 +2948,23 @@ class ConvexShape extends Shape {
         this.points = points;
         this._hullFaces = null; // lazy: [[ia,ib,ic], ...] indices into points, outward-wound
         this._massData = null;  // lazy: { mass, inertia, centerOfMass } for density 1
+    }
+
+    // Triangulated hull faces, as { a, b, c } where each of a/b/c is { point: Vector3 } - the
+    // point being a vertex of that triangle, outward-wound. Built lazily from the same Quickhull
+    // pass the mass integration uses. Useful for building a render mesh of the hull.
+    get faces() {
+        if (this._facesView) return this._facesView;
+        const hull = this._hull();
+        const pts = this.points;
+        this._facesView = hull.map(function (tri) {
+            return {
+                a: { point: pts[tri[0]] },
+                b: { point: pts[tri[1]] },
+                c: { point: pts[tri[2]] }
+            };
+        });
+        return this._facesView;
     }
 
     supportInto(out, direction) {
@@ -3365,7 +3398,7 @@ class CompoundShape extends Shape {
         this.children = children || []; // CompoundShapeChild[]
     }
 
-    addChild(shape, localPosition, localRotation) {
+    addChildShape(shape, localPosition, localRotation) {
         this.children.push(new CompoundShapeChild(shape, localPosition, localRotation));
         return this;
     }
@@ -3530,13 +3563,21 @@ let _nextBodyId = 1;
 // Shape + world transform + (for dynamic bodies) mass/motion state. See Forces.js, DerivedState.js,
 // Accessors.js.
 class RigidBody {
-    constructor(shape, mass) {
+    // new RigidBody(shape, mass) - mass > 0 makes a DYNAMIC body, mass <= 0 a STATIC one.
+    // new RigidBody(shape, mass, { kinematic: true }) makes a KINEMATIC body: infinite effective
+    // mass (contacts never move it, forces/impulses are ignored), but the integrator advances its
+    // position from linear_velocity and its rotation from angular_velocity every tick, and a direct
+    // position/rotation write is honoured. Drive it by setting its velocity (or writing its
+    // transform) each tick - moving platforms, elevators, doors.
+    constructor(shape, mass, options) {
+        const kinematic = !!(options && options.kinematic);
+
         // ---- Identity ----
         this.id = _nextBodyId++;
         this.shape = shape;
         this.debugName = null;
         this.world = null; // set by World.addRigidBody
-        this.bodyType = mass > 0 ? BODY_DYNAMIC : BODY_STATIC;
+        this.bodyType = kinematic ? BODY_KINEMATIC : (mass > 0 ? BODY_DYNAMIC : BODY_STATIC);
 
         // ---- Transform ----
         this.position = new Vector3(0, 0, 0);
@@ -3546,9 +3587,11 @@ class RigidBody {
         this._aabbDirty = true;
 
         // ---- Mass ----
-        // mass===0 is a static/kinematic body: infinite effective mass, zero inverse.
-        this._mass = mass || 0;
-        this._massInverted = this._mass > 0 ? 1 / this._mass : 0;
+        // A KINEMATIC or mass<=0 body has infinite effective mass: zero inverse mass, zero inertia.
+        // A KINEMATIC body still moves - the integrator drives its transform from its velocity - it
+        // just does not RESPOND to contacts or forces.
+        this._mass = kinematic ? 0 : (mass || 0);
+        this._mass_inverted = this._mass > 0 ? 1 / this._mass : 0;
         this.inertiaTensor = new Matrix3();       // local-space, set by setMassFromShape()
         this.inverseInertiaTensor = new Matrix3(); // local-space inverse
         this._worldInverseInertiaTensor = new Matrix3(); // R * I^-1_local * R^T, refreshed by updateDerived()
@@ -3591,23 +3634,45 @@ class RigidBody {
     get is_static() { return this.bodyType === RigidBody.STATIC; }
     get mass() { return this._mass; }
 
-    // Scales the shape's density-1 inertia by (mass / shape.volume()), per Shape's contract -
-    // computeMassData() always returns density-1 values.
+    // Assigning mass re-derives the inertia tensor from the current shape. mass <= 0 (including
+    // Infinity, treated as "no dynamics") makes the body STATIC; a positive mass makes it DYNAMIC.
+    // A KINEMATIC body's type is not changed by a mass write (it is code-driven regardless).
+    set mass(value) {
+        const m = (value === Infinity || !(value > 0)) ? 0 : value;
+        this.setMassFromShape(this.shape, m);
+        if (this.bodyType !== RigidBody.KINEMATIC) {
+            this.bodyType = m > 0 ? RigidBody.DYNAMIC : RigidBody.STATIC;
+        }
+    }
+
+    // This tick's linear acceleration from applied force: F * m^-1. Zero for a body with infinite
+    // effective mass (static/kinematic). Read it after applying forces and before step() for "how
+    // hard is this being pushed"; it is not a stored integration value (XPBD has no 'a' term), it
+    // is recomputed into a per-body vector on each read.
+    get acceleration() {
+        const a = this._acceleration || (this._acceleration = new Vector3());
+        const mi = this._mass_inverted;
+        a.x = this.accumulated_force.x * mi;
+        a.y = this.accumulated_force.y * mi;
+        a.z = this.accumulated_force.z * mi;
+        return a;
+    }
+
+    // The tight world AABB (same object getAABB() returns). Assumes updateDerived() has run this
+    // tick - a stale read is a caller bug, not patched over here.
+    get aabb() { return this._aabb; }
+
+    // Sets mass and re-derives the local inertia tensor from the shape (Shape.getInertiaTensor does
+    // the density-1 -> mass scaling). mass <= 0 gives the zero tensor (infinite effective mass).
     setMassFromShape(shape, mass) {
         this._mass = mass;
-        this._massInverted = mass > 0 ? 1 / mass : 0;
+        this._mass_inverted = mass > 0 ? 1 / mass : 0;
         if (mass <= 0) {
             this.inertiaTensor.zero();
             this.inverseInertiaTensor.zero();
             return;
         }
-        const data = shape.computeMassData();
-        const volume = shape.volume();
-        const scale = volume > 0 ? mass / volume : 0;
-        this.inertiaTensor.copy(data.inertia);
-        this.inertiaTensor.e00 *= scale; this.inertiaTensor.e01 *= scale; this.inertiaTensor.e02 *= scale;
-        this.inertiaTensor.e10 *= scale; this.inertiaTensor.e11 *= scale; this.inertiaTensor.e12 *= scale;
-        this.inertiaTensor.e20 *= scale; this.inertiaTensor.e21 *= scale; this.inertiaTensor.e22 *= scale;
+        this.inertiaTensor.copy(shape.getInertiaTensor(mass));
         this.inverseInertiaTensor.invertInto(this.inertiaTensor);
     }
 
@@ -3645,6 +3710,7 @@ RigidBody._scratchMat3b = new Matrix3();
 RigidBody._scratchVec = new Vector3();
 RigidBody._scratchInvRot = new Quaternion();
 RigidBody._scratchSupportDir = new Vector3();
+RigidBody._scratchForcePoint = new Vector3(); // Forces.js applyForceAtLocalPoint
 
 RigidBody.STATIC = BODY_STATIC;
 RigidBody.KINEMATIC = BODY_KINEMATIC;
@@ -3661,18 +3727,31 @@ ActionPhysics.RigidBody = RigidBody;
 var proto = RigidBody.prototype;
 
 proto.applyImpulse = function (impulse) {
-    if (this._massInverted <= 0) return this;
+    if (this._mass_inverted <= 0) return this;
     if (!this.isAwake) this.wakeUp();
-    this.linear_velocity.x += impulse.x * this._massInverted * this.linear_factor.x;
-    this.linear_velocity.y += impulse.y * this._massInverted * this.linear_factor.y;
-    this.linear_velocity.z += impulse.z * this._massInverted * this.linear_factor.z;
+    this.linear_velocity.x += impulse.x * this._mass_inverted * this.linear_factor.x;
+    this.linear_velocity.y += impulse.y * this._mass_inverted * this.linear_factor.y;
+    this.linear_velocity.z += impulse.z * this._mass_inverted * this.linear_factor.z;
+    return this;
+};
+
+// Add a velocity delta directly - mass-independent (dv, not an impulse J = m*dv). Use this for a
+// "shove" whose strength should not depend on how heavy the target is (a game gravity-gun, a
+// scripted knockback). A static/kinematic body (no finite mass) is unaffected. linear_factor still
+// masks locked axes.
+proto.addLinearVelocity = function (dv) {
+    if (this._mass_inverted <= 0) return this;
+    if (!this.isAwake) this.wakeUp();
+    this.linear_velocity.x += dv.x * this.linear_factor.x;
+    this.linear_velocity.y += dv.y * this.linear_factor.y;
+    this.linear_velocity.z += dv.z * this.linear_factor.z;
     return this;
 };
 
 // Impulse at a world-space point: linear change plus the angular change it produces about the
 // center (dw = I^-1 * (r x impulse)).
 proto.applyImpulseAtPoint = function (impulse, worldPoint) {
-    if (this._massInverted <= 0) return this;
+    if (this._mass_inverted <= 0) return this;
     this.applyImpulse(impulse);
     const rx = worldPoint.x - this.position.x, ry = worldPoint.y - this.position.y, rz = worldPoint.z - this.position.z;
     const tqx = ry * impulse.z - rz * impulse.y, tqy = rz * impulse.x - rx * impulse.z, tqz = rx * impulse.y - ry * impulse.x;
@@ -3684,7 +3763,7 @@ proto.applyImpulseAtPoint = function (impulse, worldPoint) {
 };
 
 proto.applyTorqueImpulse = function (torqueImpulse) {
-    if (this._massInverted <= 0) return this;
+    if (this._mass_inverted <= 0) return this;
     if (!this.isAwake) this.wakeUp();
     const I = this._worldInverseInertiaTensor;
     const tx = torqueImpulse.x, ty = torqueImpulse.y, tz = torqueImpulse.z;
@@ -3714,13 +3793,32 @@ proto.applyTorque = function (torque) {
 
 // A force at a world-space point contributes the force itself plus the torque it produces about
 // the center (r x force) - the continuous-force analogue of applyImpulseAtPoint.
-proto.applyForceAtPoint = function (force, worldPoint) {
+proto.applyForceAtWorldPoint = function (force, worldPoint) {
     this.applyForce(force);
     const rx = worldPoint.x - this.position.x, ry = worldPoint.y - this.position.y, rz = worldPoint.z - this.position.z;
     this.accumulated_torque.x += ry * force.z - rz * force.y;
     this.accumulated_torque.y += rz * force.x - rx * force.z;
     this.accumulated_torque.z += rx * force.y - ry * force.x;
     return this;
+};
+
+// Same as applyForceAtWorldPoint but the point is given in this body's local frame - transformed to
+// world via the current transform, then delegated.
+proto.applyForceAtLocalPoint = function (force, localPoint) {
+    const world = RigidBody._scratchForcePoint;
+    this.getTransform().transformPointInto(localPoint, world);
+    return this.applyForceAtWorldPoint(force, world);
+};
+
+// Velocity of a point on this body: v_linear + omega x r, where r is `offset` - a vector from the
+// center of mass, in world axes (the "local" in the name is historical; the offset is not rotated
+// into the body frame). `out` receives the result. Zero angular/linear -> just the linear velocity.
+proto.getVelocityInLocalPoint = function (offset, out) {
+    const w = this.angular_velocity, v = this.linear_velocity;
+    out.x = v.x + (w.y * offset.z - w.z * offset.y);
+    out.y = v.y + (w.z * offset.x - w.x * offset.z);
+    out.z = v.z + (w.x * offset.y - w.y * offset.x);
+    return out;
 };
 
 // Zeroes accumulated force/torque. Called by World.step once per TICK (not per substep) - a
@@ -3793,7 +3891,7 @@ proto._recomputeBroadphaseAABB = function (dt) {
 };
 
 proto._recomputeWorldInverseInertia = function () {
-    if (this._massInverted === 0) { this._worldInverseInertiaTensor.zero(); return; }
+    if (this._mass_inverted === 0) { this._worldInverseInertiaTensor.zero(); return; }
     const rotMat = RigidBody._scratchMat3;
     rotMat.fromQuaternion(this.rotation);
     const rotT = RigidBody._scratchMat3b;
@@ -4083,7 +4181,9 @@ ActionPhysics.Midphase = Midphase;
 var proto = Midphase.prototype;
 
 // Builds shape._midphaseBVH on first use: one leaf per compound child, or per mesh triangle.
-proto._ensureBVH = function (shape) {
+// Free function (no Midphase state) so the query path (Queries.js) can build/get the same cached
+// tree - a mesh/compound ray or shape cast otherwise linear-scans every triangle.
+function ensureShapeBVH(shape) {
     if (shape._midphaseBVH) return shape._midphaseBVH;
     const bvh = new BVH();
     if (shape instanceof CompoundShape) {
@@ -4121,7 +4221,12 @@ proto._ensureBVH = function (shape) {
     }
     shape._midphaseBVH = bvh;
     return bvh;
-};
+}
+
+proto._ensureBVH = function (shape) { return ensureShapeBVH(shape); };
+
+// Exposed so Queries.js (ray/shape casts) can reuse the same per-shape tree the midphase builds.
+ActionPhysics.ensureShapeBVH = ensureShapeBVH;
 
 // Leaf indices of `shape` whose AABB overlaps `localQueryAABB` (in shape-local space). Cached per
 // (other body, shape): expanding one body pair queries many shapes under the same otherBodyId -
@@ -5344,6 +5449,7 @@ class ContactManifold {
         this.bodyB = bodyB;
         this.points = []; // ContactDetails[], 0..MAX_POINTS
         this._localAnchors = []; // bodyA-local anchor per point, for next-tick matching
+        this.next_manifold = null; // linked-list view, maintained by ContactManifoldList._relink()
     }
 
     get pointCount() { return this.points.length; }
@@ -5369,8 +5475,26 @@ ActionPhysics.ContactManifold = ContactManifold;
 // ==== src/collision/Update.js ====
 // Per-tick manifold update: match existing points against this tick's narrowphase result, warm-
 // start matched points, add genuinely new ones, remove unconfirmed ones. Fires contact lifecycle
-// events (speculativeContact, contact, endContact, endAllContact) on both bodies as state changes.
+// events on both bodies:
+//   speculativeContact - a predicted point the body has NOT yet reached (still more than a
+//                        speculative-margin away), vetoable by a listener
+//   contact            - EVERY tick a point is "in contact": overlapping, OR held right at the
+//                        surface by the speculative solve (signedDistance >= -CONTACT_BAND). Fires
+//                        on the tick it first touches and every tick it stays - matching "while in
+//                        contact" semantics, not just the leading edge. Because speculation stops a
+//                        slow body BEFORE it overlaps, an exact-touch-only band would never fire for
+//                        a body resting against a wall it approached slowly.
+//   endContact         - a point that was present last tick is gone this tick
+//   endAllContact      - the manifold went from having points to having none
 var proto = ContactManifold.prototype;
+
+// A point at or within this signed-distance of the surface counts as "in contact" for events: the
+// solver is actively constraining the pair against each other here (it holds a speculative body at
+// roughly the base speculative margin, not at exactly 0). Matches RigidBody.SPECULATIVE_MARGIN.
+ContactManifold.CONTACT_BAND = 0.02;
+ContactManifold._isTouching = function (signedDistance) {
+    return signedDistance >= -ContactManifold.CONTACT_BAND;
+};
 
 proto.update = function (newContacts, dt) {
     const hadPointsBefore = this.points.length > 0;
@@ -5414,19 +5538,25 @@ proto.update = function (newContacts, dt) {
         existing.tangentLambda2 = keepTangentLambda2;
         if (keepNormal) existing.normal.copy(keepNormal);
         ContactManifold._toLocal(this.bodyA, existing.pointOnA, existingLocal);
-        if (!wasOverlapping && existing.signedDistance >= 0) this._emitBoth('contact', existing);
+        // Fire 'contact' every tick the point is touching (not just the entry edge), so a body
+        // resting against another keeps notifying its listeners. `wasOverlapping` is unused now but
+        // kept above in case a consumer ever wants an entry-only variant.
+        void wasOverlapping;
+        if (ContactManifold._isTouching(existing.signedDistance)) this._emitBoth('contact', existing);
     }
 
     // Any incoming contact not matched to an existing point is genuinely new.
     for (let j = 0; j < newContacts.length; j++) {
         if (matched[j]) continue;
-        if (newContacts[j].signedDistance < 0) {
-            if (!this._speculativeAllowed(newContacts[j])) continue; // vetoed by a listener
-            this._addPoint(newContacts[j]);
-            this._emitBoth('speculativeContact', newContacts[j]);
+        const nc = newContacts[j];
+        if (nc.signedDistance < 0 && !ContactManifold._isTouching(nc.signedDistance)) {
+            // Genuinely separated (beyond the exact-touch band): a predicted point only.
+            if (!this._speculativeAllowed(nc)) continue; // vetoed by a listener
+            this._addPoint(nc);
+            this._emitBoth('speculativeContact', nc);
         } else {
-            this._addPoint(newContacts[j]);
-            this._emitBoth('contact', newContacts[j]);
+            this._addPoint(nc);
+            this._emitBoth('contact', nc);
         }
     }
 
@@ -5564,6 +5694,10 @@ ContactManifold._triArea = function (a, b, c) {
 class ContactManifoldList {
     constructor() {
         this._manifolds = new Map(); // "idA:idB" (idA < idB) -> ContactManifold
+        // Singly-linked-list view over the live (non-empty) manifolds, relinked at the end of every
+        // refresh(). Walk it as: for (let m = list.first; m; m = m.next_manifold). The canonical
+        // iteration is values(); this exists for consumers that expect the linked-list shape.
+        this.first = null;
     }
 
     static _key(bodyA, bodyB) {
@@ -5591,6 +5725,20 @@ class ContactManifoldList {
             manifold.update(contacts, dt);
             if (manifold.pointCount === 0) this._manifolds.delete(key);
         }
+        this._relink();
+    }
+
+    // Rebuild the .first / .next_manifold chain over the surviving manifolds, in Map insertion
+    // order (same order values() yields), so the linked-list view and values() agree.
+    _relink() {
+        let prev = null;
+        this.first = null;
+        for (const manifold of this._manifolds.values()) {
+            manifold.next_manifold = null;
+            if (prev) prev.next_manifold = manifold;
+            else this.first = manifold;
+            prev = manifold;
+        }
     }
 
     values() {
@@ -5609,6 +5757,9 @@ ActionPhysics.ContactManifoldList = ContactManifoldList;
 class NarrowPhase {
     constructor() {
         this.manifolds = new ContactManifoldList();
+        // Same object under the Goblin-style name; walk it as .contact_manifolds.first ->
+        // .next_manifold. The `contacts` World event delivers this same list.
+        this.contact_manifolds = this.manifolds;
         this._dt = 1 / 60; // set each tick by step()
         this._gjk = new GJK();
         this._epa = new EPA();
@@ -7523,6 +7674,20 @@ var proto = Solver.prototype;
 proto._integrate = function (bodies, gravity, h) {
     for (let i = 0; i < bodies.length; i++) {
         const b = bodies[i];
+
+        // A KINEMATIC body is code-driven: no gravity, no forces, no damping, and its velocity is
+        // authoritative (never derived back from position). Just carry its transform along its
+        // current velocity so contacts this substep see it where it will be, exactly as a dynamic
+        // body's predicted position is used. A driver that writes position directly instead of
+        // setting velocity leaves linear/angular velocity at zero and this is a no-op.
+        if (b.bodyType === RigidBody.KINEMATIC) {
+            const lv = b.linear_velocity;
+            if (lv.x !== 0 || lv.y !== 0 || lv.z !== 0) b.position.addScaledInPlace(lv, h);
+            const av = b.angular_velocity;
+            if (av.x !== 0 || av.y !== 0 || av.z !== 0) Solver._integrateRotation(b.rotation, av, h);
+            continue;
+        }
+
         if (b.bodyType !== RigidBody.DYNAMIC || !b.isAwake) continue;
 
         // These snapshots only need to survive within the substep (derived-velocity + restitution
@@ -7550,9 +7715,9 @@ proto._integrate = function (bodies, gravity, h) {
 
         const af = b.accumulated_force;
         if (af.x !== 0 || af.y !== 0 || af.z !== 0) {
-            b.linear_velocity.x += af.x * b._massInverted * h * b.linear_factor.x;
-            b.linear_velocity.y += af.y * b._massInverted * h * b.linear_factor.y;
-            b.linear_velocity.z += af.z * b._massInverted * h * b.linear_factor.z;
+            b.linear_velocity.x += af.x * b._mass_inverted * h * b.linear_factor.x;
+            b.linear_velocity.y += af.y * b._mass_inverted * h * b.linear_factor.y;
+            b.linear_velocity.z += af.z * b._mass_inverted * h * b.linear_factor.z;
         }
         const at = b.accumulated_torque;
         if (at.x !== 0 || at.y !== 0 || at.z !== 0) {
@@ -7666,19 +7831,19 @@ proto._solvePoint = function (point, bodyA, bodyB, h, capPenetration) {
 
 // Generalized inverse mass along direction (dx,dy,dz): linear + angular contribution from both bodies.
 proto._effectiveMass = function (bodyA, bodyB, rA, rB, dx, dy, dz) {
-    let w = bodyA._massInverted + bodyB._massInverted;
+    let w = bodyA._mass_inverted + bodyB._mass_inverted;
 
     const rax = rA.y * dz - rA.z * dy, ray = rA.z * dx - rA.x * dz, raz = rA.x * dy - rA.y * dx;
     const rbx = rB.y * dz - rB.z * dy, rby = rB.z * dx - rB.x * dz, rbz = rB.x * dy - rB.y * dx;
 
-    if (bodyA._massInverted > 0) {
+    if (bodyA._mass_inverted > 0) {
         const IA = bodyA._worldInverseInertiaTensor;
         const ix = IA.e00 * rax + IA.e01 * ray + IA.e02 * raz;
         const iy = IA.e10 * rax + IA.e11 * ray + IA.e12 * raz;
         const iz = IA.e20 * rax + IA.e21 * ray + IA.e22 * raz;
         w += rax * ix + ray * iy + raz * iz;
     }
-    if (bodyB._massInverted > 0) {
+    if (bodyB._mass_inverted > 0) {
         const IB = bodyB._worldInverseInertiaTensor;
         const ix = IB.e00 * rbx + IB.e01 * rby + IB.e02 * rbz;
         const iy = IB.e10 * rbx + IB.e11 * rby + IB.e12 * rbz;
@@ -7693,10 +7858,10 @@ proto._effectiveMass = function (bodyA, bodyB, rA, rB, dx, dy, dz) {
 proto._applyPositionalCorrection = function (bodyA, bodyB, rA, rB, nx, ny, nz, dLambda, bias) {
     const px = nx * dLambda, py = ny * dLambda, pz = nz * dLambda;
 
-    if (bodyA._massInverted > 0) {
-        const dx = -px * bodyA._massInverted * bodyA.linear_factor.x;
-        const dy = -py * bodyA._massInverted * bodyA.linear_factor.y;
-        const dz = -pz * bodyA._massInverted * bodyA.linear_factor.z;
+    if (bodyA._mass_inverted > 0) {
+        const dx = -px * bodyA._mass_inverted * bodyA.linear_factor.x;
+        const dy = -py * bodyA._mass_inverted * bodyA.linear_factor.y;
+        const dz = -pz * bodyA._mass_inverted * bodyA.linear_factor.z;
         bodyA.position.x += dx; bodyA.position.y += dy; bodyA.position.z += dz;
         if (bias) {
             const b = this._biasDelta.get(bodyA.id);
@@ -7704,10 +7869,10 @@ proto._applyPositionalCorrection = function (bodyA, bodyB, rA, rB, nx, ny, nz, d
         }
         this._applyAngularCorrection(bodyA, rA, -px, -py, -pz);
     }
-    if (bodyB._massInverted > 0) {
-        const dx = px * bodyB._massInverted * bodyB.linear_factor.x;
-        const dy = py * bodyB._massInverted * bodyB.linear_factor.y;
-        const dz = pz * bodyB._massInverted * bodyB.linear_factor.z;
+    if (bodyB._mass_inverted > 0) {
+        const dx = px * bodyB._mass_inverted * bodyB.linear_factor.x;
+        const dy = py * bodyB._mass_inverted * bodyB.linear_factor.y;
+        const dz = pz * bodyB._mass_inverted * bodyB.linear_factor.z;
         bodyB.position.x += dx; bodyB.position.y += dy; bodyB.position.z += dz;
         if (bias) {
             const b = this._biasDelta.get(bodyB.id);
@@ -7890,11 +8055,11 @@ proto._solveAngularFriction = function (point, bodyA, bodyB, h) {
 
     const ax = relWx / relWMag, ay = relWy / relWMag, az = relWz / relWMag;
     let wSum = 0;
-    if (bodyA._massInverted > 0) {
+    if (bodyA._mass_inverted > 0) {
         const IA = bodyA._worldInverseInertiaTensor;
         wSum += ax * (IA.e00 * ax + IA.e01 * ay + IA.e02 * az) + ay * (IA.e10 * ax + IA.e11 * ay + IA.e12 * az) + az * (IA.e20 * ax + IA.e21 * ay + IA.e22 * az);
     }
-    if (bodyB._massInverted > 0) {
+    if (bodyB._mass_inverted > 0) {
         const IB = bodyB._worldInverseInertiaTensor;
         wSum += ax * (IB.e00 * ax + IB.e01 * ay + IB.e02 * az) + ay * (IB.e10 * ax + IB.e11 * ay + IB.e12 * az) + az * (IB.e20 * ax + IB.e21 * ay + IB.e22 * az);
     }
@@ -7905,14 +8070,14 @@ proto._solveAngularFriction = function (point, bodyA, bodyB, h) {
     let j = relWMag / wSum;
     if (j > maxAngImpulse) j = maxAngImpulse;
 
-    if (bodyA._massInverted > 0) {
+    if (bodyA._mass_inverted > 0) {
         const IA = bodyA._worldInverseInertiaTensor;
         const tqx = ax * j, tqy = ay * j, tqz = az * j;
         bodyA.angular_velocity.x += (IA.e00 * tqx + IA.e01 * tqy + IA.e02 * tqz) * bodyA.angular_factor.x;
         bodyA.angular_velocity.y += (IA.e10 * tqx + IA.e11 * tqy + IA.e12 * tqz) * bodyA.angular_factor.y;
         bodyA.angular_velocity.z += (IA.e20 * tqx + IA.e21 * tqy + IA.e22 * tqz) * bodyA.angular_factor.z;
     }
-    if (bodyB._massInverted > 0) {
+    if (bodyB._mass_inverted > 0) {
         const IB = bodyB._worldInverseInertiaTensor;
         const tqx = -ax * j, tqy = -ay * j, tqz = -az * j;
         bodyB.angular_velocity.x += (IB.e00 * tqx + IB.e01 * tqy + IB.e02 * tqz) * bodyB.angular_factor.x;
@@ -7976,16 +8141,16 @@ proto._contactRelativeNormalVelocityPreGravity = function (point, bodyA, bodyB) 
 // Applies velocity-space impulse j*(dx,dy,dz) at contact offsets rA/rB (A: -j, B: +j).
 proto._applyVelocityImpulse = function (bodyA, bodyB, rA, rB, dx, dy, dz, j) {
     const px = dx * j, py = dy * j, pz = dz * j;
-    if (bodyA._massInverted > 0) {
-        bodyA.linear_velocity.x -= px * bodyA._massInverted * bodyA.linear_factor.x;
-        bodyA.linear_velocity.y -= py * bodyA._massInverted * bodyA.linear_factor.y;
-        bodyA.linear_velocity.z -= pz * bodyA._massInverted * bodyA.linear_factor.z;
+    if (bodyA._mass_inverted > 0) {
+        bodyA.linear_velocity.x -= px * bodyA._mass_inverted * bodyA.linear_factor.x;
+        bodyA.linear_velocity.y -= py * bodyA._mass_inverted * bodyA.linear_factor.y;
+        bodyA.linear_velocity.z -= pz * bodyA._mass_inverted * bodyA.linear_factor.z;
         this._applyAngularVelocityImpulse(bodyA, rA, -px, -py, -pz);
     }
-    if (bodyB._massInverted > 0) {
-        bodyB.linear_velocity.x += px * bodyB._massInverted * bodyB.linear_factor.x;
-        bodyB.linear_velocity.y += py * bodyB._massInverted * bodyB.linear_factor.y;
-        bodyB.linear_velocity.z += pz * bodyB._massInverted * bodyB.linear_factor.z;
+    if (bodyB._mass_inverted > 0) {
+        bodyB.linear_velocity.x += px * bodyB._mass_inverted * bodyB.linear_factor.x;
+        bodyB.linear_velocity.y += py * bodyB._mass_inverted * bodyB.linear_factor.y;
+        bodyB.linear_velocity.z += pz * bodyB._mass_inverted * bodyB.linear_factor.z;
         this._applyAngularVelocityImpulse(bodyB, rB, px, py, pz);
     }
 };
@@ -8200,7 +8365,7 @@ class PointConstraint extends Constraint {
     solve(h) {
         if (!this.enabled) return;
         const bodyA = this.bodyA, bodyB = this.bodyB;
-        const hasB = !!(bodyB && bodyB._massInverted > 0);
+        const hasB = !!(bodyB && bodyB._mass_inverted > 0);
 
         this._anchorAWorld(this._worldA);
         this._anchorBWorld(this._worldB);
@@ -8235,12 +8400,12 @@ class PointConstraint extends Constraint {
 
     // K = (1/mA + 1/mB)*I3 - [rA×]*IA^-1*[rA×] - [rB×]*IB^-1*[rB×].
     _buildEffectiveMassMatrix(out, bodyA, bodyB, rA, rB) {
-        const mSum = bodyA._massInverted + (bodyB ? bodyB._massInverted : 0);
+        const mSum = bodyA._mass_inverted + (bodyB ? bodyB._mass_inverted : 0);
         out.e00 = mSum; out.e01 = 0; out.e02 = 0;
         out.e10 = 0; out.e11 = mSum; out.e12 = 0;
         out.e20 = 0; out.e21 = 0; out.e22 = mSum;
-        if (bodyA._massInverted > 0) PointConstraint._subtractSkewInertiaSkew(out, rA, bodyA._worldInverseInertiaTensor);
-        if (bodyB && bodyB._massInverted > 0) PointConstraint._subtractSkewInertiaSkew(out, rB, bodyB._worldInverseInertiaTensor);
+        if (bodyA._mass_inverted > 0) PointConstraint._subtractSkewInertiaSkew(out, rA, bodyA._worldInverseInertiaTensor);
+        if (bodyB && bodyB._mass_inverted > 0) PointConstraint._subtractSkewInertiaSkew(out, rB, bodyB._worldInverseInertiaTensor);
     }
 
     // out -= [r×]^T * I * [r×]
@@ -8256,10 +8421,10 @@ class PointConstraint extends Constraint {
 
     // sign: -1 for bodyA, +1 for bodyB (matches C = worldB - worldA).
     _applyCorrection(body, r, delta, sign) {
-        if (body._massInverted <= 0) return;
-        body.position.x += sign * delta.x * body._massInverted * body.linear_factor.x;
-        body.position.y += sign * delta.y * body._massInverted * body.linear_factor.y;
-        body.position.z += sign * delta.z * body._massInverted * body.linear_factor.z;
+        if (body._mass_inverted <= 0) return;
+        body.position.x += sign * delta.x * body._mass_inverted * body.linear_factor.x;
+        body.position.y += sign * delta.y * body._mass_inverted * body.linear_factor.y;
+        body.position.z += sign * delta.z * body._mass_inverted * body.linear_factor.z;
 
         const px = sign * delta.x, py = sign * delta.y, pz = sign * delta.z;
         const torqueX = r.y * pz - r.z * py, torqueY = r.z * px - r.x * pz, torqueZ = r.x * py - r.y * px;
@@ -8381,14 +8546,14 @@ class HingeConstraint extends Constraint {
         bodyA.rotation.transformVectorInPlace(axis);
 
         let wSum = 0;
-        const hasB = !!(bodyB && bodyB._massInverted > 0);
-        if (bodyA._massInverted > 0) wSum += HingeConstraint._angularEffectiveMass(bodyA, axis.x, axis.y, axis.z);
+        const hasB = !!(bodyB && bodyB._mass_inverted > 0);
+        if (bodyA._mass_inverted > 0) wSum += HingeConstraint._angularEffectiveMass(bodyA, axis.x, axis.y, axis.z);
         if (hasB) wSum += HingeConstraint._angularEffectiveMass(bodyB, axis.x, axis.y, axis.z);
         if (wSum < 1e-12) return;
 
         const scale = -violation / wSum;
         const tx = axis.x * scale, ty = axis.y * scale, tz = axis.z * scale;
-        if (bodyA._massInverted > 0) HingeConstraint._applyAngularDelta(bodyA, tx, ty, tz);
+        if (bodyA._mass_inverted > 0) HingeConstraint._applyAngularDelta(bodyA, tx, ty, tz);
         if (hasB) HingeConstraint._applyAngularDelta(bodyB, -tx, -ty, -tz);
     }
 
@@ -8400,8 +8565,8 @@ class HingeConstraint extends Constraint {
         bodyA.rotation.transformVectorInPlace(axis);
 
         let wSum = 0;
-        const hasB = !!(bodyB && bodyB._massInverted > 0);
-        if (bodyA._massInverted > 0) wSum += HingeConstraint._angularEffectiveMass(bodyA, axis.x, axis.y, axis.z);
+        const hasB = !!(bodyB && bodyB._mass_inverted > 0);
+        if (bodyA._mass_inverted > 0) wSum += HingeConstraint._angularEffectiveMass(bodyA, axis.x, axis.y, axis.z);
         if (hasB) wSum += HingeConstraint._angularEffectiveMass(bodyB, axis.x, axis.y, axis.z);
         if (wSum < 1e-12) return;
 
@@ -8426,7 +8591,7 @@ class HingeConstraint extends Constraint {
 
         const scale = step / wSum;
         const tx = axis.x * scale, ty = axis.y * scale, tz = axis.z * scale;
-        if (bodyA._massInverted > 0) HingeConstraint._applyAngularDelta(bodyA, tx, ty, tz);
+        if (bodyA._mass_inverted > 0) HingeConstraint._applyAngularDelta(bodyA, tx, ty, tz);
         if (hasB) HingeConstraint._applyAngularDelta(bodyB, -tx, -ty, -tz);
     }
 
@@ -8457,15 +8622,15 @@ class HingeConstraint extends Constraint {
         const errLen = Math.sqrt(errLenSq);
         const dx = ex / errLen, dy = ey / errLen, dz = ez / errLen;
         let wSum = 0;
-        const hasB = !!(bodyB && bodyB._massInverted > 0);
-        if (bodyA._massInverted > 0) wSum += HingeConstraint._angularEffectiveMass(bodyA, dx, dy, dz);
+        const hasB = !!(bodyB && bodyB._mass_inverted > 0);
+        if (bodyA._mass_inverted > 0) wSum += HingeConstraint._angularEffectiveMass(bodyA, dx, dy, dz);
         if (hasB) wSum += HingeConstraint._angularEffectiveMass(bodyB, dx, dy, dz);
         if (wSum < 1e-12) return;
 
         const scale = -1 / wSum;
         const tx = ex * scale, ty = ey * scale, tz = ez * scale;
 
-        if (bodyA._massInverted > 0) HingeConstraint._applyAngularDelta(bodyA, -tx, -ty, -tz);
+        if (bodyA._mass_inverted > 0) HingeConstraint._applyAngularDelta(bodyA, -tx, -ty, -tz);
         if (hasB) HingeConstraint._applyAngularDelta(bodyB, tx, ty, tz);
     }
 
@@ -8560,14 +8725,14 @@ class WeldConstraint extends Constraint {
         const dx = wex / wLen, dy = wey / wLen, dz = wez / wLen;
 
         let wSum = 0;
-        const hasB = !!(bodyB && bodyB._massInverted > 0);
-        if (bodyA._massInverted > 0) wSum += WeldConstraint._angularEffectiveMass(bodyA, dx, dy, dz);
+        const hasB = !!(bodyB && bodyB._mass_inverted > 0);
+        if (bodyA._mass_inverted > 0) wSum += WeldConstraint._angularEffectiveMass(bodyA, dx, dy, dz);
         if (hasB) wSum += WeldConstraint._angularEffectiveMass(bodyB, dx, dy, dz);
         if (wSum < 1e-12) return;
 
         const scale = -1 / wSum;
         const tx = wex * scale, ty = wey * scale, tz = wez * scale;
-        if (bodyA._massInverted > 0) WeldConstraint._applyAngularDelta(bodyA, -tx, -ty, -tz);
+        if (bodyA._mass_inverted > 0) WeldConstraint._applyAngularDelta(bodyA, -tx, -ty, -tz);
         if (hasB) WeldConstraint._applyAngularDelta(bodyB, tx, ty, tz);
     }
 
@@ -8643,7 +8808,7 @@ class SliderConstraint extends Constraint {
 
     _solvePerpendicularPosition() {
         const bodyA = this.bodyA, bodyB = this.bodyB;
-        const hasB = !!(bodyB && bodyB._massInverted > 0);
+        const hasB = !!(bodyB && bodyB._mass_inverted > 0);
 
         this._anchorAWorld(this._worldA);
         this._anchorBWorld(this._worldB);
@@ -8676,9 +8841,9 @@ class SliderConstraint extends Constraint {
 
     _solveAxis(bodyA, bodyB, rA, rB, dir, C) {
         const dx = dir.x, dy = dir.y, dz = dir.z;
-        let wSum = bodyA._massInverted + (bodyB ? bodyB._massInverted : 0);
+        let wSum = bodyA._mass_inverted + (bodyB ? bodyB._mass_inverted : 0);
         const rax = rA.y * dz - rA.z * dy, ray = rA.z * dx - rA.x * dz, raz = rA.x * dy - rA.y * dx;
-        if (bodyA._massInverted > 0) {
+        if (bodyA._mass_inverted > 0) {
             const IA = bodyA._worldInverseInertiaTensor;
             const ix = IA.e00 * rax + IA.e01 * ray + IA.e02 * raz;
             const iy = IA.e10 * rax + IA.e11 * ray + IA.e12 * raz;
@@ -8686,7 +8851,7 @@ class SliderConstraint extends Constraint {
             wSum += rax * ix + ray * iy + raz * iz;
         }
         const rbx = rB.y * dz - rB.z * dy, rby = rB.z * dx - rB.x * dz, rbz = rB.x * dy - rB.y * dx;
-        if (bodyB && bodyB._massInverted > 0) {
+        if (bodyB && bodyB._mass_inverted > 0) {
             const IB = bodyB._worldInverseInertiaTensor;
             const ix = IB.e00 * rbx + IB.e01 * rby + IB.e02 * rbz;
             const iy = IB.e10 * rbx + IB.e11 * rby + IB.e12 * rbz;
@@ -8701,16 +8866,16 @@ class SliderConstraint extends Constraint {
         const deltaLambda = -C * correctionFraction / wSum;
         const px = dx * deltaLambda, py = dy * deltaLambda, pz = dz * deltaLambda;
 
-        if (bodyA._massInverted > 0) {
-            bodyA.position.x -= px * bodyA._massInverted * bodyA.linear_factor.x;
-            bodyA.position.y -= py * bodyA._massInverted * bodyA.linear_factor.y;
-            bodyA.position.z -= pz * bodyA._massInverted * bodyA.linear_factor.z;
+        if (bodyA._mass_inverted > 0) {
+            bodyA.position.x -= px * bodyA._mass_inverted * bodyA.linear_factor.x;
+            bodyA.position.y -= py * bodyA._mass_inverted * bodyA.linear_factor.y;
+            bodyA.position.z -= pz * bodyA._mass_inverted * bodyA.linear_factor.z;
             SliderConstraint._applyAngular(bodyA, rA, -px, -py, -pz);
         }
-        if (bodyB && bodyB._massInverted > 0) {
-            bodyB.position.x += px * bodyB._massInverted * bodyB.linear_factor.x;
-            bodyB.position.y += py * bodyB._massInverted * bodyB.linear_factor.y;
-            bodyB.position.z += pz * bodyB._massInverted * bodyB.linear_factor.z;
+        if (bodyB && bodyB._mass_inverted > 0) {
+            bodyB.position.x += px * bodyB._mass_inverted * bodyB.linear_factor.x;
+            bodyB.position.y += py * bodyB._mass_inverted * bodyB.linear_factor.y;
+            bodyB.position.z += pz * bodyB._mass_inverted * bodyB.linear_factor.z;
             SliderConstraint._applyAngular(bodyB, rB, px, py, pz);
         }
     }
@@ -8785,6 +8950,13 @@ Queries._scratchLocalAABB = new AABB();
 Queries._scratchExpandedAABB = new AABB();
 Queries._scratchCompoundChild = { shape: null, position: new Vector3(), rotation: new Quaternion(0, 0, 0, 1) };
 Queries._scratchTriangleShape = new TriangleShape(new Vector3(), new Vector3(), new Vector3());
+// Mesh/compound BVH-prune scratch (RayIntersect.js / ShapeIntersect.js).
+Queries._scratchInvRot = new Quaternion(0, 0, 0, 1);
+Queries._scratchCorner = new Vector3();
+Queries._scratchLeafList = [];
+Queries._scratchTriA = new Vector3();
+Queries._scratchTriB = new Vector3();
+Queries._scratchTriC = new Vector3();
 
 ActionPhysics.Queries = Queries;
 
@@ -8888,6 +9060,27 @@ Queries.rayIntersect = function (bodies, start, end, ignore) {
     return best;
 };
 
+// rayIntersectAll(bodies, start, end, ignore) -> array of { body, point, normal, distance, fraction },
+// EVERY body the segment crosses, sorted nearest-first (empty array = no hit). Same per-body test as
+// rayIntersect; use this when the caller filters hits itself (e.g. skip-my-own-body-then-take-the-next).
+Queries.rayIntersectAll = function (bodies, start, end, ignore) {
+    const dirX = end.x - start.x, dirY = end.y - start.y, dirZ = end.z - start.z;
+    const fullLen = Math.sqrt(dirX * dirX + dirY * dirY + dirZ * dirZ);
+    const out = [];
+    if (fullLen < 1e-12) return out;
+
+    for (let i = 0; i < bodies.length; i++) {
+        const body = bodies[i];
+        if (Queries._isIgnored(body, ignore)) continue;
+        if (!Queries._rayIntersectsAABB(start, end, body.getAABB())) continue;
+
+        const hit = Queries._sweepPointVsBody(start, dirX, dirY, dirZ, fullLen, body);
+        if (hit) { hit.body = body; out.push(hit); }
+    }
+    out.sort(function (a, b) { return a.fraction - b.fraction; });
+    return out;
+};
+
 // Same result shape, against exactly one known body - no candidate filtering/AABB reject. What
 // RigidBody.rayIntersect delegates to.
 Queries.rayIntersectBody = function (start, end, body) {
@@ -8925,16 +9118,60 @@ Queries._sweepPointVsBody = function (start, dirX, dirY, dirZ, fullLen, body) {
     return Queries._advance(support, placedPoint, start, dirX, dirY, dirZ, fullLen);
 };
 
+// The AABB of the ray segment [start, start + dir*fullLen], transformed into `body`'s local space
+// (8-corner inverse transform, conservative), written into `out`. Used to prune a mesh/compound
+// BVH so a cast doesn't sweep every triangle/child.
+Queries._localRayAABBInto = function (out, body, start, dirX, dirY, dirZ, fullLen) {
+    const ex = start.x, ey = start.y, ez = start.z;
+    const fx = start.x + dirX, fy = start.y + dirY, fz = start.z + dirZ; // dir is already scaled to fullLen by the callers
+    const invRot = Queries._scratchInvRot.copy(body.rotation).invert();
+    out.setEmpty();
+    for (let k = 0; k < 2; k++) {
+        const wx = k ? fx : ex, wy = k ? fy : ey, wz = k ? fz : ez;
+        Queries._scratchCorner.set(wx - body.position.x, wy - body.position.y, wz - body.position.z);
+        invRot.transformVectorInPlace(Queries._scratchCorner);
+        const cx = Queries._scratchCorner.x, cy = Queries._scratchCorner.y, cz = Queries._scratchCorner.z;
+        if (cx < out.min.x) out.min.x = cx; if (cx > out.max.x) out.max.x = cx;
+        if (cy < out.min.y) out.min.y = cy; if (cy > out.max.y) out.max.y = cy;
+        if (cz < out.min.z) out.min.z = cz; if (cz > out.max.z) out.max.z = cz;
+    }
+    return out;
+};
+
 Queries._sweepPointVsCompound = function (start, dirX, dirY, dirZ, fullLen, body) {
-    const children = body.shape.children;
+    const shape = body.shape;
     let best = null, bestFraction = Infinity;
-    for (let i = 0; i < children.length; i++) {
-        const child = children[i];
+
+    // BVH-prune: only test children whose local AABB the ray's local AABB overlaps.
+    let indices = null;
+    if (shape.children.length > Midphase.SMALL_MESH_TRIS) {
+        const bvh = ActionPhysics.ensureShapeBVH(shape);
+        Queries._localRayAABBInto(Queries._scratchLocalAABB, body, start, dirX, dirY, dirZ, fullLen);
+        indices = Queries._scratchLeafList; indices.length = 0;
+        bvh.query(Queries._scratchLocalAABB, function (i) { indices.push(i); });
+    }
+    const count = indices ? indices.length : shape.children.length;
+
+    // Snapshot the child index list before the loop: a mesh/compound child recurses, and the
+    // recursion reuses Queries._scratchLeafList.
+    const childIndices = indices ? indices.slice() : null;
+    for (let k = 0; k < count; k++) {
+        const child = shape.children[childIndices ? childIndices[k] : k];
+
+        // A child that is itself a mesh or a nested compound is NOT a convex primitive - GJK would
+        // hit MeshShape.supportInto and throw. Recurse into it at its own world placement, exactly
+        // as the midphase expands such a child.
+        if (Queries._isMesh(child.shape) || Queries._isCompound(child.shape)) {
+            const sub = Queries._childAsBody(body, child);
+            const hit = Queries._sweepPointVsBody(start, dirX, dirY, dirZ, fullLen, sub);
+            if (hit && hit.fraction < bestFraction) { bestFraction = hit.fraction; best = hit; }
+            continue;
+        }
+
         const placedChild = Queries._placedChildInto(Queries._scratchCompoundChild, body, child);
 
-        const pointShape = Queries._scratchPointShape;
         const placedPoint = Queries._scratchPlacedA;
-        placedPoint.shape = pointShape;
+        placedPoint.shape = Queries._scratchPointShape;
         placedPoint.position = Queries._scratchPos.set(start.x, start.y, start.z);
         placedPoint.rotation = Queries._identityQuat;
 
@@ -8949,17 +9186,46 @@ Queries._sweepPointVsCompound = function (start, dirX, dirY, dirZ, fullLen, body
     return best;
 };
 
+// A one-off body object placing `child` (a CompoundShapeChild) at its world transform under
+// `parentBody`, so a mesh/compound child can be run through the same per-body query path as a
+// top-level body. Allocates - only hit when a query ray actually crosses a compound-of-meshes,
+// which is rare (a static model collider, once per probe).
+Queries._childAsBody = function (parentBody, child) {
+    const pos = new Vector3();
+    parentBody.rotation.transformVectorInto(child.localPosition, pos);
+    pos.addInPlace(parentBody.position);
+    const rot = new Quaternion();
+    rot.multiplyQuaternions(parentBody.rotation, child.localRotation);
+    return {
+        shape: child.shape,
+        position: pos,
+        rotation: rot,
+        getAABB: function () { return parentBody.getAABB(); } // conservative; only used for the mesh BVH-prune's own placement math, which reads position/rotation
+    };
+};
+
 Queries._sweepPointVsMesh = function (start, dirX, dirY, dirZ, fullLen, body) {
     const shape = body.shape;
-    const a = new Vector3(), b = new Vector3(), c = new Vector3();
+    const a = Queries._scratchTriA, b = Queries._scratchTriB, c = Queries._scratchTriC;
     let best = null, bestFraction = Infinity;
-    for (let i = 0; i < shape.triangleCount; i++) {
-        shape.triangleAt(i, a, b, c);
+
+    // BVH-prune: only sweep triangles whose local AABB the ray's local AABB overlaps. A tiny mesh
+    // scans all - a couple of triangles is cheaper than building/walking a tree.
+    let indices = null;
+    if (shape.triangleCount > Midphase.SMALL_MESH_TRIS) {
+        const bvh = ActionPhysics.ensureShapeBVH(shape);
+        Queries._localRayAABBInto(Queries._scratchLocalAABB, body, start, dirX, dirY, dirZ, fullLen);
+        indices = Queries._scratchLeafList; indices.length = 0;
+        bvh.query(Queries._scratchLocalAABB, function (i) { indices.push(i); });
+    }
+    const count = indices ? indices.length : shape.triangleCount;
+
+    for (let k = 0; k < count; k++) {
+        shape.triangleAt(indices ? indices[k] : k, a, b, c);
         const placedTri = Queries._placedTriangleInto(Queries._scratchCompoundChild, body, Queries._scratchTriangleShape, a, b, c);
 
-        const pointShape = Queries._scratchPointShape;
         const placedPoint = Queries._scratchPlacedA;
-        placedPoint.shape = pointShape;
+        placedPoint.shape = Queries._scratchPointShape;
         placedPoint.position = Queries._scratchPos.set(start.x, start.y, start.z);
         placedPoint.rotation = Queries._identityQuat;
 
@@ -9033,11 +9299,50 @@ Queries._sweepShapeVsBody = function (shape, rotation, start, dirX, dirY, dirZ, 
     return Queries._advance(support, placedShape, start, dirX, dirY, dirZ, fullLen);
 };
 
+// Local-space AABB of the swept region: the segment [start, start+dir] fattened by `pad` (the
+// moving shape's bounding radius), inverse-transformed into `body`'s frame. Conservative.
+Queries._localSweptAABBInto = function (out, body, start, dirX, dirY, dirZ, pad) {
+    const invRot = Queries._scratchInvRot.copy(body.rotation).invert();
+    out.setEmpty();
+    for (let k = 0; k < 2; k++) {
+        const wx = start.x + (k ? dirX : 0), wy = start.y + (k ? dirY : 0), wz = start.z + (k ? dirZ : 0);
+        Queries._scratchCorner.set(wx - body.position.x, wy - body.position.y, wz - body.position.z);
+        invRot.transformVectorInPlace(Queries._scratchCorner);
+        const cx = Queries._scratchCorner.x, cy = Queries._scratchCorner.y, cz = Queries._scratchCorner.z;
+        if (cx < out.min.x) out.min.x = cx; if (cx > out.max.x) out.max.x = cx;
+        if (cy < out.min.y) out.min.y = cy; if (cy > out.max.y) out.max.y = cy;
+        if (cz < out.min.z) out.min.z = cz; if (cz > out.max.z) out.max.z = cz;
+    }
+    out.min.x -= pad; out.min.y -= pad; out.min.z -= pad;
+    out.max.x += pad; out.max.y += pad; out.max.z += pad;
+    return out;
+};
+
 Queries._sweepShapeVsCompound = function (shape, rotation, start, dirX, dirY, dirZ, fullLen, body) {
-    const children = body.shape.children;
+    const compound = body.shape;
     let best = null, bestFraction = Infinity;
-    for (let i = 0; i < children.length; i++) {
-        const child = children[i];
+
+    let indices = null;
+    if (compound.children.length > Midphase.SMALL_MESH_TRIS) {
+        const bvh = ActionPhysics.ensureShapeBVH(compound);
+        Queries._localSweptAABBInto(Queries._scratchLocalAABB, body, start, dirX, dirY, dirZ, Queries._sweptShapeRadius(shape));
+        indices = Queries._scratchLeafList; indices.length = 0;
+        bvh.query(Queries._scratchLocalAABB, function (i) { indices.push(i); });
+    }
+    const count = indices ? indices.length : compound.children.length;
+    const childIndices = indices ? indices.slice() : null; // recursion reuses _scratchLeafList
+
+    for (let k = 0; k < count; k++) {
+        const child = compound.children[childIndices ? childIndices[k] : k];
+
+        // Mesh / nested-compound child: not a convex primitive. Recurse at its world placement.
+        if (Queries._isMesh(child.shape) || Queries._isCompound(child.shape)) {
+            const sub = Queries._childAsBody(body, child);
+            const hit = Queries._sweepShapeVsBody(shape, rotation, start, dirX, dirY, dirZ, fullLen, sub);
+            if (hit && hit.fraction < bestFraction) { bestFraction = hit.fraction; best = hit; }
+            continue;
+        }
+
         const placedChild = Queries._placedChildInto(Queries._scratchCompoundChild, body, child);
 
         const placedShape = Queries._scratchPlacedA;
@@ -9058,10 +9363,20 @@ Queries._sweepShapeVsCompound = function (shape, rotation, start, dirX, dirY, di
 
 Queries._sweepShapeVsMesh = function (shape, rotation, start, dirX, dirY, dirZ, fullLen, body) {
     const meshShape = body.shape;
-    const a = new Vector3(), b = new Vector3(), c = new Vector3();
+    const a = Queries._scratchTriA, b = Queries._scratchTriB, c = Queries._scratchTriC;
     let best = null, bestFraction = Infinity;
-    for (let i = 0; i < meshShape.triangleCount; i++) {
-        meshShape.triangleAt(i, a, b, c);
+
+    let indices = null;
+    if (meshShape.triangleCount > Midphase.SMALL_MESH_TRIS) {
+        const bvh = ActionPhysics.ensureShapeBVH(meshShape);
+        Queries._localSweptAABBInto(Queries._scratchLocalAABB, body, start, dirX, dirY, dirZ, Queries._sweptShapeRadius(shape));
+        indices = Queries._scratchLeafList; indices.length = 0;
+        bvh.query(Queries._scratchLocalAABB, function (i) { indices.push(i); });
+    }
+    const count = indices ? indices.length : meshShape.triangleCount;
+
+    for (let k = 0; k < count; k++) {
+        meshShape.triangleAt(indices ? indices[k] : k, a, b, c);
         const placedTri = Queries._placedTriangleInto(Queries._scratchCompoundChild, body, Queries._scratchTriangleShape, a, b, c);
 
         const placedShape = Queries._scratchPlacedA;
@@ -9078,6 +9393,17 @@ Queries._sweepShapeVsMesh = function (shape, rotation, start, dirX, dirY, dirZ, 
         if (hit && hit.fraction < bestFraction) { bestFraction = hit.fraction; best = hit; }
     }
     return best;
+};
+
+// Bounding-sphere radius of `shape` about its local origin - the pad for a swept-shape AABB.
+Queries._sweptShapeRadius = function (shape) {
+    const lb = Queries._scratchExpandedAABB;
+    shape.localAABBInto(lb);
+    return Math.sqrt(
+        Math.max(lb.min.x * lb.min.x, lb.max.x * lb.max.x) +
+        Math.max(lb.min.y * lb.min.y, lb.max.y * lb.max.y) +
+        Math.max(lb.min.z * lb.min.z, lb.max.z * lb.max.z)
+    );
 };
 
 // Stationary overlap test: does `shape`, held fixed at `start`, touch anything? One GJK query per
@@ -9141,10 +9467,44 @@ Queries._overlapTestOne = function (shape, start, rotation, body) {
     return { point: epaResult.pointA, normal: epaResult.normal, distance: 0, fraction: 0, body: body };
 };
 
+// Local-space AABB of `shape` held at world `start` (its bounding sphere -> an axis box),
+// inverse-transformed into `body`'s frame, for BVH pruning an overlap test.
+Queries._localOverlapAABBInto = function (out, body, start, shape) {
+    const r = Queries._sweptShapeRadius(shape);
+    Queries._scratchCorner.set(start.x - body.position.x, start.y - body.position.y, start.z - body.position.z);
+    Queries._scratchInvRot.copy(body.rotation).invert().transformVectorInPlace(Queries._scratchCorner);
+    out.min.x = Queries._scratchCorner.x - r; out.max.x = Queries._scratchCorner.x + r;
+    out.min.y = Queries._scratchCorner.y - r; out.max.y = Queries._scratchCorner.y + r;
+    out.min.z = Queries._scratchCorner.z - r; out.max.z = Queries._scratchCorner.z + r;
+    return out;
+};
+
 Queries._overlapTestCompound = function (shape, start, rotation, body) {
-    const children = body.shape.children;
-    for (let i = 0; i < children.length; i++) {
-        const placedChild = Queries._placedChildInto(Queries._scratchCompoundChild, body, children[i]);
+    const compound = body.shape;
+    let indices = null;
+    if (compound.children.length > Midphase.SMALL_MESH_TRIS) {
+        const bvh = ActionPhysics.ensureShapeBVH(compound);
+        Queries._localOverlapAABBInto(Queries._scratchLocalAABB, body, start, shape);
+        indices = Queries._scratchLeafList; indices.length = 0;
+        bvh.query(Queries._scratchLocalAABB, function (i) { indices.push(i); });
+    }
+    const children = compound.children;
+    const count = indices ? indices.length : children.length;
+    const childIndices = indices ? indices.slice() : null; // recursion reuses _scratchLeafList
+    for (let k = 0; k < count; k++) {
+        const child = children[childIndices ? childIndices[k] : k];
+
+        // Mesh / nested-compound child: recurse at its world placement (GJK can't take a mesh).
+        if (Queries._isMesh(child.shape) || Queries._isCompound(child.shape)) {
+            const sub = Queries._childAsBody(body, child);
+            const hit = Queries._isMesh(child.shape)
+                ? Queries._overlapTestMesh(shape, start, rotation, sub)
+                : Queries._overlapTestCompound(shape, start, rotation, sub);
+            if (hit) return { point: hit.point, normal: hit.normal, distance: 0, fraction: 0, body: body };
+            continue;
+        }
+
+        const placedChild = Queries._placedChildInto(Queries._scratchCompoundChild, body, child);
         const placedShape = Queries._scratchPlacedA;
         placedShape.shape = shape;
         placedShape.position = start;
@@ -9165,9 +9525,17 @@ Queries._overlapTestCompound = function (shape, start, rotation, body) {
 
 Queries._overlapTestMesh = function (shape, start, rotation, body) {
     const meshShape = body.shape;
-    const a = new Vector3(), b = new Vector3(), c = new Vector3();
-    for (let i = 0; i < meshShape.triangleCount; i++) {
-        meshShape.triangleAt(i, a, b, c);
+    const a = Queries._scratchTriA, b = Queries._scratchTriB, c = Queries._scratchTriC;
+    let indices = null;
+    if (meshShape.triangleCount > Midphase.SMALL_MESH_TRIS) {
+        const bvh = ActionPhysics.ensureShapeBVH(meshShape);
+        Queries._localOverlapAABBInto(Queries._scratchLocalAABB, body, start, shape);
+        indices = Queries._scratchLeafList; indices.length = 0;
+        bvh.query(Queries._scratchLocalAABB, function (i) { indices.push(i); });
+    }
+    const count = indices ? indices.length : meshShape.triangleCount;
+    for (let k = 0; k < count; k++) {
+        meshShape.triangleAt(indices ? indices[k] : k, a, b, c);
         const placedTri = Queries._placedTriangleInto(Queries._scratchCompoundChild, body, Queries._scratchTriangleShape, a, b, c);
         const placedShape = Queries._scratchPlacedA;
         placedShape.shape = shape;
@@ -9274,6 +9642,12 @@ class World {
 
     rayIntersect(start, end, ignore) {
         return Queries.rayIntersect(this.bodies, start, end, ignore);
+    }
+
+    // Every body the segment crosses, nearest-first (empty array = miss). For a caller that filters
+    // hits itself; rayIntersect() is the single-nearest form.
+    rayIntersectAll(start, end, ignore) {
+        return Queries.rayIntersectAll(this.bodies, start, end, ignore);
     }
 
     shapeIntersect(shape, start, end, rotation, ignore) {
@@ -9499,7 +9873,7 @@ class CharacterController {
     /** Projects `direction` onto the current ground (or air) and drives velocity toward it. */
     move(direction, deltaTime) {
         this.moveVector.copy(direction);
-        this.moveVector.scale(this.moveSpeed);
+        this.moveVector.scaleInPlace(this.moveSpeed);
         this._lastMoveDelta.copy(this.moveVector);
 
         if (this.currentState.name === 'falling' || this.currentState.name === 'jumping') {
@@ -9511,8 +9885,8 @@ class CharacterController {
             const dot = this.moveVector.dot(this.contactNormal);
             this.projectedMove.copy(this.moveVector);
             this.tempVector.copy(this.contactNormal);
-            this.tempVector.scale(dot);
-            this.projectedMove.subtract(this.tempVector);
+            this.tempVector.scaleInPlace(dot);
+            this.projectedMove.subInPlace(this.tempVector);
             this._lastProjectedMove.copy(this.projectedMove);
 
             this.body.linear_velocity.x += (this.projectedMove.x - this.body.linear_velocity.x) * this.groundAcceleration;

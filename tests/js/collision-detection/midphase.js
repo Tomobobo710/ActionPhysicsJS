@@ -27,8 +27,8 @@
 	test('collision/midphase', 'a compound only offers up the child that overlaps the other body', function (t) {
 		var mid = new AP.Midphase();
 		var comp = new AP.CompoundShape();
-		comp.addChild(new AP.SphereShape(0.5), new V(-3, 0, 0), new Q());
-		comp.addChild(new AP.SphereShape(0.5), new V(3, 0, 0), new Q());
+		comp.addChildShape(new AP.SphereShape(0.5), new V(-3, 0, 0), new Q());
+		comp.addChildShape(new AP.SphereShape(0.5), new V(3, 0, 0), new Q());
 		var cbody = mkBody(t, comp, 1, [0, 0, 0]);
 		var near = mkBody(t, new AP.SphereShape(0.5), 1, [3.2, 0, 0]);
 		var pairs = mid.expandPair(cbody, near);
@@ -39,8 +39,8 @@
 	test('collision/midphase', 'a compound offers every child that overlaps a large enough other body', function (t) {
 		var mid = new AP.Midphase();
 		var comp = new AP.CompoundShape();
-		comp.addChild(new AP.SphereShape(0.5), new V(-3, 0, 0), new Q());
-		comp.addChild(new AP.SphereShape(0.5), new V(3, 0, 0), new Q());
+		comp.addChildShape(new AP.SphereShape(0.5), new V(-3, 0, 0), new Q());
+		comp.addChildShape(new AP.SphereShape(0.5), new V(3, 0, 0), new Q());
 		var cbody = mkBody(t, comp, 1, [0, 0, 0]);
 		var wide = mkBody(t, new AP.BoxShape(10, 10, 10), 1, [0, 0, 0]);
 		t.checkEqual(mid.expandPair(cbody, wide).length, 2, 'both children overlap a wide enough box');
@@ -51,7 +51,7 @@
 		var comp = new AP.CompoundShape();
 
 		var childRot = new Q().setAxisAngle(new V(0, 0, 1), Math.PI / 2);
-		comp.addChild(new AP.BoxShape(1, 1, 1), new V(0, 0, 0), childRot);
+		comp.addChildShape(new AP.BoxShape(1, 1, 1), new V(0, 0, 0), childRot);
 
 		var cbody = mkBody(t, comp, 1, [0, 0, 0]);
 		var other = mkBody(t, new AP.SphereShape(0.5), 1, [0, 0, 0]);
@@ -96,7 +96,7 @@
 	test('collision/midphase', 'repeated identical queries reuse the cached leaf-walk result', function (t) {
 		var mid = new AP.Midphase();
 		var comp = new AP.CompoundShape();
-		comp.addChild(new AP.SphereShape(0.5), new V(0, 0, 0), new Q());
+		comp.addChildShape(new AP.SphereShape(0.5), new V(0, 0, 0), new Q());
 		var cbody = mkBody(t, comp, 1, [0, 0, 0]);
 		var other = mkBody(t, new AP.SphereShape(0.5), 1, [0.5, 0, 0]);
 		var first = mid.expandPair(cbody, other);
@@ -108,7 +108,7 @@
 	test('collision/midphase', 'an empty leaf-walk result is itself cached (no candidates both times)', function (t) {
 		var mid = new AP.Midphase();
 		var comp = new AP.CompoundShape();
-		comp.addChild(new AP.SphereShape(0.5), new V(0, 0, 0), new Q());
+		comp.addChildShape(new AP.SphereShape(0.5), new V(0, 0, 0), new Q());
 		var cbody = mkBody(t, comp, 1, [0, 0, 0]);
 		var farOther = mkBody(t, new AP.SphereShape(0.5), 1, [500, 500, 500]);
 		t.checkEqual(mid.expandPair(cbody, farOther).length, 0, 'first query: no candidates');
@@ -118,7 +118,7 @@
 	test('collision/midphase', 'invalidate() clears the leaf cache', function (t) {
 		var mid = new AP.Midphase();
 		var comp = new AP.CompoundShape();
-		comp.addChild(new AP.SphereShape(0.5), new V(0, 0, 0), new Q());
+		comp.addChildShape(new AP.SphereShape(0.5), new V(0, 0, 0), new Q());
 		var cbody = mkBody(t, comp, 1, [0, 0, 0]);
 		var other = mkBody(t, new AP.SphereShape(0.5), 1, [0.5, 0, 0]);
 		mid.expandPair(cbody, other);
@@ -130,7 +130,7 @@
 	test('collision/midphase', "a shape's BVH is built once and shared across bodies using that shape", function (t) {
 		var mid = new AP.Midphase();
 		var comp = new AP.CompoundShape();
-		comp.addChild(new AP.SphereShape(0.5), new V(1, 0, 0), new Q());
+		comp.addChildShape(new AP.SphereShape(0.5), new V(1, 0, 0), new Q());
 		var bodyOne = mkBody(t, comp, 1, [0, 0, 0]);
 		var bodyTwo = mkBody(t, comp, 1, [10, 0, 0]);
 		var other = mkBody(t, new AP.SphereShape(0.5), 1, [1.2, 0, 0]);
@@ -143,9 +143,9 @@
 	test('collision/midphase', 'compound candidate expansion against a nearby probe', function (t) {
 		var mid = new AP.Midphase();
 		var comp = new AP.CompoundShape();
-		comp.addChild(new AP.SphereShape(0.6), new V(-2, 0, 0), new Q());
-		comp.addChild(new AP.SphereShape(0.6), new V(2, 0, 0), new Q());
-		comp.addChild(new AP.SphereShape(0.6), new V(0, 2, 0), new Q());
+		comp.addChildShape(new AP.SphereShape(0.6), new V(-2, 0, 0), new Q());
+		comp.addChildShape(new AP.SphereShape(0.6), new V(2, 0, 0), new Q());
+		comp.addChildShape(new AP.SphereShape(0.6), new V(0, 2, 0), new Q());
 		var cbody = mkBody(t, comp, 1, [0, 0, 0], '#4af');
 		var probe = mkBody(t, new AP.SphereShape(0.4), 1, [2.3, 0, 0], '#f55');
 		var pairs = mid.expandPair(cbody, probe);

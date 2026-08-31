@@ -3,6 +3,9 @@
 class NarrowPhase {
     constructor() {
         this.manifolds = new ContactManifoldList();
+        // Same object under the Goblin-style name; walk it as .contact_manifolds.first ->
+        // .next_manifold. The `contacts` World event delivers this same list.
+        this.contact_manifolds = this.manifolds;
         this._dt = 1 / 60; // set each tick by step()
         this._gjk = new GJK();
         this._epa = new EPA();

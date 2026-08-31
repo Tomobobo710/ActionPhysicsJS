@@ -41,7 +41,7 @@ class SliderConstraint extends Constraint {
 
     _solvePerpendicularPosition() {
         const bodyA = this.bodyA, bodyB = this.bodyB;
-        const hasB = !!(bodyB && bodyB._massInverted > 0);
+        const hasB = !!(bodyB && bodyB._mass_inverted > 0);
 
         this._anchorAWorld(this._worldA);
         this._anchorBWorld(this._worldB);
@@ -74,9 +74,9 @@ class SliderConstraint extends Constraint {
 
     _solveAxis(bodyA, bodyB, rA, rB, dir, C) {
         const dx = dir.x, dy = dir.y, dz = dir.z;
-        let wSum = bodyA._massInverted + (bodyB ? bodyB._massInverted : 0);
+        let wSum = bodyA._mass_inverted + (bodyB ? bodyB._mass_inverted : 0);
         const rax = rA.y * dz - rA.z * dy, ray = rA.z * dx - rA.x * dz, raz = rA.x * dy - rA.y * dx;
-        if (bodyA._massInverted > 0) {
+        if (bodyA._mass_inverted > 0) {
             const IA = bodyA._worldInverseInertiaTensor;
             const ix = IA.e00 * rax + IA.e01 * ray + IA.e02 * raz;
             const iy = IA.e10 * rax + IA.e11 * ray + IA.e12 * raz;
@@ -84,7 +84,7 @@ class SliderConstraint extends Constraint {
             wSum += rax * ix + ray * iy + raz * iz;
         }
         const rbx = rB.y * dz - rB.z * dy, rby = rB.z * dx - rB.x * dz, rbz = rB.x * dy - rB.y * dx;
-        if (bodyB && bodyB._massInverted > 0) {
+        if (bodyB && bodyB._mass_inverted > 0) {
             const IB = bodyB._worldInverseInertiaTensor;
             const ix = IB.e00 * rbx + IB.e01 * rby + IB.e02 * rbz;
             const iy = IB.e10 * rbx + IB.e11 * rby + IB.e12 * rbz;
@@ -99,16 +99,16 @@ class SliderConstraint extends Constraint {
         const deltaLambda = -C * correctionFraction / wSum;
         const px = dx * deltaLambda, py = dy * deltaLambda, pz = dz * deltaLambda;
 
-        if (bodyA._massInverted > 0) {
-            bodyA.position.x -= px * bodyA._massInverted * bodyA.linear_factor.x;
-            bodyA.position.y -= py * bodyA._massInverted * bodyA.linear_factor.y;
-            bodyA.position.z -= pz * bodyA._massInverted * bodyA.linear_factor.z;
+        if (bodyA._mass_inverted > 0) {
+            bodyA.position.x -= px * bodyA._mass_inverted * bodyA.linear_factor.x;
+            bodyA.position.y -= py * bodyA._mass_inverted * bodyA.linear_factor.y;
+            bodyA.position.z -= pz * bodyA._mass_inverted * bodyA.linear_factor.z;
             SliderConstraint._applyAngular(bodyA, rA, -px, -py, -pz);
         }
-        if (bodyB && bodyB._massInverted > 0) {
-            bodyB.position.x += px * bodyB._massInverted * bodyB.linear_factor.x;
-            bodyB.position.y += py * bodyB._massInverted * bodyB.linear_factor.y;
-            bodyB.position.z += pz * bodyB._massInverted * bodyB.linear_factor.z;
+        if (bodyB && bodyB._mass_inverted > 0) {
+            bodyB.position.x += px * bodyB._mass_inverted * bodyB.linear_factor.x;
+            bodyB.position.y += py * bodyB._mass_inverted * bodyB.linear_factor.y;
+            bodyB.position.z += pz * bodyB._mass_inverted * bodyB.linear_factor.z;
             SliderConstraint._applyAngular(bodyB, rB, px, py, pz);
         }
     }

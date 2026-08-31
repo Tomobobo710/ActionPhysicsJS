@@ -60,14 +60,14 @@ class WeldConstraint extends Constraint {
         const dx = wex / wLen, dy = wey / wLen, dz = wez / wLen;
 
         let wSum = 0;
-        const hasB = !!(bodyB && bodyB._massInverted > 0);
-        if (bodyA._massInverted > 0) wSum += WeldConstraint._angularEffectiveMass(bodyA, dx, dy, dz);
+        const hasB = !!(bodyB && bodyB._mass_inverted > 0);
+        if (bodyA._mass_inverted > 0) wSum += WeldConstraint._angularEffectiveMass(bodyA, dx, dy, dz);
         if (hasB) wSum += WeldConstraint._angularEffectiveMass(bodyB, dx, dy, dz);
         if (wSum < 1e-12) return;
 
         const scale = -1 / wSum;
         const tx = wex * scale, ty = wey * scale, tz = wez * scale;
-        if (bodyA._massInverted > 0) WeldConstraint._applyAngularDelta(bodyA, -tx, -ty, -tz);
+        if (bodyA._mass_inverted > 0) WeldConstraint._applyAngularDelta(bodyA, -tx, -ty, -tz);
         if (hasB) WeldConstraint._applyAngularDelta(bodyB, tx, ty, tz);
     }
 

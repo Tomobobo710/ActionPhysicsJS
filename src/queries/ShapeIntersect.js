@@ -55,11 +55,50 @@ Queries._sweepShapeVsBody = function (shape, rotation, start, dirX, dirY, dirZ, 
     return Queries._advance(support, placedShape, start, dirX, dirY, dirZ, fullLen);
 };
 
+// Local-space AABB of the swept region: the segment [start, start+dir] fattened by `pad` (the
+// moving shape's bounding radius), inverse-transformed into `body`'s frame. Conservative.
+Queries._localSweptAABBInto = function (out, body, start, dirX, dirY, dirZ, pad) {
+    const invRot = Queries._scratchInvRot.copy(body.rotation).invert();
+    out.setEmpty();
+    for (let k = 0; k < 2; k++) {
+        const wx = start.x + (k ? dirX : 0), wy = start.y + (k ? dirY : 0), wz = start.z + (k ? dirZ : 0);
+        Queries._scratchCorner.set(wx - body.position.x, wy - body.position.y, wz - body.position.z);
+        invRot.transformVectorInPlace(Queries._scratchCorner);
+        const cx = Queries._scratchCorner.x, cy = Queries._scratchCorner.y, cz = Queries._scratchCorner.z;
+        if (cx < out.min.x) out.min.x = cx; if (cx > out.max.x) out.max.x = cx;
+        if (cy < out.min.y) out.min.y = cy; if (cy > out.max.y) out.max.y = cy;
+        if (cz < out.min.z) out.min.z = cz; if (cz > out.max.z) out.max.z = cz;
+    }
+    out.min.x -= pad; out.min.y -= pad; out.min.z -= pad;
+    out.max.x += pad; out.max.y += pad; out.max.z += pad;
+    return out;
+};
+
 Queries._sweepShapeVsCompound = function (shape, rotation, start, dirX, dirY, dirZ, fullLen, body) {
-    const children = body.shape.children;
+    const compound = body.shape;
     let best = null, bestFraction = Infinity;
-    for (let i = 0; i < children.length; i++) {
-        const child = children[i];
+
+    let indices = null;
+    if (compound.children.length > Midphase.SMALL_MESH_TRIS) {
+        const bvh = ActionPhysics.ensureShapeBVH(compound);
+        Queries._localSweptAABBInto(Queries._scratchLocalAABB, body, start, dirX, dirY, dirZ, Queries._sweptShapeRadius(shape));
+        indices = Queries._scratchLeafList; indices.length = 0;
+        bvh.query(Queries._scratchLocalAABB, function (i) { indices.push(i); });
+    }
+    const count = indices ? indices.length : compound.children.length;
+    const childIndices = indices ? indices.slice() : null; // recursion reuses _scratchLeafList
+
+    for (let k = 0; k < count; k++) {
+        const child = compound.children[childIndices ? childIndices[k] : k];
+
+        // Mesh / nested-compound child: not a convex primitive. Recurse at its world placement.
+        if (Queries._isMesh(child.shape) || Queries._isCompound(child.shape)) {
+            const sub = Queries._childAsBody(body, child);
+            const hit = Queries._sweepShapeVsBody(shape, rotation, start, dirX, dirY, dirZ, fullLen, sub);
+            if (hit && hit.fraction < bestFraction) { bestFraction = hit.fraction; best = hit; }
+            continue;
+        }
+
         const placedChild = Queries._placedChildInto(Queries._scratchCompoundChild, body, child);
 
         const placedShape = Queries._scratchPlacedA;
@@ -80,10 +119,20 @@ Queries._sweepShapeVsCompound = function (shape, rotation, start, dirX, dirY, di
 
 Queries._sweepShapeVsMesh = function (shape, rotation, start, dirX, dirY, dirZ, fullLen, body) {
     const meshShape = body.shape;
-    const a = new Vector3(), b = new Vector3(), c = new Vector3();
+    const a = Queries._scratchTriA, b = Queries._scratchTriB, c = Queries._scratchTriC;
     let best = null, bestFraction = Infinity;
-    for (let i = 0; i < meshShape.triangleCount; i++) {
-        meshShape.triangleAt(i, a, b, c);
+
+    let indices = null;
+    if (meshShape.triangleCount > Midphase.SMALL_MESH_TRIS) {
+        const bvh = ActionPhysics.ensureShapeBVH(meshShape);
+        Queries._localSweptAABBInto(Queries._scratchLocalAABB, body, start, dirX, dirY, dirZ, Queries._sweptShapeRadius(shape));
+        indices = Queries._scratchLeafList; indices.length = 0;
+        bvh.query(Queries._scratchLocalAABB, function (i) { indices.push(i); });
+    }
+    const count = indices ? indices.length : meshShape.triangleCount;
+
+    for (let k = 0; k < count; k++) {
+        meshShape.triangleAt(indices ? indices[k] : k, a, b, c);
         const placedTri = Queries._placedTriangleInto(Queries._scratchCompoundChild, body, Queries._scratchTriangleShape, a, b, c);
 
         const placedShape = Queries._scratchPlacedA;
@@ -100,6 +149,17 @@ Queries._sweepShapeVsMesh = function (shape, rotation, start, dirX, dirY, dirZ, 
         if (hit && hit.fraction < bestFraction) { bestFraction = hit.fraction; best = hit; }
     }
     return best;
+};
+
+// Bounding-sphere radius of `shape` about its local origin - the pad for a swept-shape AABB.
+Queries._sweptShapeRadius = function (shape) {
+    const lb = Queries._scratchExpandedAABB;
+    shape.localAABBInto(lb);
+    return Math.sqrt(
+        Math.max(lb.min.x * lb.min.x, lb.max.x * lb.max.x) +
+        Math.max(lb.min.y * lb.min.y, lb.max.y * lb.max.y) +
+        Math.max(lb.min.z * lb.min.z, lb.max.z * lb.max.z)
+    );
 };
 
 // Stationary overlap test: does `shape`, held fixed at `start`, touch anything? One GJK query per
@@ -163,10 +223,44 @@ Queries._overlapTestOne = function (shape, start, rotation, body) {
     return { point: epaResult.pointA, normal: epaResult.normal, distance: 0, fraction: 0, body: body };
 };
 
+// Local-space AABB of `shape` held at world `start` (its bounding sphere -> an axis box),
+// inverse-transformed into `body`'s frame, for BVH pruning an overlap test.
+Queries._localOverlapAABBInto = function (out, body, start, shape) {
+    const r = Queries._sweptShapeRadius(shape);
+    Queries._scratchCorner.set(start.x - body.position.x, start.y - body.position.y, start.z - body.position.z);
+    Queries._scratchInvRot.copy(body.rotation).invert().transformVectorInPlace(Queries._scratchCorner);
+    out.min.x = Queries._scratchCorner.x - r; out.max.x = Queries._scratchCorner.x + r;
+    out.min.y = Queries._scratchCorner.y - r; out.max.y = Queries._scratchCorner.y + r;
+    out.min.z = Queries._scratchCorner.z - r; out.max.z = Queries._scratchCorner.z + r;
+    return out;
+};
+
 Queries._overlapTestCompound = function (shape, start, rotation, body) {
-    const children = body.shape.children;
-    for (let i = 0; i < children.length; i++) {
-        const placedChild = Queries._placedChildInto(Queries._scratchCompoundChild, body, children[i]);
+    const compound = body.shape;
+    let indices = null;
+    if (compound.children.length > Midphase.SMALL_MESH_TRIS) {
+        const bvh = ActionPhysics.ensureShapeBVH(compound);
+        Queries._localOverlapAABBInto(Queries._scratchLocalAABB, body, start, shape);
+        indices = Queries._scratchLeafList; indices.length = 0;
+        bvh.query(Queries._scratchLocalAABB, function (i) { indices.push(i); });
+    }
+    const children = compound.children;
+    const count = indices ? indices.length : children.length;
+    const childIndices = indices ? indices.slice() : null; // recursion reuses _scratchLeafList
+    for (let k = 0; k < count; k++) {
+        const child = children[childIndices ? childIndices[k] : k];
+
+        // Mesh / nested-compound child: recurse at its world placement (GJK can't take a mesh).
+        if (Queries._isMesh(child.shape) || Queries._isCompound(child.shape)) {
+            const sub = Queries._childAsBody(body, child);
+            const hit = Queries._isMesh(child.shape)
+                ? Queries._overlapTestMesh(shape, start, rotation, sub)
+                : Queries._overlapTestCompound(shape, start, rotation, sub);
+            if (hit) return { point: hit.point, normal: hit.normal, distance: 0, fraction: 0, body: body };
+            continue;
+        }
+
+        const placedChild = Queries._placedChildInto(Queries._scratchCompoundChild, body, child);
         const placedShape = Queries._scratchPlacedA;
         placedShape.shape = shape;
         placedShape.position = start;
@@ -187,9 +281,17 @@ Queries._overlapTestCompound = function (shape, start, rotation, body) {
 
 Queries._overlapTestMesh = function (shape, start, rotation, body) {
     const meshShape = body.shape;
-    const a = new Vector3(), b = new Vector3(), c = new Vector3();
-    for (let i = 0; i < meshShape.triangleCount; i++) {
-        meshShape.triangleAt(i, a, b, c);
+    const a = Queries._scratchTriA, b = Queries._scratchTriB, c = Queries._scratchTriC;
+    let indices = null;
+    if (meshShape.triangleCount > Midphase.SMALL_MESH_TRIS) {
+        const bvh = ActionPhysics.ensureShapeBVH(meshShape);
+        Queries._localOverlapAABBInto(Queries._scratchLocalAABB, body, start, shape);
+        indices = Queries._scratchLeafList; indices.length = 0;
+        bvh.query(Queries._scratchLocalAABB, function (i) { indices.push(i); });
+    }
+    const count = indices ? indices.length : meshShape.triangleCount;
+    for (let k = 0; k < count; k++) {
+        meshShape.triangleAt(indices ? indices[k] : k, a, b, c);
         const placedTri = Queries._placedTriangleInto(Queries._scratchCompoundChild, body, Queries._scratchTriangleShape, a, b, c);
         const placedShape = Queries._scratchPlacedA;
         placedShape.shape = shape;

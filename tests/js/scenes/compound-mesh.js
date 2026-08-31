@@ -32,8 +32,8 @@
 		var G = t.AP;
 		var shape = new G.CompoundShape();
 		var zero = new G.Vector3(0, 0, 0), ident = new G.Quaternion(0, 0, 0, 1);
-		shape.addChild(new G.BoxShape(ARM_LEN, ARM_THICK, ARM_THICK), zero, ident);
-		shape.addChild(new G.BoxShape(ARM_THICK, ARM_THICK, ARM_LEN), zero, ident);
+		shape.addChildShape(new G.BoxShape(ARM_LEN, ARM_THICK, ARM_THICK), zero, ident);
+		shape.addChildShape(new G.BoxShape(ARM_THICK, ARM_THICK, ARM_LEN), zero, ident);
 		opts = U.withMat(opts || {});
 		var b = new G.RigidBody(shape, mass);
 		if (opts.pos) b.position.set(opts.pos[0], opts.pos[1], opts.pos[2]);

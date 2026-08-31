@@ -21,9 +21,9 @@
 	test('shapes/rigidbody', 'mass and inverse mass are consistent', function (t) {
 		var b = t.loneBody(new AP.BoxShape(1, 1, 1), { mass: 4, color: '#4af' });
 		t.check(b.mass, 4, 0, 'mass');
-		t.check(b._massInverted, 0.25, 1e-12, 'inverse mass');
+		t.check(b._mass_inverted, 0.25, 1e-12, 'inverse mass');
 		var s = t.loneBody(new AP.BoxShape(1, 1, 1), { mass: 0, pos: [3, 0, 0], color: '#888' });
-		t.check(s._massInverted, 0, 0, 'a zero-mass body has zero inverse mass, not Infinity');
+		t.check(s._mass_inverted, 0, 0, 'a zero-mass body has zero inverse mass, not Infinity');
 	}, { visual: true });
 
 	test('shapes/rigidbody', 'inertia tensor scales from the shape density-1 result by mass/volume', function (t) {

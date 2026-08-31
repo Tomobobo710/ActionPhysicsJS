@@ -85,6 +85,12 @@ class World {
         return Queries.rayIntersect(this.bodies, start, end, ignore);
     }
 
+    // Every body the segment crosses, nearest-first (empty array = miss). For a caller that filters
+    // hits itself; rayIntersect() is the single-nearest form.
+    rayIntersectAll(start, end, ignore) {
+        return Queries.rayIntersectAll(this.bodies, start, end, ignore);
+    }
+
     shapeIntersect(shape, start, end, rotation, ignore) {
         return Queries.shapeIntersect(this.bodies, shape, start, end, rotation, ignore);
     }
