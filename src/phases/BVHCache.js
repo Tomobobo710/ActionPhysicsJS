@@ -43,22 +43,34 @@ proto._ensureBVH = function (shape) {
 };
 
 // Leaf indices of `shape` whose AABB overlaps `localQueryAABB` (in shape-local space). Cached per
-// (shape, other body); an identical query next tick hits the cache.
+// (other body, shape): expanding one body pair queries many shapes under the same otherBodyId -
+// every nested mesh child of a compound ground - so keying on the body alone makes each query evict
+// the previous one and the cache never hits.
 proto._queryLeaves = function (shape, otherBodyId, localQueryAABB) {
-    const cached = this._leafCache.get(otherBodyId);
-    if (cached && cached.shape === shape &&
+    let byShape = this._leafCache.get(otherBodyId);
+    if (byShape === undefined) {
+        byShape = new Map();
+        this._leafCache.set(otherBodyId, byShape);
+    }
+    const cached = byShape.get(shape);
+    if (cached &&
         cached.minx === localQueryAABB.min.x && cached.miny === localQueryAABB.min.y && cached.minz === localQueryAABB.min.z &&
         cached.maxx === localQueryAABB.max.x && cached.maxy === localQueryAABB.max.y && cached.maxz === localQueryAABB.max.z) {
         return cached.hits; // may be [] - a valid, cached answer
     }
     const bvh = this._ensureBVH(shape);
-    const hits = [];
+    const hits = cached ? cached.hits : [];
+    hits.length = 0;
     bvh.query(localQueryAABB, function (i) { hits.push(i); });
-    this._leafCache.set(otherBodyId, {
-        shape: shape,
-        minx: localQueryAABB.min.x, miny: localQueryAABB.min.y, minz: localQueryAABB.min.z,
-        maxx: localQueryAABB.max.x, maxy: localQueryAABB.max.y, maxz: localQueryAABB.max.z,
-        hits: hits
-    });
+    if (cached) {
+        cached.minx = localQueryAABB.min.x; cached.miny = localQueryAABB.min.y; cached.minz = localQueryAABB.min.z;
+        cached.maxx = localQueryAABB.max.x; cached.maxy = localQueryAABB.max.y; cached.maxz = localQueryAABB.max.z;
+    } else {
+        byShape.set(shape, {
+            minx: localQueryAABB.min.x, miny: localQueryAABB.min.y, minz: localQueryAABB.min.z,
+            maxx: localQueryAABB.max.x, maxy: localQueryAABB.max.y, maxz: localQueryAABB.max.z,
+            hits: hits
+        });
+    }
     return hits;
 };

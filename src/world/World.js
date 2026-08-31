@@ -6,6 +6,11 @@ class World {
         this.narrowphase = narrowphase;
         this.solver = solver;
         this.midphase = new Midphase();
+        this.islandManager = new IslandManager();
+        // When false, the island manager is skipped and every dynamic body is solved every tick -
+        // nothing ever parks. Sleeping is otherwise transparent (a parked body resumes exactly where
+        // it stopped), so this is only for debugging or for a scene that wants to rule sleep out.
+        this.allowSleeping = true;
         this.gravity = new Vector3(0, -9.81, 0);
         this.bodies = [];
         this.constraints = [];
@@ -56,6 +61,9 @@ class World {
 
         const pairs = this.broadphase.computePairs();
         const manifolds = this.narrowphase.step(pairs, this.midphase, dt);
+
+        // Decide sleep state before the solver runs; it skips !isAwake dynamic bodies.
+        if (this.allowSleeping) this.islandManager.update(this.bodies, manifolds, this.constraints, dt);
 
         const narrowphase = this.narrowphase;
         this.solver.step(this.bodies, manifolds, this.gravity, dt, function (mans) {

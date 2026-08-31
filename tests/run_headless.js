@@ -35,8 +35,8 @@ console.log(stampLine.replace(/^\/\/\s*/, '=== ') + ' ===');
 // every run.
 //
 // perf-settle-scene-compound.js was skipped here for the same reason, but now carries a hard assert
-// (no prop tunnels through the compound ground, none slides off the map edge) — folded back in as a
-// scale correctness test for compound-vs-mesh contact, despite the ~7s wall-clock cost.
+// (no prop tunnels through the compound heightfield ground, none slides off the map edge) — folded
+// back in as a scale correctness test for compound-vs-mesh contact. ~6s wall-clock.
 //
 // pyramid.js (385-box pyramid, 1200 ticks) was skipped here too while box-box fell through to
 // GJK/EPA's single-point contacts and the perf was untenable for routine runs. Box-box now has its
@@ -44,12 +44,8 @@ console.log(stampLine.replace(/^\/\/\s*/, '=== ') + ' ===');
 // as the primary correctness stress target for box-box: it is pure box-on-box, at scale, with hard
 // asserts (no sink, no rise, exact layer spacing, no drift, no tilt, full rest) rather than soft ones.
 //
-// sleep.js exercises island-based body sleeping (src/solver/IslandManager.js). The manager module is
-// complete but not yet called from the world step, so every sleep test fails. Skipped until that call
-// site lands - fold it back in by removing this entry.
 var SKIP_FILES = {
 	'perf-settle-scene.js': true,
-	'sleep.js': true,
 };
 
 // The suite IS the folder. tests/js/ holds the runner, the renderer, the shared _*.js helpers, and
