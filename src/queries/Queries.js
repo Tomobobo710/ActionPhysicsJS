@@ -21,8 +21,9 @@ class Queries {
     static _placedTriangleInto(outPlaced, body, triShape, a, b, c) {
         triShape.a = a; triShape.b = b; triShape.c = c;
         outPlaced.shape = triShape;
-        outPlaced.position = body.position;
-        outPlaced.rotation = body.rotation;
+        // Copy, not alias: outPlaced is a shared scratch that _placedChildInto later mutates.
+        outPlaced.position.copy(body.position);
+        outPlaced.rotation.copy(body.rotation);
         return outPlaced;
     }
 
@@ -49,6 +50,8 @@ Queries._scratchPointShape = new SphereShape(0); // zero-radius sphere: a point,
 Queries._scratchLocalAABB = new AABB();
 Queries._scratchExpandedAABB = new AABB();
 Queries._scratchCompoundChild = { shape: null, position: new Vector3(), rotation: new Quaternion(0, 0, 0, 1) };
+// Copy target for _scratchPlacedB.position, so it never aliases a live RigidBody.position.
+Queries._scratchPlacedBPos = new Vector3();
 Queries._scratchTriangleShape = new TriangleShape(new Vector3(), new Vector3(), new Vector3());
 // Mesh/compound BVH-prune scratch (RayIntersect.js / ShapeIntersect.js).
 Queries._scratchInvRot = new Quaternion(0, 0, 0, 1);

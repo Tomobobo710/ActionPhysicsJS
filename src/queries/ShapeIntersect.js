@@ -44,7 +44,7 @@ Queries._sweepShapeVsBody = function (shape, rotation, start, dirX, dirY, dirZ, 
 
     const placedBody = Queries._scratchPlacedB;
     placedBody.shape = body.shape;
-    placedBody.position = body.position;
+    placedBody.position = Queries._scratchPlacedBPos.copy(body.position);
     placedBody.rotation = body.rotation;
 
     const support = Queries._scratchSupport;
@@ -209,7 +209,7 @@ Queries._overlapTestOne = function (shape, start, rotation, body) {
 
     const placedBody = Queries._scratchPlacedB;
     placedBody.shape = body.shape;
-    placedBody.position = body.position;
+    placedBody.position = Queries._scratchPlacedBPos.copy(body.position);
     placedBody.rotation = body.rotation;
 
     const support = Queries._scratchSupport;

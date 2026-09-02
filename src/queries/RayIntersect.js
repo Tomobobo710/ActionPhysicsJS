@@ -68,7 +68,7 @@ Queries._sweepPointVsBody = function (start, dirX, dirY, dirZ, fullLen, body) {
 
     const placedBody = Queries._scratchPlacedB;
     placedBody.shape = body.shape;
-    placedBody.position = body.position;
+    placedBody.position = Queries._scratchPlacedBPos.copy(body.position);
     placedBody.rotation = body.rotation;
 
     const support = Queries._scratchSupport;

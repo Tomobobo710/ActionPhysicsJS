@@ -32,7 +32,12 @@ proto._seedTetrahedron = function (support) {
             this._push(this._newW, this._newA, this._newB);
         }
         const result = this._simplexTetrahedron();
-        if (result.containsOrigin) return { overlapping: true, simplex: this };
+        // A collapsed seed tetra (degenerate faces all skipped) can falsely report containsOrigin;
+        // confirm with a support probe, else fall through to the incremental loop.
+        if (result.containsOrigin) {
+            if (this._originStrictlyInside(support)) return { overlapping: true, simplex: this };
+            continue;
+        }
         const distSq = result.closest.x * result.closest.x + result.closest.y * result.closest.y + result.closest.z * result.closest.z;
         if (distSq < bestDistSq) { bestDistSq = distSq; bestSet = s; }
     }

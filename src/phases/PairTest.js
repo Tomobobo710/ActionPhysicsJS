@@ -142,11 +142,35 @@ proto._testPrimitivePair = function (placedA, placedB) {
     if (gjkResult.overlapping) {
         const epaResult = this._epa.run(support, gjkResult.simplex);
         contact.setFromEPA(epaResult);
+        // A penetration depth larger than the smaller shape's extent is a degenerate EPA result;
+        // treat it as separated by that distance.
+        if (contact.signedDistance > NarrowPhase._maxPlausiblePenetration(placedA.shape, placedB.shape)) {
+            contact.setFromGJKSeparated({
+                distance: contact.signedDistance,
+                normal: contact.normal,
+                pointA: contact.pointOnA,
+                pointB: contact.pointOnB,
+            });
+        }
     } else {
         contact.setFromGJKSeparated(gjkResult);
     }
     results.push(contact);
     return results;
+};
+
+// The smaller shape's bounding-sphere radius; an EPA depth past this is rejected, never accepted.
+NarrowPhase._maxPlausiblePenetration = function (shapeA, shapeB) {
+    return Math.min(NarrowPhase._boundingRadius(shapeA), NarrowPhase._boundingRadius(shapeB));
+};
+
+NarrowPhase._boundingRadius = function (shape) {
+    const aabb = NarrowPhase._brAABB || (NarrowPhase._brAABB = new AABB());
+    shape.localAABBInto(aabb);
+    const ex = Math.max(Math.abs(aabb.min.x), Math.abs(aabb.max.x));
+    const ey = Math.max(Math.abs(aabb.min.y), Math.abs(aabb.max.y));
+    const ez = Math.max(Math.abs(aabb.min.z), Math.abs(aabb.max.z));
+    return Math.sqrt(ex * ex + ey * ey + ez * ez);
 };
 
 proto._isCompoundOrMesh = function (shape) {

@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-09-01T12:08:13.914Z
+// ActionPhysics 0.1.0 — built 2026-09-02T03:06:20.216Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine. Ships as one concatenated
@@ -4636,7 +4636,12 @@ proto._seedTetrahedron = function (support) {
             this._push(this._newW, this._newA, this._newB);
         }
         const result = this._simplexTetrahedron();
-        if (result.containsOrigin) return { overlapping: true, simplex: this };
+        // A collapsed seed tetra (degenerate faces all skipped) can falsely report containsOrigin;
+        // confirm with a support probe, else fall through to the incremental loop.
+        if (result.containsOrigin) {
+            if (this._originStrictlyInside(support)) return { overlapping: true, simplex: this };
+            continue;
+        }
         const distSq = result.closest.x * result.closest.x + result.closest.y * result.closest.y + result.closest.z * result.closest.z;
         if (distSq < bestDistSq) { bestDistSq = distSq; bestSet = s; }
     }
@@ -7151,11 +7156,35 @@ proto._testPrimitivePair = function (placedA, placedB) {
     if (gjkResult.overlapping) {
         const epaResult = this._epa.run(support, gjkResult.simplex);
         contact.setFromEPA(epaResult);
+        // A penetration depth larger than the smaller shape's extent is a degenerate EPA result;
+        // treat it as separated by that distance.
+        if (contact.signedDistance > NarrowPhase._maxPlausiblePenetration(placedA.shape, placedB.shape)) {
+            contact.setFromGJKSeparated({
+                distance: contact.signedDistance,
+                normal: contact.normal,
+                pointA: contact.pointOnA,
+                pointB: contact.pointOnB,
+            });
+        }
     } else {
         contact.setFromGJKSeparated(gjkResult);
     }
     results.push(contact);
     return results;
+};
+
+// The smaller shape's bounding-sphere radius; an EPA depth past this is rejected, never accepted.
+NarrowPhase._maxPlausiblePenetration = function (shapeA, shapeB) {
+    return Math.min(NarrowPhase._boundingRadius(shapeA), NarrowPhase._boundingRadius(shapeB));
+};
+
+NarrowPhase._boundingRadius = function (shape) {
+    const aabb = NarrowPhase._brAABB || (NarrowPhase._brAABB = new AABB());
+    shape.localAABBInto(aabb);
+    const ex = Math.max(Math.abs(aabb.min.x), Math.abs(aabb.max.x));
+    const ey = Math.max(Math.abs(aabb.min.y), Math.abs(aabb.max.y));
+    const ez = Math.max(Math.abs(aabb.min.z), Math.abs(aabb.max.z));
+    return Math.sqrt(ex * ex + ey * ey + ez * ez);
 };
 
 proto._isCompoundOrMesh = function (shape) {
@@ -8921,8 +8950,9 @@ class Queries {
     static _placedTriangleInto(outPlaced, body, triShape, a, b, c) {
         triShape.a = a; triShape.b = b; triShape.c = c;
         outPlaced.shape = triShape;
-        outPlaced.position = body.position;
-        outPlaced.rotation = body.rotation;
+        // Copy, not alias: outPlaced is a shared scratch that _placedChildInto later mutates.
+        outPlaced.position.copy(body.position);
+        outPlaced.rotation.copy(body.rotation);
         return outPlaced;
     }
 
@@ -8949,6 +8979,8 @@ Queries._scratchPointShape = new SphereShape(0); // zero-radius sphere: a point,
 Queries._scratchLocalAABB = new AABB();
 Queries._scratchExpandedAABB = new AABB();
 Queries._scratchCompoundChild = { shape: null, position: new Vector3(), rotation: new Quaternion(0, 0, 0, 1) };
+// Copy target for _scratchPlacedB.position, so it never aliases a live RigidBody.position.
+Queries._scratchPlacedBPos = new Vector3();
 Queries._scratchTriangleShape = new TriangleShape(new Vector3(), new Vector3(), new Vector3());
 // Mesh/compound BVH-prune scratch (RayIntersect.js / ShapeIntersect.js).
 Queries._scratchInvRot = new Quaternion(0, 0, 0, 1);
@@ -9107,7 +9139,7 @@ Queries._sweepPointVsBody = function (start, dirX, dirY, dirZ, fullLen, body) {
 
     const placedBody = Queries._scratchPlacedB;
     placedBody.shape = body.shape;
-    placedBody.position = body.position;
+    placedBody.position = Queries._scratchPlacedBPos.copy(body.position);
     placedBody.rotation = body.rotation;
 
     const support = Queries._scratchSupport;
@@ -9288,7 +9320,7 @@ Queries._sweepShapeVsBody = function (shape, rotation, start, dirX, dirY, dirZ, 
 
     const placedBody = Queries._scratchPlacedB;
     placedBody.shape = body.shape;
-    placedBody.position = body.position;
+    placedBody.position = Queries._scratchPlacedBPos.copy(body.position);
     placedBody.rotation = body.rotation;
 
     const support = Queries._scratchSupport;
@@ -9453,7 +9485,7 @@ Queries._overlapTestOne = function (shape, start, rotation, body) {
 
     const placedBody = Queries._scratchPlacedB;
     placedBody.shape = body.shape;
-    placedBody.position = body.position;
+    placedBody.position = Queries._scratchPlacedBPos.copy(body.position);
     placedBody.rotation = body.rotation;
 
     const support = Queries._scratchSupport;
