@@ -30,12 +30,18 @@ class World {
 
     addConstraint(constraint) {
         this.constraints.push(constraint);
+        // A new joint changes both endpoints' rest state.
+        IslandManager.wakeTouching(constraint.bodyA, null, this.constraints);
+        if (constraint.bodyB) IslandManager.wakeTouching(constraint.bodyB, null, this.constraints);
         return this;
     }
 
     removeConstraint(constraint) {
         const i = this.constraints.indexOf(constraint);
         if (i !== -1) this.constraints.splice(i, 1);
+        // These bodies may have been resting against something through the joint.
+        IslandManager.wakeTouching(constraint.bodyA, null, this.constraints);
+        if (constraint.bodyB) IslandManager.wakeTouching(constraint.bodyB, null, this.constraints);
         return this;
     }
 
@@ -48,10 +54,26 @@ class World {
     }
 
     removeRigidBody(body) {
+        // Wake anything resting on this body before it vanishes, or a sleeper hangs frozen where
+        // it used to be supported.
+        IslandManager.wakeTouching(body, this.narrowphase.manifolds, this.constraints);
         const i = this.bodies.indexOf(body);
         if (i !== -1) this.bodies.splice(i, 1);
         this.broadphase.remove(body);
         body.world = null;
+        return this;
+    }
+
+    // Move a body from outside step() (teleport, respawn, editor drag): writes the transform, then
+    // wakes whatever it was touching. A raw body.position.set() works too, but a sleeper resting
+    // on a STATIC/KINEMATIC body moved that way won't notice (a moved DYNAMIC body is caught by
+    // the snapshot check either way).
+    setBodyTransform(body, position, rotation) {
+        if (position) body.position.copy(position);
+        if (rotation) body.rotation.copy(rotation);
+        body._aabbDirty = true;
+        body.updateDerived();
+        IslandManager.wakeTouching(body, this.narrowphase.manifolds, this.constraints);
         return this;
     }
 
@@ -63,7 +85,7 @@ class World {
         const manifolds = this.narrowphase.step(pairs, this.midphase, dt);
 
         // Decide sleep state before the solver runs; it skips !isAwake dynamic bodies.
-        if (this.allowSleeping) this.islandManager.update(this.bodies, manifolds, this.constraints, dt);
+        if (this.allowSleeping) this.islandManager.update(this.bodies, manifolds, this.constraints, dt, this.gravity);
 
         const narrowphase = this.narrowphase;
         this.solver.step(this.bodies, manifolds, this.gravity, dt, function (mans) {

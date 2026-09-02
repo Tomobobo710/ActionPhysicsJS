@@ -70,6 +70,9 @@ class RigidBody {
         // Sleep state, owned entirely by the sleep manager.
         this.isAwake = true;
         this.sleepTimer = 0;
+        // Woken by a world change (not dynamics): Solver._reconcileRestVelocity reads it once to
+        // drop the stale rest ring so a freshly-unsupported body can fall. Cleared next solve.
+        this._restRingStale = false;
         // Set by the solver when a moving body pushes on this one; consumed by the rest-pin logic in
         // Solver._reconcileRestVelocity to release a pinned body the tick it is disturbed.
         this._restDisturbed = false;
@@ -122,6 +125,8 @@ class RigidBody {
 
     setGravity(x, y, z) {
         this.gravity = new Vector3(x, y, z);
+        // A sleeping body must not keep resting under the old gravity.
+        if (!this.isAwake) this.wakeUpFromWorldChange();
         return this;
     }
 
@@ -143,6 +148,17 @@ class RigidBody {
         if (this.bodyType !== BODY_DYNAMIC) return this;
         this.isAwake = true;
         this.sleepTimer = 0;
+        return this;
+    }
+
+    // Wake this body because the WORLD changed around it (support body/constraint removed,
+    // teleport, gravity change), not because dynamics disturbed it. Also marks the solver's
+    // separate rest pin (Solver._reconcileRestVelocity) stale so that pin releases too - it holds
+    // a body in place whether or not sleeping is on, hence the flag regardless of isAwake.
+    wakeUpFromWorldChange() {
+        if (this.bodyType !== BODY_DYNAMIC) return this;
+        this.wakeUp();
+        this._restRingStale = true;
         return this;
     }
 }

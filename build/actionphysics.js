@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-09-02T08:26:22.390Z
+// ActionPhysics 0.1.0 — built 2026-09-02T09:35:59.545Z
 // ==== src/intro.js ====
 /**
  * ActionPhysics - a deterministic, dependency-free 3D physics engine. Ships as one concatenated
@@ -3626,6 +3626,9 @@ class RigidBody {
         // Sleep state, owned entirely by the sleep manager.
         this.isAwake = true;
         this.sleepTimer = 0;
+        // Woken by a world change (not dynamics): Solver._reconcileRestVelocity reads it once to
+        // drop the stale rest ring so a freshly-unsupported body can fall. Cleared next solve.
+        this._restRingStale = false;
         // Set by the solver when a moving body pushes on this one; consumed by the rest-pin logic in
         // Solver._reconcileRestVelocity to release a pinned body the tick it is disturbed.
         this._restDisturbed = false;
@@ -3678,6 +3681,8 @@ class RigidBody {
 
     setGravity(x, y, z) {
         this.gravity = new Vector3(x, y, z);
+        // A sleeping body must not keep resting under the old gravity.
+        if (!this.isAwake) this.wakeUpFromWorldChange();
         return this;
     }
 
@@ -3699,6 +3704,17 @@ class RigidBody {
         if (this.bodyType !== BODY_DYNAMIC) return this;
         this.isAwake = true;
         this.sleepTimer = 0;
+        return this;
+    }
+
+    // Wake this body because the WORLD changed around it (support body/constraint removed,
+    // teleport, gravity change), not because dynamics disturbed it. Also marks the solver's
+    // separate rest pin (Solver._reconcileRestVelocity) stale so that pin releases too - it holds
+    // a body in place whether or not sleeping is on, hence the flag regardless of isAwake.
+    wakeUpFromWorldChange() {
+        if (this.bodyType !== BODY_DYNAMIC) return this;
+        this.wakeUp();
+        this._restRingStale = true;
         return this;
     }
 }
@@ -7510,6 +7526,15 @@ class Solver {
         for (let i = 0; i < bodies.length; i++) {
             const b = bodies[i];
             if (b.bodyType !== RigidBody.DYNAMIC || !b.isAwake) continue;
+
+            // A body woken by a world change still looks quiet to the ring (it holds the pose it
+            // slept in), so the ring would zero its fresh gravity and snap it back every tick.
+            // Drop it; it rebuilds from scratch and can't re-pin until still for a full window.
+            // Routine wakes (impulse, contact, island restless) don't set the flag.
+            if (b._restRingStale) {
+                b._restRingStale = false;
+                this._restRing.delete(b.id);
+            }
             let r = this._restRing.get(b.id);
             if (!r) {
                 r = { pos: [], rot: [], head: 0, count: 0, quietStreak: 0,
@@ -8205,6 +8230,18 @@ Solver._tangentBasis = function (normal, outT1, outT2) {
 // still settling and sags into it. Two dynamic bodies are coupled by a contact manifold or an
 // enabled constraint; static/kinematic bodies are boundaries, not links (or the floor would chain
 // the whole world into one island). Runs after narrowphase, before the solver.
+//
+// Sleeping must not change the result: a scene evolves identically with allowSleeping on or off.
+// A parked body has its velocity zeroed and is skipped by the integrator, so anything that would
+// have moved the awake version must wake it. Two paths do that: a per-tick snapshot check in
+// update() (transform drifted -> teleported; world gravity changed) and wakeTouching(), which
+// World calls before removing a body/constraint or after adding one (the sleeper's own state is
+// untouched by those, so the snapshot can't see them).
+//
+// Not handled: a body that shouldn't have slept in the first place - held ~still for TIME_TO_SLEEP
+// without being in equilibrium (held on a ramp, held mid-air by a grab). That needs an
+// equilibrium test in the sleep decision; deferred. A grab modeled as a constraint releases via
+// wakeTouching for free.
 class IslandManager {
     // A body is "quiet" this tick when both speeds are below these. The angular threshold sits well
     // above the ~0.071 rad/s band a side-resting cylinder oscillates in forever, so it doesn't
@@ -8215,9 +8252,16 @@ class IslandManager {
     // Seconds an entire island must stay quiet before it parks.
     static TIME_TO_SLEEP = 0.5;
 
+    // Drift past this from the park-time snapshot means something outside the solver moved the
+    // body. Tight, because the solver never touches a parked body: with no external write the
+    // snapshot matches exactly.
+    static WAKE_ON_MOVE_LINEAR = 1e-5;   // m, compared squared
+    static WAKE_ON_MOVE_ANGULAR = 1e-5;  // 1 - |dot(q, qSnapshot)|
+
     constructor() {
         this._parent = new Map();  // union-find, rebuilt each tick: bodyId -> bodyId
         this._islands = new Map(); // island root id -> { members, allQuiet }, rebuilt each tick
+        this._sleepGravity = new Vector3(0, 0, 0); // world gravity when the last body parked
     }
 
     _find(id) {
@@ -8243,10 +8287,20 @@ class IslandManager {
     }
 
     // Updates sleep state for every dynamic body. After this runs, isAwake === false means the
-    // solver may skip the body this tick.
-    update(bodies, manifolds, constraints, dt) {
+    // solver may skip the body this tick. `gravity` is this tick's world gravity, for the
+    // wake-on-gravity-change check.
+    update(bodies, manifolds, constraints, dt, gravity) {
         this._parent.clear();
         this._islands.clear();
+
+        // Wake any sleeping body moved, or whose gravity changed, since it parked. Before the
+        // island build so it counts as awake below; its neighbours follow next tick.
+        const gravityChanged = gravity && !IslandManager._vecApproxEqual(gravity, this._sleepGravity);
+        for (let i = 0; i < bodies.length; i++) {
+            const b = bodies[i];
+            if (b.bodyType !== RigidBody.DYNAMIC || b.isAwake) continue;
+            if (gravityChanged || IslandManager._movedSinceSleep(b)) b.wakeUpFromWorldChange();
+        }
 
         // 1. Seed the forest with every dynamic body as a singleton.
         for (let i = 0; i < bodies.length; i++) {
@@ -8302,7 +8356,11 @@ class IslandManager {
                     if (body.sleepTimer < minTimer) minTimer = body.sleepTimer;
                 }
                 if (minTimer >= IslandManager.TIME_TO_SLEEP) {
-                    for (const body of island.members) body.sleep();
+                    for (const body of island.members) {
+                        body.sleep();
+                        IslandManager._snapshotForSleep(body);
+                    }
+                    if (gravity) this._sleepGravity.copy(gravity);
                 }
             } else {
                 for (const body of island.members) {
@@ -8311,6 +8369,54 @@ class IslandManager {
                 }
             }
         }
+    }
+
+    // Wake every dynamic body coupled to `body` by a contact or enabled constraint, plus `body`
+    // itself. World calls this before removing a body/constraint or after adding one. Waking one
+    // per island suffices - update()'s restless-member rule wakes the rest.
+    static wakeTouching(body, manifolds, constraints) {
+        if (body.bodyType === RigidBody.DYNAMIC) body.wakeUpFromWorldChange();
+        if (manifolds) {
+            for (const manifold of manifolds.values()) {
+                if (manifold.bodyA === body) IslandManager._wakeIfDynamic(manifold.bodyB);
+                else if (manifold.bodyB === body) IslandManager._wakeIfDynamic(manifold.bodyA);
+            }
+        }
+        if (constraints) {
+            for (let i = 0; i < constraints.length; i++) {
+                const c = constraints[i];
+                if (c.bodyA === body) IslandManager._wakeIfDynamic(c.bodyB);
+                else if (c.bodyB === body) IslandManager._wakeIfDynamic(c.bodyA);
+            }
+        }
+    }
+
+    static _wakeIfDynamic(body) {
+        // Even when already awake: wakeUpFromWorldChange also drops the solver's rest pin, which
+        // holds a settled body in place regardless of the sleep flag.
+        if (body && body.bodyType === RigidBody.DYNAMIC) body.wakeUpFromWorldChange();
+    }
+
+    static _snapshotForSleep(body) {
+        if (!body._sleepPos) { body._sleepPos = new Vector3(); body._sleepRot = new Quaternion(); }
+        body._sleepPos.copy(body.position);
+        body._sleepRot.copy(body.rotation);
+    }
+
+    // Has something outside the solver written this parked body's transform since it slept?
+    static _movedSinceSleep(body) {
+        const s = body._sleepPos;
+        if (!s) return false; // parked before snapshotting existed; next park fixes it
+        const dx = body.position.x - s.x, dy = body.position.y - s.y, dz = body.position.z - s.z;
+        if (dx * dx + dy * dy + dz * dz > IslandManager.WAKE_ON_MOVE_LINEAR * IslandManager.WAKE_ON_MOVE_LINEAR) return true;
+        const q = body.rotation, r = body._sleepRot;
+        const dot = q.x * r.x + q.y * r.y + q.z * r.z + q.w * r.w;
+        return 1 - Math.abs(dot) > IslandManager.WAKE_ON_MOVE_ANGULAR;
+    }
+
+    static _vecApproxEqual(a, b) {
+        const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+        return dx * dx + dy * dy + dz * dz < 1e-12;
     }
 
     // Force `body` awake if `other` is a moving kinematic body or an awake dynamic one.
@@ -9621,12 +9727,18 @@ class World {
 
     addConstraint(constraint) {
         this.constraints.push(constraint);
+        // A new joint changes both endpoints' rest state.
+        IslandManager.wakeTouching(constraint.bodyA, null, this.constraints);
+        if (constraint.bodyB) IslandManager.wakeTouching(constraint.bodyB, null, this.constraints);
         return this;
     }
 
     removeConstraint(constraint) {
         const i = this.constraints.indexOf(constraint);
         if (i !== -1) this.constraints.splice(i, 1);
+        // These bodies may have been resting against something through the joint.
+        IslandManager.wakeTouching(constraint.bodyA, null, this.constraints);
+        if (constraint.bodyB) IslandManager.wakeTouching(constraint.bodyB, null, this.constraints);
         return this;
     }
 
@@ -9639,10 +9751,26 @@ class World {
     }
 
     removeRigidBody(body) {
+        // Wake anything resting on this body before it vanishes, or a sleeper hangs frozen where
+        // it used to be supported.
+        IslandManager.wakeTouching(body, this.narrowphase.manifolds, this.constraints);
         const i = this.bodies.indexOf(body);
         if (i !== -1) this.bodies.splice(i, 1);
         this.broadphase.remove(body);
         body.world = null;
+        return this;
+    }
+
+    // Move a body from outside step() (teleport, respawn, editor drag): writes the transform, then
+    // wakes whatever it was touching. A raw body.position.set() works too, but a sleeper resting
+    // on a STATIC/KINEMATIC body moved that way won't notice (a moved DYNAMIC body is caught by
+    // the snapshot check either way).
+    setBodyTransform(body, position, rotation) {
+        if (position) body.position.copy(position);
+        if (rotation) body.rotation.copy(rotation);
+        body._aabbDirty = true;
+        body.updateDerived();
+        IslandManager.wakeTouching(body, this.narrowphase.manifolds, this.constraints);
         return this;
     }
 
@@ -9654,7 +9782,7 @@ class World {
         const manifolds = this.narrowphase.step(pairs, this.midphase, dt);
 
         // Decide sleep state before the solver runs; it skips !isAwake dynamic bodies.
-        if (this.allowSleeping) this.islandManager.update(this.bodies, manifolds, this.constraints, dt);
+        if (this.allowSleeping) this.islandManager.update(this.bodies, manifolds, this.constraints, dt, this.gravity);
 
         const narrowphase = this.narrowphase;
         this.solver.step(this.bodies, manifolds, this.gravity, dt, function (mans) {

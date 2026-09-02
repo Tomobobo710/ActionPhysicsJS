@@ -49,6 +49,15 @@ class Solver {
         for (let i = 0; i < bodies.length; i++) {
             const b = bodies[i];
             if (b.bodyType !== RigidBody.DYNAMIC || !b.isAwake) continue;
+
+            // A body woken by a world change still looks quiet to the ring (it holds the pose it
+            // slept in), so the ring would zero its fresh gravity and snap it back every tick.
+            // Drop it; it rebuilds from scratch and can't re-pin until still for a full window.
+            // Routine wakes (impulse, contact, island restless) don't set the flag.
+            if (b._restRingStale) {
+                b._restRingStale = false;
+                this._restRing.delete(b.id);
+            }
             let r = this._restRing.get(b.id);
             if (!r) {
                 r = { pos: [], rot: [], head: 0, count: 0, quietStreak: 0,
