@@ -1,13 +1,9 @@
-// Part of ActionMath - the shared math library. This file is pasted here VERBATIM from its source of
-// truth and must not be edited locally. Anything this engine needs is added to ActionMath first, then
-// arrives here through the same paste.
 class Vector2 {
     constructor(x = 0, y = 0) {
         this.x = x;
         this.y = y;
     }
 
-    // Static creation methods
     static create(x = 0, y = 0) {
         return new Vector2(x, y);
     }
@@ -44,7 +40,6 @@ class Vector2 {
         return new Vector2(1, 0);
     }
 
-    // Basic operations (modifying this vector)
     set(x, y) {
         this.x = x;
         this.y = y;
@@ -112,7 +107,6 @@ class Vector2 {
         return this;
     }
 
-    // Vector properties
     length() {
         return Math.sqrt(this.x * this.x + this.y * this.y);
     }
@@ -145,7 +139,6 @@ class Vector2 {
         return this.x * v.y - this.y * v.x;
     }
 
-    // Utility methods
     clone() {
         return new Vector2(this.x, this.y);
     }
@@ -166,7 +159,6 @@ class Vector2 {
         return [this.x, this.y];
     }
 
-    // Static operations (returning new vectors)
     static add(out, a, b) {
         out.x = a.x + b.x;
         out.y = a.y + b.y;
@@ -256,7 +248,6 @@ class Vector2 {
         return Scalar.atan2(b.y - a.y, b.x - a.x);
     }
 
-    // Advanced operations
     static reflect(out, v, normal) {
         const dot = v.x * normal.x + v.y * normal.y;
         out.x = v.x - 2 * dot * normal.x;

@@ -1,5 +1,3 @@
-// `shape` swept along a local-space segment start->end (Minkowski sum with the segment). Used for
-// swept queries.
 class LineSweptShape extends Shape {
     constructor(shape, start, end) {
         super('lineswept');
@@ -20,9 +18,6 @@ class LineSweptShape extends Shape {
         return this.aabb;
     }
 
-    // Minkowski sum with a segment: support(d) = shape.support(d) + endpoint(d), where the
-    // endpoint chosen is whichever end of the segment is farther along d (has the larger dot
-    // product with d).
     supportInto(out, direction) {
         this.shape.supportInto(out, direction);
         const ds = this.start.x * direction.x + this.start.y * direction.y + this.start.z * direction.z;
@@ -32,7 +27,6 @@ class LineSweptShape extends Shape {
         return out;
     }
 
-    // Point-in-shape support, matching RigidBody.findSupportPoint's own direct-shape convention.
     findSupportPoint(direction, out) {
         return this.supportInto(out, direction);
     }
@@ -43,7 +37,6 @@ class LineSweptShape extends Shape {
         return out;
     }
 
-    // A sweep is a query tool, not a body shape — it carries no mass properties of its own.
     volume() { return 0; }
 
     computeMassData() {

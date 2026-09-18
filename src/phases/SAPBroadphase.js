@@ -1,7 +1,6 @@
-// Sweep-and-prune over fattened AABBs (body.getBroadphaseAABB()), sorted along the most-spread axis.
 class SAPBroadphase {
     constructor() {
-        this._entries = []; // { body, aabb } - aabb is a live reference
+        this._entries = [];
         this._axis = 'x';
     }
 
@@ -27,7 +26,6 @@ class SAPBroadphase {
         this._axis = (sx >= sy && sx >= sz) ? 'x' : (sy >= sz ? 'y' : 'z');
     }
 
-    // [bodyA, bodyB][], A.id < B.id always.
     computePairs() {
         const n = this._entries.length;
         const pairs = [];
@@ -42,7 +40,7 @@ class SAPBroadphase {
             const maxOnAxis = ei.aabb.max[axis];
             for (let j = i + 1; j < n; j++) {
                 const ej = this._entries[j];
-                if (ej.aabb.min[axis] > maxOnAxis) break; // mins only increase from here
+                if (ej.aabb.min[axis] > maxOnAxis) break;
                 if (!ei.aabb.intersects(ej.aabb)) continue;
                 const a = ei.body, b = ej.body;
                 if (a.bodyType !== RigidBody.DYNAMIC && b.bodyType !== RigidBody.DYNAMIC) continue;

@@ -54,19 +54,10 @@ proto._updateLadder = function(cmd, moveYaw, movePitch, dt) {
         gb.y = 0;
         this._onLadder = false;
         // While mounted the character's own box is genuinely embedded roughly width/2 INTO the
-        // ladder (mounting at the ladder face means the box's near edge reaches past the face into
-        // the ladder's own volume, by design - see this file's own header comment: "the ladder body
-        // is never excluded from collision"). This same-tick dismount shove used to need a manual
-        // position-based depenetration nudge here before _collideAndSlide ran, because the sweep's
-        // exact-touch/embedded-start case (Queries._advance) fell back to the reversed TRAVEL
-        // direction for its normal instead of real surface geometry, so a shove starting from
-        // inside the ladder's own volume got swept-and-clipped right back to zero every time -
-        // jump-dismount never actually moved the character, leaving it frozen at the mount point.
-        // Fixed at the root in Queries._advance (the overlapping-sweep case now runs EPA on GJK's
-        // own simplex for a real geometric normal, same as the narrowphase/overlap-test paths
-        // already did) - verified directly (a position trace with the nudge removed shows the
-        // dismount sweep clearing the ladder normally, L6 passes unmodified), so the nudge here was
-        // removed rather than kept as a belt-and-braces duplicate of a fix that now lives upstream.
+        // ladder, by design - see this file's header: "the ladder body is never excluded from
+        // collision". The dismount shove sweeps out of that volume on its own; Queries._advance
+        // returns a real geometric normal for an overlapping start, so no depenetration nudge is
+        // needed here.
         // The push flings the character off the ladder into the air — next tick's beginStep
         // dispatch (before endStep gets a chance to re-probe) must see AIRBORNE, not whatever
         // ground state was true before this ladder mount.

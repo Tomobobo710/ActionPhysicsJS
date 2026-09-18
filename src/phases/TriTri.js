@@ -1,23 +1,17 @@
-// Closed-form triangle-triangle face contact: clip the incident triangle against the reference
-// triangle's edge half-planes (Sutherland-Hodgman) and emit one contact per surviving vertex.
-// Routing a flat mesh face contact through GJK/EPA instead gives one witness point per triangle
-// pair, all landing on the shared diagonal - a single-edge manifold that torques a flat drop.
 const TriTri = {};
 
 TriTri.applies = function (placedA, placedB) {
     return placedA.shape instanceof TriangleShape && placedB.shape instanceof TriangleShape;
 };
 
-// Opposing-face pair: outward normals anti-parallel to within ~2.5 deg.
 TriTri.ANTIPARALLEL_DOT = -0.999;
-TriTri.SEPARATION_LIMIT = 0.5;  // report a speculative face contact up to this gap in front of A's plane
-TriTri.PENETRATION_LIMIT = 1.0; // keep resolving as a face contact up to this depth behind it
-TriTri.MIN_AREA = 0.02;         // below this the clipped overlap is a sliver, not a face
+TriTri.SEPARATION_LIMIT = 0.5;
+TriTri.PENETRATION_LIMIT = 1.0;
+TriTri.MIN_AREA = 0.02;
 TriTri.PERPENDICULAR_DOT = 0.25;
 TriTri.EDGE_COINCIDENCE = 1e-3;
 TriTri.AREA_EPSILON = 1e-12;
 
-// Unit outward normal of a world-space triangle into `out`. Returns false if degenerate.
 TriTri._normalInto = function (out, a, b, c) {
     const abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z;
     const acx = c.x - a.x, acy = c.y - a.y, acz = c.z - a.z;
@@ -29,7 +23,6 @@ TriTri._normalInto = function (out, a, b, c) {
     return true;
 };
 
-// Does segment p->q pierce triangle (t0,t1,t2) strictly between its endpoints?
 TriTri._segmentHitsTri = function (px, py, pz, qx, qy, qz, t0, t1, t2, tn) {
     const dx = qx - px, dy = qy - py, dz = qz - pz;
     const denom = dx * tn.x + dy * tn.y + dz * tn.z;
@@ -39,7 +32,6 @@ TriTri._segmentHitsTri = function (px, py, pz, qx, qy, qz, t0, t1, t2, tn) {
     return TriTri._pointInTri(px + dx * t, py + dy * t, pz + dz * t, t0, t1, t2, tn);
 };
 
-// Point-in-triangle, point assumed on the triangle's plane.
 TriTri._pointInTri = function (hx, hy, hz, t0, t1, t2, tn) {
     const e0x = t1.x - t0.x, e0y = t1.y - t0.y, e0z = t1.z - t0.z;
     const e1x = t2.x - t1.x, e1y = t2.y - t1.y, e1z = t2.z - t1.z;
@@ -53,7 +45,6 @@ TriTri._pointInTri = function (hx, hy, hz, t0, t1, t2, tn) {
     return (d0 >= 0 && d1 >= 0 && d2 >= 0) || (d0 <= 0 && d1 <= 0 && d2 <= 0);
 };
 
-// Some edge of one triangle pierces the interior of the other. Shared-boundary touching does not count.
 TriTri._trianglesIntersect = function (a0, a1, a2, nA, b0, b1, b2, nB) {
     return TriTri._segmentHitsTri(a0.x, a0.y, a0.z, a1.x, a1.y, a1.z, b0, b1, b2, nB) ||
         TriTri._segmentHitsTri(a1.x, a1.y, a1.z, a2.x, a2.y, a2.z, b0, b1, b2, nB) ||
@@ -63,8 +54,6 @@ TriTri._trianglesIntersect = function (a0, a1, a2, nA, b0, b1, b2, nB) {
         TriTri._segmentHitsTri(b2.x, b2.y, b2.z, b0.x, b0.y, b0.z, a0, a1, a2, nA);
 };
 
-// Returns `out` on success (may be empty, which vetoes the GJK/EPA fallback in PairTest), or null
-// to fall through to GJK/EPA.
 TriTri.test = function (placedA, placedB, out, nextContact) {
     const sA = placedA.shape, sB = placedB.shape;
     const a0 = sA.a, a1 = sA.b, a2 = sA.c;
@@ -77,10 +66,7 @@ TriTri.test = function (placedA, placedB, out, nextContact) {
     const ndot = nA.x * nB.x + nA.y * nB.y + nA.z * nB.z;
 
     if (ndot > TriTri.ANTIPARALLEL_DOT) {
-        // Near-perpendicular pair meeting edge-on without interpenetrating (a box's side wall and
-        // the top face another box rests on). GJK/EPA would report that shared edge as a contact
-        // with an arbitrary horizontal normal; veto it. Real edge-first collisions interpenetrate
-        // and reach GJK/EPA via the null return.
+
         if (Math.abs(ndot) < TriTri.PERPENDICULAR_DOT &&
             !TriTri._trianglesIntersect(a0, a1, a2, nA, b0, b1, b2, nB)) {
             return out;
@@ -88,9 +74,6 @@ TriTri.test = function (placedA, placedB, out, nextContact) {
         return null;
     }
 
-    // refN = A's face normal oriented A->B. Winding is unreliable (inverted-winding meshes point
-    // their normals inward), so take the sign from the owning body centers when the midphase
-    // provided them; the two flush face triangles' own offset is float noise and flips tick to tick.
     const refN = TriTri._refN;
     refN.copy(nA);
     const cenA = placedA.bodyCenter, cenB = placedB.bodyCenter;
@@ -110,7 +93,6 @@ TriTri.test = function (placedA, placedB, out, nextContact) {
     const centroidGap = -((cBx - a0.x) * refN.x + (cBy - a0.y) * refN.y + (cBz - a0.z) * refN.z);
     if (centroidGap < -TriTri.SEPARATION_LIMIT || centroidGap > TriTri.PENETRATION_LIMIT) return null;
 
-    // Clip B against A's three edge half-planes (each with inward normal refN x edge).
     let poly = TriTri._polyIn, clipped = TriTri._polyOut;
     poly[0].set(b0.x, b0.y, b0.z);
     poly[1].set(b1.x, b1.y, b1.z);
@@ -168,7 +150,7 @@ TriTri.test = function (placedA, placedB, out, nextContact) {
         const contact = nextContact();
         contact.pointOnB.set(pt.x, pt.y, pt.z);
         contact.pointOnA.set(pt.x + refN.x * below, pt.y + refN.y * below, pt.z + refN.z * below);
-        contact.normal.set(-refN.x, -refN.y, -refN.z); // pipeline convention: B -> A
+        contact.normal.set(-refN.x, -refN.y, -refN.z);
         contact.signedDistance = below;
         contact.fromMeshFace = true;
         Vector3.addInto(contact.point, contact.pointOnA, contact.pointOnB).scaleInPlace(0.5);

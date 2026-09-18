@@ -1,9 +1,5 @@
-// Per-shape BVH (built once, cached on the shape) and cached leaf queries.
 var proto = Midphase.prototype;
 
-// Builds shape._midphaseBVH on first use: one leaf per compound child, or per mesh triangle.
-// Free function (no Midphase state) so the query path (Queries.js) can build/get the same cached
-// tree - a mesh/compound ray or shape cast otherwise linear-scans every triangle.
 function ensureShapeBVH(shape) {
     if (shape._midphaseBVH) return shape._midphaseBVH;
     const bvh = new BVH();
@@ -46,13 +42,8 @@ function ensureShapeBVH(shape) {
 
 proto._ensureBVH = function (shape) { return ensureShapeBVH(shape); };
 
-// Exposed so Queries.js (ray/shape casts) can reuse the same per-shape tree the midphase builds.
 ActionPhysics.ensureShapeBVH = ensureShapeBVH;
 
-// Leaf indices of `shape` whose AABB overlaps `localQueryAABB` (in shape-local space). Cached per
-// (other body, shape): expanding one body pair queries many shapes under the same otherBodyId -
-// every nested mesh child of a compound ground - so keying on the body alone makes each query evict
-// the previous one and the cache never hits.
 proto._queryLeaves = function (shape, otherBodyId, localQueryAABB) {
     let byShape = this._leafCache.get(otherBodyId);
     if (byShape === undefined) {
@@ -63,7 +54,7 @@ proto._queryLeaves = function (shape, otherBodyId, localQueryAABB) {
     if (cached &&
         cached.minx === localQueryAABB.min.x && cached.miny === localQueryAABB.min.y && cached.minz === localQueryAABB.min.z &&
         cached.maxx === localQueryAABB.max.x && cached.maxy === localQueryAABB.max.y && cached.maxz === localQueryAABB.max.z) {
-        return cached.hits; // may be [] - a valid, cached answer
+        return cached.hits;
     }
     const bvh = this._ensureBVH(shape);
     const hits = cached ? cached.hits : [];

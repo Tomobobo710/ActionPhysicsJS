@@ -1,5 +1,3 @@
-// Shape contract, all in local space: supportInto (the only GJK/EPA primitive), localAABBInto,
-// computeMassData (density 1), volume (for density scaling). No allocation on supportInto/localAABBInto.
 class Shape {
     constructor(type) {
         this.type = type;
@@ -21,9 +19,6 @@ class Shape {
         throw new Error('Shape.volume not implemented for ' + this.type);
     }
 
-    // The local-space inertia tensor for this shape at total mass `mass`. computeMassData() returns
-    // density-1 values, so this rescales by mass/volume - the same scaling RigidBody.setMassFromShape
-    // applies. Returns a fresh Matrix3. mass <= 0 (or zero volume) gives the zero tensor.
     getInertiaTensor(mass) {
         const out = new Matrix3();
         const vol = this.volume();

@@ -1,5 +1,3 @@
-// How far ahead of touch a contact is reported, so the predicted-position solve has a constraint
-// to work with before overlap. Base margin plus how far the pair closes in one tick.
 var proto = NarrowPhase.prototype;
 
 proto._speculativeMargin = function (bodyA, bodyB) {
@@ -7,12 +5,11 @@ proto._speculativeMargin = function (bodyA, bodyB) {
     const dvy = bodyA.linear_velocity.y - bodyB.linear_velocity.y;
     const dvz = bodyA.linear_velocity.z - bodyB.linear_velocity.z;
     const relSpeed = Math.sqrt(dvx * dvx + dvy * dvy + dvz * dvz);
-    // A rotating body's corner moves faster than its center; add each body's angular corner speed.
+
     const angSpeed = NarrowPhase._angularCornerSpeed(bodyA) + NarrowPhase._angularCornerSpeed(bodyB);
     return NarrowPhase.SPECULATIVE_BASE + (relSpeed + angSpeed) * this._dt;
 };
 
-// Upper bound on how fast any point on `body` moves purely from rotation: |omega| * bounding radius.
 NarrowPhase._angularCornerSpeed = function (body) {
     const w = body.angular_velocity;
     const wMag = Math.sqrt(w.x * w.x + w.y * w.y + w.z * w.z);

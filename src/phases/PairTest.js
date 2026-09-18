@@ -1,4 +1,3 @@
-// Per-tick pair dispatch and GJK/EPA testing for one primitive-shape pair.
 var proto = NarrowPhase.prototype;
 
 proto._nextPooledContact = function () {
@@ -6,19 +5,19 @@ proto._nextPooledContact = function () {
     const c = this._contactPool[this._poolIndex++];
     c.fromMeshFace = false;
     c.meshTriValid = false;
+    c.edgeAxis = null;
+    c.fromBoxBox = false;
+    c.fromFacePatch = false;
+    c.fromCurvedTri = false;
     return c;
 };
 
-// midphase expands compound/mesh pairs to primitives; dt sizes the speculative margin.
 proto.step = function (broadphasePairs, midphase, dt) {
     if (dt) this._dt = dt;
-    this._midphase = midphase; // used by the per-substep mesh-face refresh
+    this._midphase = midphase;
     this._poolIndex = 0;
-    const contactsByPair = new Map(); // canonical "idA:idB" key -> ContactDetails[]
+    const contactsByPair = new Map();
 
-    // Tick-start speeds, consulted by the per-substep geometry refresh to skip re-clipping a
-    // manifold whose bodies are effectively at rest (their contact geometry is not moving within
-    // the tick, so a re-clip would reproduce the tick-start geometry anyway).
     const spd = this._tickStartSpeedSq || (this._tickStartSpeedSq = new Map());
     spd.clear();
     for (let p = 0; p < broadphasePairs.length; p++) {
@@ -40,16 +39,10 @@ proto.step = function (broadphasePairs, midphase, dt) {
         const key = bodyA.id < bodyB.id ? bodyA.id + ':' + bodyB.id : bodyB.id + ':' + bodyA.id;
         const margin = this._speculativeMargin(bodyA, bodyB);
 
-        // If this pair already has a mesh-face manifold, hand ConvexTri its established normal so
-        // it orients the reference face by that instead of the convex-centre heuristic (which
-        // flips once a settling convex's centroid creeps to the triangle plane). First contact
-        // has no prior manifold and falls back to the heuristic, which is safe when approaching
-        // from clearly outside.
         const existing = this.manifolds._manifolds.get(key);
         this._ctHintNormal = (existing && existing.points.length > 0 && existing.points[0].fromMeshFace)
             ? existing.points[0].normal : null;
-        // Contacts past this gap are discarded below, so closed-form tests can use it to skip the
-        // GJK/EPA fallback. Cleared after the loop; the refresh path has no pair margin.
+
         this._curMargin = margin;
 
         let sawMeshFace = false;
@@ -58,7 +51,7 @@ proto.step = function (broadphasePairs, midphase, dt) {
                 const pairContacts = this._testPrimitivePair(sidesA[i], sidesB[j]);
                 for (let c = 0; c < pairContacts.length; c++) {
                     const contact = pairContacts[c];
-                    if (contact.signedDistance < -margin) continue; // gap beyond the speculative margin
+                    if (contact.signedDistance < -margin) continue;
                     if (contact.fromMeshFace) sawMeshFace = true;
                     let list = contactsByPair.get(key);
                     if (!list) { list = []; contactsByPair.set(key, list); }
@@ -67,8 +60,6 @@ proto.step = function (broadphasePairs, midphase, dt) {
             }
         }
 
-        // A TriTri face manifold is authoritative for the pair; drop the GJK/EPA single points from
-        // its other triangle combinations, which would only unbalance the point set.
         if (sawMeshFace) {
             const list = contactsByPair.get(key);
             let w = 0;
@@ -76,7 +67,6 @@ proto.step = function (broadphasePairs, midphase, dt) {
             list.length = w;
         }
 
-        // Ensure a manifold exists even with zero contacts, so refresh() can prune a separated pair.
         this.manifolds.getOrCreate(bodyA, bodyB);
     }
     this._curMargin = null;
@@ -85,8 +75,6 @@ proto.step = function (broadphasePairs, midphase, dt) {
     return this.manifolds;
 };
 
-// Contacts for one primitive pair, into a reused scratch array (copy out before the next call).
-// Uses a closed-form test when one applies, else GJK/EPA. Never culls.
 proto._testPrimitivePair = function (placedA, placedB) {
     const results = this._pairResultScratch;
     results.length = 0;
@@ -101,38 +89,41 @@ proto._testPrimitivePair = function (placedA, placedB) {
     }
     if (BoxBox.applies(placedA, placedB)) {
         const self = this;
-        // null = separated; fall through to GJK/EPA.
+
         const boxResult = BoxBox.test(placedA, placedB, results, function () { return self._nextPooledContact(); });
         if (boxResult !== null) return results;
     }
 
     if (TriTri.applies(placedA, placedB)) {
         const self = this;
-        // null = not a face pair; fall through to GJK/EPA (same contract as BoxBox.test above).
+
         const triResult = TriTri.test(placedA, placedB, results, function () { return self._nextPooledContact(); });
         if (triResult !== null) return results;
     }
 
     if (BoxTriFace.applies(placedA, placedB)) {
         const self = this;
-        // Face patch when the box lies flat on the triangle; null = not a face case, keep going.
-        const bf = BoxTriFace.test(placedA, placedB, results, function () { return self._nextPooledContact(); }, this._ctHintNormal);
+
+        const bf = BoxTriFace.test(placedA, placedB, results, function () { return self._nextPooledContact(); }, this._ctHintNormal, this._curMargin);
         if (bf !== null) return results;
+    }
+
+    if (CapTriFace.applies(placedA, placedB)) {
+        const self = this;
+
+        const capResult = CapTriFace.test(placedA, placedB, results, function () { return self._nextPooledContact(); }, this._ctHintNormal, this._curMargin);
+        if (capResult !== null) return results;
     }
 
     if (ConvexTri.applies(placedA, placedB)) {
         const self = this;
-        // _ctHintNormal is set per pair by step() from the existing manifold, null on first contact.
+
         const ctResult = ConvexTri.test(placedA, placedB, results, function () { return self._nextPooledContact(); }, this._ctHintNormal, this._curMargin);
-        if (ctResult !== null) return results;                       // face contact
-        if (ConvexTri.lastVerdict === 'separated') return results;   // provably no contact - skip GJK/EPA
-        // 'maybe': non-face contact still possible (edge/vertex) - fall through to GJK/EPA.
+        if (ctResult !== null) return results;
+        if (ConvexTri.lastVerdict === 'separated') return results;
+
     } else if ((placedA.shape instanceof TriangleShape) !== (placedB.shape instanceof TriangleShape)) {
-        // Any other convex (box, hull) vs a mesh triangle: a cheap conservative separation test
-        // before GJK/EPA. A prop's broadphase AABB overlaps every tile it is near, but it only
-        // touches one - GJK would run full iterations just to report "separated" on the rest. The
-        // 0.5m bound comfortably exceeds any per-pair speculative margin at these speeds, so this
-        // only rejects pairs step() would discard anyway.
+
         if (TriPlaneCull.separated(placedA, placedB)) return results;
     }
 
@@ -142,8 +133,14 @@ proto._testPrimitivePair = function (placedA, placedB) {
     if (gjkResult.overlapping) {
         const epaResult = this._epa.run(support, gjkResult.simplex);
         contact.setFromEPA(epaResult);
-        // A penetration depth larger than the smaller shape's extent is a degenerate EPA result;
-        // treat it as separated by that distance.
+
+        const self = this;
+        const clipped = PolyClip.buildFaceContact(
+            placedA, placedB, contact.normal, results,
+            function () { return self._nextPooledContact(); },
+            this._curMargin != null ? this._curMargin : NarrowPhase.SPECULATIVE_BASE);
+        if (clipped > 0) return results;
+
         if (contact.signedDistance > NarrowPhase._maxPlausiblePenetration(placedA.shape, placedB.shape)) {
             contact.setFromGJKSeparated({
                 distance: contact.signedDistance,
@@ -154,12 +151,20 @@ proto._testPrimitivePair = function (placedA, placedB) {
         }
     } else {
         contact.setFromGJKSeparated(gjkResult);
+        if (contact.signedDistance > -0.003 &&
+            (placedA.shape instanceof ConvexShape || placedB.shape instanceof ConvexShape)) {
+            const self = this;
+            const clipped = PolyClip.buildFaceContact(
+                placedA, placedB, contact.normal, results,
+                function () { return self._nextPooledContact(); },
+                this._curMargin != null ? this._curMargin : NarrowPhase.SPECULATIVE_BASE);
+            if (clipped > 0) return results;
+        }
     }
     results.push(contact);
     return results;
 };
 
-// The smaller shape's bounding-sphere radius; an EPA depth past this is rejected, never accepted.
 NarrowPhase._maxPlausiblePenetration = function (shapeA, shapeB) {
     return Math.min(NarrowPhase._boundingRadius(shapeA), NarrowPhase._boundingRadius(shapeB));
 };

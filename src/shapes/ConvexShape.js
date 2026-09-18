@@ -1,17 +1,19 @@
-// Arbitrary convex hull from a local-space point cloud. Support is a brute-force max-dot scan;
-// mass/hull data is built lazily via incremental 3D Quickhull.
 class ConvexShape extends Shape {
 
     constructor(points) {
         super('convex');
         this.points = points;
-        this._hullFaces = null; // lazy: [[ia,ib,ic], ...] indices into points, outward-wound
-        this._massData = null;  // lazy: { mass, inertia, centerOfMass } for density 1
+        this._hullFaces = null;
+        this._massData = null;
+        this._polyFaces = null;
     }
 
-    // Triangulated hull faces, as { a, b, c } where each of a/b/c is { point: Vector3 } - the
-    // point being a vertex of that triangle, outward-wound. Built lazily from the same Quickhull
-    // pass the mass integration uses. Useful for building a render mesh of the hull.
+    get polyFaces() {
+        if (this._polyFaces) return this._polyFaces;
+        this._polyFaces = ConvexShape._mergeCoplanar(this._hull(), this.points);
+        return this._polyFaces;
+    }
+
     get faces() {
         if (this._facesView) return this._facesView;
         const hull = this._hull();
@@ -65,7 +67,6 @@ class ConvexShape extends Shape {
         };
     }
 
-    // Divergence-theorem integration: signed tetrahedra from the local origin to each hull face.
     _computeMassData() {
         if (this._massData) return this._massData;
         const faces = this._hull();
@@ -104,7 +105,6 @@ class ConvexShape extends Shape {
         volume = Math.abs(volume);
         const com = volume > 0 ? new Vector3(comAccum.x / volume, comAccum.y / volume, comAccum.z / volume) : new Vector3(0, 0, 0);
 
-        // Parallel axis theorem: shift origin-relative moments to the center of mass.
         const cx = com.x, cy = com.y, cz = com.z;
         const IxxC = Math.abs(Ixx - volume * (cy * cy + cz * cz));
         const IyyC = Math.abs(Iyy - volume * (cx * cx + cz * cz));
@@ -122,15 +122,13 @@ class ConvexShape extends Shape {
         return this._massData;
     }
 
-    // Incremental 3D Quickhull: seed tetrahedron -> repeatedly absorb the farthest outside point,
-    // remove faces it can see, re-triangulate the horizon -> stop when no outside points remain.
     _hull() {
         if (this._hullFaces) return this._hullFaces;
         const pts = this.points;
         if (pts.length < 4) { this._hullFaces = []; return this._hullFaces; }
 
         const seed = ConvexShape._seedTetrahedron(pts);
-        let faces = seed.faces; // each: { a, b, c: point indices; outside: index[] }
+        let faces = seed.faces;
         for (let i = 0; i < pts.length; i++) {
             if (seed.used.has(i)) continue;
             ConvexShape._assignToOutsideSet(faces, pts, i);
@@ -154,7 +152,7 @@ class ConvexShape extends Shape {
             }
 
             const visibleSet = new Set(visible);
-            const edgeCount = new Map(); // "lo:hi" -> { count, a, b }
+            const edgeCount = new Map();
             for (let vi = 0; vi < visible.length; vi++) {
                 const fc = faces[visible[vi]];
                 ConvexShape._forEachEdge(fc, function (a, b) {
@@ -241,7 +239,6 @@ class ConvexShape extends Shape {
         return { faces: faces, used: used, centroid: centroid };
     }
 
-    // Winds i0,i1,i2 so the outward normal points away from insidePoint.
     static _makeFace(pts, i0, i1, i2, insidePoint) {
         const normal = ConvexShape._faceNormal(pts[i0], pts[i1], pts[i2]);
         const toInside = insidePoint.x * normal.x + insidePoint.y * normal.y + insidePoint.z * normal.z
@@ -256,7 +253,6 @@ class ConvexShape extends Shape {
         return new Vector3(aby * acz - abz * acy, abz * acx - abx * acz, abx * acy - aby * acx);
     }
 
-    // Signed distance to face's plane; positive = outside.
     static _planeDistance(pts, face, idx) {
         const a = pts[face.a], b = pts[face.b], c = pts[face.c], p = pts[idx];
         const n = ConvexShape._faceNormal(a, b, c);
@@ -291,5 +287,67 @@ class ConvexShape extends Shape {
         return dx * dx + dy * dy + dz * dz;
     }
 }
+
+ConvexShape.COPLANAR_DOT = 0.9999;
+
+ConvexShape._mergeCoplanar = function (tris, pts) {
+    const faces = [];
+    if (!tris || tris.length === 0) return faces;
+
+    const normals = [];
+    for (let i = 0; i < tris.length; i++) {
+        const t = tris[i];
+        const a = pts[t[0]], b = pts[t[1]], c = pts[t[2]];
+        const ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z;
+        const vx = c.x - a.x, vy = c.y - a.y, vz = c.z - a.z;
+        let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+        const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+        normals.push(len < 1e-12 ? null : new Vector3(nx / len, ny / len, nz / len));
+    }
+
+    const claimed = new Array(tris.length).fill(false);
+    for (let i = 0; i < tris.length; i++) {
+        if (claimed[i] || !normals[i]) continue;
+        const n = normals[i];
+        const group = [i];
+        claimed[i] = true;
+        for (let j = i + 1; j < tris.length; j++) {
+            if (claimed[j] || !normals[j]) continue;
+            if (n.dot(normals[j]) >= ConvexShape.COPLANAR_DOT) { claimed[j] = true; group.push(j); }
+        }
+
+        const edges = new Map();
+        for (let g = 0; g < group.length; g++) {
+            const t = tris[group[g]];
+            for (let e = 0; e < 3; e++) {
+                const from = t[e], to = t[(e + 1) % 3];
+                edges.set(from + ':' + to, { from: from, to: to });
+            }
+        }
+        const boundary = new Map();
+        for (const [key, edge] of edges) {
+            if (edges.has(edge.to + ':' + edge.from)) continue;
+            if (boundary.has(edge.from)) { boundary.clear(); break; }
+            boundary.set(edge.from, edge.to);
+        }
+        if (boundary.size < 3) continue;
+
+        const start = boundary.keys().next().value;
+        const indices = [];
+        let cur = start;
+        let guard = boundary.size + 1;
+        while (guard-- > 0) {
+            indices.push(cur);
+            const next = boundary.get(cur);
+            if (next === undefined) { indices.length = 0; break; }
+            cur = next;
+            if (cur === start) break;
+        }
+        if (indices.length !== boundary.size) continue;
+
+        faces.push({ normal: n, indices: indices });
+    }
+    return faces;
+};
 
 ActionPhysics.ConvexShape = ConvexShape;

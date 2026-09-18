@@ -1,5 +1,3 @@
-// Static BVH over a fixed leaf set, built once. Flattened parallel typed arrays (min/max xyz,
-// left/right/leafIndex; leafIndex -1 = internal node). Median-split on the widest axis, no SAH.
 class BVH {
     constructor() {
         this.nodeCount = 0;
@@ -20,7 +18,6 @@ class BVH {
         this.leafIndex = new Int32Array(n).fill(-1);
     }
 
-    // leafAABBInto(out, i) fills `out` with leaf i's bound.
     build(leafCount, leafAABBInto) {
         this.nodeCount = 0;
         this.root = -1;
@@ -86,7 +83,6 @@ class BVH {
         return this;
     }
 
-    // Visits every leaf whose node AABB intersects queryAABB. Explicit stack, no allocation.
     query(queryAABB, onLeaf) {
         if (this.root === -1) return;
         const qminx = queryAABB.min.x, qminy = queryAABB.min.y, qminz = queryAABB.min.z;

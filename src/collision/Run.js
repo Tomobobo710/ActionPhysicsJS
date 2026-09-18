@@ -1,35 +1,22 @@
-// The main GJK loop, plus building the SEPARATED result from a converged simplex.
 var proto = GJK.prototype;
 
-/**
- * Runs GJK for the pair of placed shapes wrapped by `support` (a MinkowskiSupport). Returns:
- *   { overlapping: true,  simplex: this }                            -> hand to EPA
- *   { overlapping: false, distance, normal, pointA, pointB }         -> separated
- * `normal` points from B to A (world space). maxIterations guards non-convergence; hitting it
- * returns the best answer found so far, reported honestly as separated.
- */
 proto.run = function (support, maxIterations) {
     maxIterations = maxIterations || 64;
     this._clear();
 
-    // Seed a tetrahedron from diverse directions (see Seeding.js). If none encloses, its best
-    // reduction seeds the incremental loop below.
     let seeded = this._seedTetrahedron(support);
     if (seeded.overlapping) return seeded;
     this._dir.copy(seeded.direction);
     this._closest.copy(seeded.closest);
 
     if (this._dir.lengthSquared() < 1e-20) {
-        // Origin lies on the Minkowski-difference boundary - either an exact touch or a shallow
-        // penetration the seed tetrahedra couldn't enclose. Disambiguate via strict interiority.
+
         return this._originStrictlyInside(support) ? { overlapping: true, simplex: this } : this._separatedResult(support);
     }
 
     for (let iter = 0; iter < maxIterations; iter++) {
         support.supportInto(this._newW, this._dir, this._newA, this._newB);
 
-        // Standard GJK termination (Ericson 5.4): no progress if the new support doesn't project
-        // further along `dir` than the simplex already does.
         const newAlong = this._newW.x * this._dir.x + this._newW.y * this._dir.y + this._newW.z * this._dir.z;
         let bestAlong = -Infinity;
         for (let k = 0; k < this._count; k++) {
@@ -37,8 +24,7 @@ proto.run = function (support, maxIterations) {
             if (along > bestAlong) bestAlong = along;
         }
         if (newAlong <= bestAlong + 1e-10) {
-            // Stall. Near-zero closest distance means the origin is on/inside the boundary - defer
-            // to the strict-interior check; otherwise separated.
+
             const closestDistSq = this._closest.x * this._closest.x + this._closest.y * this._closest.y + this._closest.z * this._closest.z;
             if (closestDistSq < GJK.OVERLAP_DISTANCE_EPSILON * GJK.OVERLAP_DISTANCE_EPSILON) {
                 return this._originStrictlyInside(support) ? { overlapping: true, simplex: this } : this._separatedResult(support);
@@ -57,11 +43,9 @@ proto.run = function (support, maxIterations) {
             return this._originStrictlyInside(support) ? { overlapping: true, simplex: this } : this._separatedResult(support);
         }
     }
-    return this._separatedResult(support); // iteration cap - report honestly as separated
+    return this._separatedResult(support);
 };
 
-// SEPARATED result from the simplex's closest point to the origin. Witness points are recovered
-// from barycentric weights on the stored support points, so they stay consistent with `distance`.
 proto._separatedResult = function (support, forcedNormal) {
     const bary = this._barycentricOfClosest();
     const pointA = new Vector3(), pointB = new Vector3();
@@ -76,17 +60,13 @@ proto._separatedResult = function (support, forcedNormal) {
     } else if (dist > 1e-12) {
         normal = new Vector3(this._closest.x / dist, this._closest.y / dist, this._closest.z / dist);
     } else {
-        // Exact touching: `closest` carries no direction. Recover a normal from the simplex's own
-        // geometry instead of a fixed axis.
+
         normal = new Vector3();
         this._degenerateTouchingNormalInto(normal);
     }
     return { overlapping: false, distance: dist, normal: normal, pointA: pointA, pointB: pointB };
 };
 
-// Recovers a normal for a zero-distance (exact touching) simplex. A 3-point simplex through the
-// origin has a well-defined plane normal; a 2- or 1-point simplex falls back to findOrthogonal()
-// (never NaN, even though not always the true contact normal for that degenerate case).
 proto._degenerateTouchingNormalInto = function (out) {
     if (this._count === 3) {
         const abx = this._wx[1] - this._wx[0], aby = this._wy[1] - this._wy[0], abz = this._wz[1] - this._wz[0];
@@ -99,8 +79,6 @@ proto._degenerateTouchingNormalInto = function (out) {
     out.findOrthogonal(this._scratchRef);
 };
 
-// Barycentric weights of `this._closest` w.r.t. the current simplex (1-3 points). Degenerate
-// simplices fall back explicitly rather than dividing by zero.
 proto._barycentricOfClosest = function () {
     if (this._count === 1) return [1];
     if (this._count === 2) {
@@ -112,7 +90,7 @@ proto._barycentricOfClosest = function () {
         t = t < 0 ? 0 : (t > 1 ? 1 : t);
         return [1 - t, t];
     }
-    // count === 3: barycentric of a point already known to be in the triangle's plane.
+
     const v0x = this._wx[1] - this._wx[0], v0y = this._wy[1] - this._wy[0], v0z = this._wz[1] - this._wz[0];
     const v1x = this._wx[2] - this._wx[0], v1y = this._wy[2] - this._wy[0], v1z = this._wz[2] - this._wz[0];
     const v2x = this._closest.x - this._wx[0], v2y = this._closest.y - this._wy[0], v2z = this._closest.z - this._wz[0];

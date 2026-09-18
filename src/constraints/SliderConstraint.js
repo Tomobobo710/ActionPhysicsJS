@@ -1,5 +1,3 @@
-// Piston joint: rotation fully locked (reuses WeldConstraint's angular half), position locked
-// perpendicular to the slide axis, free to move along it.
 class SliderConstraint extends Constraint {
     constructor(bodyA, localAxisA, anchorA, bodyB, anchorB) {
         super(bodyA, bodyB);
@@ -7,8 +5,6 @@ class SliderConstraint extends Constraint {
         this.localAnchorA = new Vector3().copy(anchorA);
         this.localAnchorB = new Vector3().copy(anchorB || new Vector3());
 
-        // Only ever calls _solveRotationLock, never the pivot - the slider has its own
-        // axis-restricted positional constraint below.
         this._weld = new WeldConstraint(bodyA, bodyB, new Vector3(), new Vector3());
 
         this._worldA = new Vector3();
@@ -50,7 +46,6 @@ class SliderConstraint extends Constraint {
         axis.copy(this.localAxis);
         bodyA.rotation.transformVectorInPlace(axis);
 
-        // Strip the along-axis component - what's left is the perpendicular error to correct.
         const sepX = this._worldB.x - this._worldA.x, sepY = this._worldB.y - this._worldA.y, sepZ = this._worldB.z - this._worldA.z;
         const along = sepX * axis.x + sepY * axis.y + sepZ * axis.z;
         const cx = sepX - along * axis.x, cy = sepY - along * axis.y, cz = sepZ - along * axis.z;
@@ -93,8 +88,6 @@ class SliderConstraint extends Constraint {
         }
         if (wSum < 1e-12) return;
 
-        // Soft correction: only resolve a fraction per iteration to prevent overshooting
-        // Multiple solver iterations per substep will gradually converge
         const correctionFraction = 0.1;
         const deltaLambda = -C * correctionFraction / wSum;
         const px = dx * deltaLambda, py = dy * deltaLambda, pz = dz * deltaLambda;

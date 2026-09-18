@@ -1,4 +1,3 @@
-// A single zero-thickness triangle. Used standalone and as the per-triangle shape from a mesh.
 class TriangleShape extends Shape {
     constructor(a, b, c) {
         super('triangle');

@@ -1,4 +1,3 @@
-// Hinge: pivot (3 DOF, via composed PointConstraint) + axis lock (2 DOF), optional swing limit/motor.
 class HingeConstraint extends Constraint {
     constructor(bodyA, hingeAxisA, pivotA, bodyB, pivotB) {
         super(bodyA, bodyB);
@@ -16,7 +15,6 @@ class HingeConstraint extends Constraint {
         }
         this._pivot = new PointConstraint(bodyA, bodyB, this.localPivotA, bodyB ? this.localPivotB : this._worldPivotBPlaceholder());
 
-        // Swing-angle reference vector, perpendicular to the axis, in each body's local space.
         this._refA = HingeConstraint._perpendicularTo(this.localAxisA);
         if (bodyB) {
             const worldRef = HingeConstraint._scratchV1.copy(this._refA);
@@ -35,7 +33,6 @@ class HingeConstraint extends Constraint {
         this.motor = { targetVelocity: 0, maxTorque: 0, set: function (targetVelocity, maxTorque) { this.targetVelocity = targetVelocity; this.maxTorque = maxTorque; return this; } };
     }
 
-    // Gram-Schmidt: any vector not parallel to axis, made perpendicular + unit length.
     static _perpendicularTo(axis) {
         const seed = Math.abs(axis.x) < 0.9 ? new Vector3(1, 0, 0) : new Vector3(0, 1, 0);
         const d = seed.x * axis.x + seed.y * axis.y + seed.z * axis.z;
@@ -43,7 +40,6 @@ class HingeConstraint extends Constraint {
         return perp.normalizeInPlace();
     }
 
-    // Null bodyB: PointConstraint wants a world point, so use bodyA's own world pivot at construction.
     _worldPivotBPlaceholder() {
         const world = HingeConstraint._scratchV2.copy(this.localPivotA);
         this.bodyA.rotation.transformVectorInPlace(world);
@@ -59,7 +55,6 @@ class HingeConstraint extends Constraint {
         if (this.motor.maxTorque > 0) this._solveMotor(h);
     }
 
-    // Signed swing angle about the axis, refB -> refA, both projected into the plane perpendicular to axis.
     _swingAngle() {
         const bodyA = this.bodyA, bodyB = this.bodyB;
         const axis = HingeConstraint._scratchAxis.copy(this.localAxisA);
@@ -112,8 +107,6 @@ class HingeConstraint extends Constraint {
         if (hasB) HingeConstraint._applyAngularDelta(bodyB, -tx, -ty, -tz);
     }
 
-    // Position-space motor: writes a bounded angle step (not velocity directly, since the solver
-    // derives velocity from position delta after all constraints run).
     _solveMotor(h) {
         const bodyA = this.bodyA, bodyB = this.bodyB;
         const axis = HingeConstraint._scratchAxis.copy(this.localAxisA);
@@ -167,7 +160,6 @@ class HingeConstraint extends Constraint {
             axisB.copy(this._fixedWorldAxis);
         }
 
-        // axisA x axisB: zero when parallel, magnitude ~sin(angle), direction = correction rotation.
         const ex = axisA.y * axisB.z - axisA.z * axisB.y;
         const ey = axisA.z * axisB.x - axisA.x * axisB.z;
         const ez = axisA.x * axisB.y - axisA.y * axisB.x;

@@ -1,13 +1,7 @@
-// shapeIntersect (swept-shape cast) and its compound/mesh dispatch, plus the stationary-overlap
-// test used for a zero-length sweep.
-
-// shapeIntersect(bodies, shape, start, end, rotation, ignore) -> same result shape as rayIntersect.
-// Sweeps `shape` (fixed orientation) from start to end. `ignore`: see rayIntersect.
 Queries.shapeIntersect = function (bodies, shape, start, end, rotation, ignore) {
     const dirX = end.x - start.x, dirY = end.y - start.y, dirZ = end.z - start.z;
     const fullLen = Math.sqrt(dirX * dirX + dirY * dirY + dirZ * dirZ);
-    // A zero-length sweep is a stationary overlap test - unlike a zero-length ray (degenerate,
-    // reports a miss), a real shape held still genuinely can overlap something.
+
     if (fullLen < 1e-12) return Queries._overlapTest(bodies, shape, start, rotation, ignore);
     const localAABB = Queries._scratchLocalAABB;
     shape.localAABBInto(localAABB);
@@ -55,8 +49,6 @@ Queries._sweepShapeVsBody = function (shape, rotation, start, dirX, dirY, dirZ, 
     return Queries._advance(support, placedShape, start, dirX, dirY, dirZ, fullLen);
 };
 
-// Local-space AABB of the swept region: the segment [start, start+dir] fattened by `pad` (the
-// moving shape's bounding radius), inverse-transformed into `body`'s frame. Conservative.
 Queries._localSweptAABBInto = function (out, body, start, dirX, dirY, dirZ, pad) {
     const invRot = Queries._scratchInvRot.copy(body.rotation).invert();
     out.setEmpty();
@@ -86,12 +78,11 @@ Queries._sweepShapeVsCompound = function (shape, rotation, start, dirX, dirY, di
         bvh.query(Queries._scratchLocalAABB, function (i) { indices.push(i); });
     }
     const count = indices ? indices.length : compound.children.length;
-    const childIndices = indices ? indices.slice() : null; // recursion reuses _scratchLeafList
+    const childIndices = indices ? indices.slice() : null;
 
     for (let k = 0; k < count; k++) {
         const child = compound.children[childIndices ? childIndices[k] : k];
 
-        // Mesh / nested-compound child: not a convex primitive. Recurse at its world placement.
         if (Queries._isMesh(child.shape) || Queries._isCompound(child.shape)) {
             const sub = Queries._childAsBody(body, child);
             const hit = Queries._sweepShapeVsBody(shape, rotation, start, dirX, dirY, dirZ, fullLen, sub);
@@ -151,7 +142,6 @@ Queries._sweepShapeVsMesh = function (shape, rotation, start, dirX, dirY, dirZ, 
     return best;
 };
 
-// Bounding-sphere radius of `shape` about its local origin - the pad for a swept-shape AABB.
 Queries._sweptShapeRadius = function (shape) {
     const lb = Queries._scratchExpandedAABB;
     shape.localAABBInto(lb);
@@ -162,9 +152,6 @@ Queries._sweptShapeRadius = function (shape) {
     );
 };
 
-// Stationary overlap test: does `shape`, held fixed at `start`, touch anything? One GJK query per
-// candidate, same AABB-reject structure as the swept queries, but EPA runs directly on an
-// overlapping result (no travel direction to fall back on).
 Queries._overlapTest = function (bodies, shape, start, rotation, ignore) {
     const localAABB = Queries._scratchLocalAABB;
     shape.localAABBInto(localAABB);
@@ -223,8 +210,6 @@ Queries._overlapTestOne = function (shape, start, rotation, body) {
     return { point: epaResult.pointA, normal: epaResult.normal, distance: 0, fraction: 0, body: body };
 };
 
-// Local-space AABB of `shape` held at world `start` (its bounding sphere -> an axis box),
-// inverse-transformed into `body`'s frame, for BVH pruning an overlap test.
 Queries._localOverlapAABBInto = function (out, body, start, shape) {
     const r = Queries._sweptShapeRadius(shape);
     Queries._scratchCorner.set(start.x - body.position.x, start.y - body.position.y, start.z - body.position.z);
@@ -246,11 +231,10 @@ Queries._overlapTestCompound = function (shape, start, rotation, body) {
     }
     const children = compound.children;
     const count = indices ? indices.length : children.length;
-    const childIndices = indices ? indices.slice() : null; // recursion reuses _scratchLeafList
+    const childIndices = indices ? indices.slice() : null;
     for (let k = 0; k < count; k++) {
         const child = children[childIndices ? childIndices[k] : k];
 
-        // Mesh / nested-compound child: recurse at its world placement (GJK can't take a mesh).
         if (Queries._isMesh(child.shape) || Queries._isCompound(child.shape)) {
             const sub = Queries._childAsBody(body, child);
             const hit = Queries._isMesh(child.shape)

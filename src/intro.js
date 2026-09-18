@@ -1,16 +1,6 @@
-/**
- * ActionPhysics - a deterministic, dependency-free 3D physics engine. Ships as one concatenated
- * file, loadable from a <script> tag or require().
- *
- * Math is injectable: ActionPhysics runs on ActionMath and bundles its own copy, but if the host
- * already has ActionMath (via window.ActionMath, or the classes in scope) it adopts those instead,
- * so a page loading both doesn't end up with two Vector3 classes and `instanceof` false across them.
- */
 (function (root, factory) {
     'use strict';
 
-    // A host that concatenates its own ActionMath exposes the classes at script scope (`typeof`
-    // reaches them, `root.X` does not).
     var injected = (typeof root.ActionMath === 'object' && root.ActionMath) ? root.ActionMath : {};
     function adopt(name, scoped) {
         if (injected[name]) return injected[name];
@@ -37,5 +27,4 @@
 
     const ActionPhysics = {};
 
-    // True when every math class came from the host rather than the bundled copy.
     ActionPhysics.usingHostMath = false;

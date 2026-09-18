@@ -1,10 +1,6 @@
-// GJK distance/overlap test via the Minkowski difference (Ericson ch. 5). Two outcomes: OVERLAPPING
-// (handed to EPA) or SEPARATED (distance, witness points, normal). Exact-touch cases are handled by
-// degenerate fallbacks in the simplex routines rather than producing NaN. See Seeding.js,
-// Simplex.js, Run.js.
 class GJK {
     constructor() {
-        // Simplex: up to 4 points, each (w = Minkowski diff point, a/b = world points on A/B).
+
         this._wx = new Float64Array(4); this._wy = new Float64Array(4); this._wz = new Float64Array(4);
         this._ax = new Float64Array(4); this._ay = new Float64Array(4); this._az = new Float64Array(4);
         this._bx = new Float64Array(4); this._by = new Float64Array(4); this._bz = new Float64Array(4);
@@ -31,7 +27,6 @@ class GJK {
         this._bx[i] = b.x; this._by[i] = b.y; this._bz[i] = b.z;
     }
 
-    // Keep only the points at `indices`, after a closest-feature reduction.
     _reduceTo(indices) {
         const wx = this._wx.slice(), wy = this._wy.slice(), wz = this._wz.slice();
         const ax = this._ax.slice(), ay = this._ay.slice(), az = this._az.slice();
@@ -46,7 +41,6 @@ class GJK {
     }
 }
 
-// Closest-distance below which a stalled walk is treated as overlapping rather than separated.
 GJK.OVERLAP_DISTANCE_EPSILON = 1e-5;
 
 ActionPhysics.GJK = GJK;

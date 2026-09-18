@@ -1,4 +1,3 @@
-// Axis-aligned bounding box (min/max Vector3s). Every method is allocation-free.
 class AABB {
     constructor() {
         this.min = new Vector3(Infinity, Infinity, Infinity);
@@ -23,7 +22,6 @@ class AABB {
         return this;
     }
 
-    // this = the box around center +/- halfExtents, both Vector3.
     setFromCenterHalfExtents(center, halfExtents) {
         this.min.x = center.x - halfExtents.x;
         this.min.y = center.y - halfExtents.y;
@@ -34,7 +32,6 @@ class AABB {
         return this;
     }
 
-    // Grow this box (in place) to also contain `other`.
     combineInPlace(other) {
         if (other.min.x < this.min.x) this.min.x = other.min.x;
         if (other.min.y < this.min.y) this.min.y = other.min.y;
@@ -45,7 +42,6 @@ class AABB {
         return this;
     }
 
-    // this = union(a, b). Safe when this aliases a or b.
     static combineInto(out, a, b) {
         out.min.x = Math.min(a.min.x, b.min.x);
         out.min.y = Math.min(a.min.y, b.min.y);
@@ -56,8 +52,6 @@ class AABB {
         return out;
     }
 
-    // Grow every face outward by `margin` (in place). Used for a speculative-contact skin, so a
-    // fast-moving body's broadphase box still catches a pair before penetration.
     expandInPlace(margin) {
         this.min.x -= margin; this.min.y -= margin; this.min.z -= margin;
         this.max.x += margin; this.max.y += margin; this.max.z += margin;
@@ -82,8 +76,6 @@ class AABB {
                other.min.z >= this.min.z && other.max.z <= this.max.z;
     }
 
-    // Half of the box's surface area (xy + yz + zx face pairs). A cheap, consistent BVH split
-    // heuristic — never called per-tick, only when the static tree is (re)built.
     surfaceArea() {
         const dx = this.max.x - this.min.x;
         const dy = this.max.y - this.min.y;

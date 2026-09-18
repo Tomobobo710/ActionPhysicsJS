@@ -1,12 +1,9 @@
-// Rigidly fuses two bodies at a shared point: pivot (composed PointConstraint) + full 3-DOF
-// rotation lock at whatever relative orientation existed at construction.
 class WeldConstraint extends Constraint {
     constructor(bodyA, bodyB, pivotA, pivotB) {
         super(bodyA, bodyB);
         this.localPivotA = new Vector3().copy(pivotA);
         this.localPivotB = new Vector3().copy(pivotB || new Vector3());
 
-        // Relative rotation to hold: qRel = qB^-1 * qA (or bodyA's own rotation for a world weld).
         this.targetRel = new Quaternion();
         if (bodyB) {
             const invB = WeldConstraint._scratchQ.copy(bodyB.rotation).invert();
@@ -42,7 +39,7 @@ class WeldConstraint extends Constraint {
         } else {
             currentRel.copy(bodyA.rotation);
         }
-        // error = currentRel * targetRel^-1; imaginary part is a direct small-angle correction.
+
         const invCurrent = WeldConstraint._scratchQ3.copy(currentRel).invert();
         const errQ = WeldConstraint._scratchQ4.multiplyQuaternions(this.targetRel, invCurrent);
         if (errQ.w < 0) { errQ.x = -errQ.x; errQ.y = -errQ.y; errQ.z = -errQ.z; errQ.w = -errQ.w; }
@@ -50,7 +47,6 @@ class WeldConstraint extends Constraint {
         const errLenSq = ex * ex + ey * ey + ez * ez;
         if (errLenSq < 1e-20) return;
 
-        // error is in bodyB's local frame (currentRel = qB^-1 * qA); rotate to world before applying.
         const worldErr = WeldConstraint._scratchV;
         worldErr.set(ex, ey, ez);
         if (bodyB) bodyB.rotation.transformVectorInPlace(worldErr);

@@ -1,6 +1,3 @@
-// One contact point between a primitive shape pair. signedDistance: negative = separated,
-// positive = overlapping. normal points B to A. pointOnA/pointOnB are witness points on each
-// shape's surface; `point` is their midpoint.
 class ContactDetails {
     constructor() {
         this.point = new Vector3();
@@ -8,32 +5,36 @@ class ContactDetails {
         this.pointOnB = new Vector3();
         this.normal = new Vector3();
         this.signedDistance = 0;
-        this.normalLambda = 0;   // warm-start data, preserved across a match
+        this.normalLambda = 0;
         this.tangentLambda1 = 0;
         this.tangentLambda2 = 0;
 
-        // Set once at creation, re-read each substep for the live gap (PositionSolve.js).
         this.localAnchorA = new Vector3();
         this.localAnchorB = new Vector3();
 
-        this._preSolveNormalVel = 0; // for restitution, written each substep
-        this.fromMeshFace = false;   // set by TriTri/ConvexTri; gates the mesh-face merge and patch solve
+        this._preSolveNormalVel = 0;
 
-        // Source triangle for a mesh-face contact, in world space (the mesh side is static ground,
-        // so these verts don't move within a tick). Lets GeometryRefresh re-clip only the triangle
-        // that produced this point each substep instead of re-running the whole midphase +
-        // narrowphase for the pair. Set by TriTri/ConvexTri alongside fromMeshFace; meshTriValid
-        // stays false when unset so the refresh can fall back.
+        this.prevAnchorA = new Vector3();
+        this.prevAnchorB = new Vector3();
+        this.fricLocalA = new Vector3();
+        this.fricLocalB = new Vector3();
+        this.prevAnchorValid = false;
+        this.fromMeshFace = false;
+        this.edgeAxis = null;
+        this.fromBoxBox = false;
+        this.fromFacePatch = false;
+        // Set by ConvexTri: a curved shape's probe cloud is NOT a clipped patch, so its point extent
+        // does not describe the body's real footprint (see Solver._solveManifold's support test).
+        this.fromCurvedTri = false;
+
         this.meshTriValid = false;
         this.meshTriA = new Vector3();
         this.meshTriB = new Vector3();
         this.meshTriC = new Vector3();
         this.meshTriBodyCenter = new Vector3();
-        this.meshTriIsSideA = false; // was the triangle placedA (true) or placedB (false) in the pair
+        this.meshTriIsSideA = false;
     }
 
-    // Derives local anchors from the current witness points. Called once at creation, never on a
-    // re-matched point.
     setLocalAnchors(bodyA, bodyB) {
         const invRotA = ContactDetails._scratchQuat.copy(bodyA.rotation).invert();
         Vector3.subInto(this.localAnchorA, this.pointOnA, bodyA.position);
@@ -59,7 +60,6 @@ class ContactDetails {
         return out;
     }
 
-    // GJK separated result (distance = non-negative gap) -> negative signedDistance.
     setFromGJKSeparated(gjkResult) {
         this.fromMeshFace = false;
         this.pointOnA.copy(gjkResult.pointA);
@@ -70,7 +70,6 @@ class ContactDetails {
         return this;
     }
 
-    // EPA result (distance = non-negative depth) -> positive signedDistance.
     setFromEPA(epaResult) {
         this.fromMeshFace = false;
         this.pointOnA.copy(epaResult.pointA);
@@ -88,9 +87,23 @@ class ContactDetails {
         this.normal.copy(other.normal);
         this.signedDistance = other.signedDistance;
         this.normalLambda = other.normalLambda;
+        this.prevAnchorA.copy(other.prevAnchorA);
+        this.prevAnchorB.copy(other.prevAnchorB);
+        this.fricLocalA.copy(other.fricLocalA);
+        this.fricLocalB.copy(other.fricLocalB);
+        this.prevAnchorValid = other.prevAnchorValid;
         this.tangentLambda1 = other.tangentLambda1;
         this.tangentLambda2 = other.tangentLambda2;
         this.fromMeshFace = other.fromMeshFace;
+        this.fromBoxBox = other.fromBoxBox;
+        this.fromFacePatch = other.fromFacePatch;
+        this.fromCurvedTri = other.fromCurvedTri;
+        if (other.edgeAxis) {
+            if (!this.edgeAxis) this.edgeAxis = new Vector3();
+            this.edgeAxis.copy(other.edgeAxis);
+        } else {
+            this.edgeAxis = null;
+        }
         this.meshTriValid = other.meshTriValid;
         if (other.meshTriValid) {
             this.meshTriA.copy(other.meshTriA);
@@ -102,7 +115,6 @@ class ContactDetails {
         return this;
     }
 
-    // Records the world-space source triangle for a mesh-face contact (see the field comments).
     setMeshTriangle(a, b, c, bodyCenter, isSideA) {
         this.meshTriValid = true;
         this.meshTriA.copy(a);

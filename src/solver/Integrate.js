@@ -1,15 +1,9 @@
-// Integrate velocity and predict position each substep, plus the rotation helpers.
 var proto = Solver.prototype;
 
 proto._integrate = function (bodies, gravity, h) {
     for (let i = 0; i < bodies.length; i++) {
         const b = bodies[i];
 
-        // A KINEMATIC body is code-driven: no gravity, no forces, no damping, and its velocity is
-        // authoritative (never derived back from position). Just carry its transform along its
-        // current velocity so contacts this substep see it where it will be, exactly as a dynamic
-        // body's predicted position is used. A driver that writes position directly instead of
-        // setting velocity leaves linear/angular velocity at zero and this is a no-op.
         if (b.bodyType === RigidBody.KINEMATIC) {
             const lv = b.linear_velocity;
             if (lv.x !== 0 || lv.y !== 0 || lv.z !== 0) b.position.addScaledInPlace(lv, h);
@@ -20,10 +14,6 @@ proto._integrate = function (bodies, gravity, h) {
 
         if (b.bodyType !== RigidBody.DYNAMIC || !b.isAwake) continue;
 
-        // These snapshots only need to survive within the substep (derived-velocity + restitution
-        // read them later this substep, never across substeps), so reuse the per-body slot rather
-        // than allocating a fresh Vector3/Quaternion every body every substep - ~6000 allocs/tick
-        // otherwise, forever, even at rest.
         let prevPos = this._prevPos.get(b.id);
         if (!prevPos) { prevPos = new Vector3(); this._prevPos.set(b.id, prevPos); }
         prevPos.copy(b.position);
@@ -33,7 +23,10 @@ proto._integrate = function (bodies, gravity, h) {
         let bias = this._biasDelta.get(b.id);
         if (!bias) { bias = new Vector3(); this._biasDelta.set(b.id, bias); }
         bias.set(0, 0, 0);
-        // Pre-gravity snapshot; restitution's pre-solve velocity reads this.
+        let biasAng = this._biasAng.get(b.id);
+        if (!biasAng) { biasAng = new Vector3(); this._biasAng.set(b.id, biasAng); }
+        biasAng.set(0, 0, 0);
+
         let preGrav = this._preGravityVel.get(b.id);
         if (!preGrav) { preGrav = new Vector3(); this._preGravityVel.set(b.id, preGrav); }
         preGrav.copy(b.linear_velocity);
@@ -62,7 +55,7 @@ proto._integrate = function (bodies, gravity, h) {
 
         b.position.addScaledInPlace(b.linear_velocity, h);
         Solver._integrateRotation(b.rotation, b.angular_velocity, h);
-        b._recomputeWorldInverseInertia(); // rotation changed
+        b._recomputeWorldInverseInertia();
 
     }
 };
@@ -74,15 +67,24 @@ proto._deriveVelocities = function (bodies, h) {
         const prevPos = this._prevPos.get(b.id);
         const prevRot = this._prevRot.get(b.id);
         const bias = this._biasDelta.get(b.id);
-        // Bias-only motion (PositionSolve.js) is excluded so it derives no velocity.
+
         b.linear_velocity.x = (b.position.x - prevPos.x - bias.x) / h;
         b.linear_velocity.y = (b.position.y - prevPos.y - bias.y) / h;
         b.linear_velocity.z = (b.position.z - prevPos.z - bias.z) / h;
         Solver._deriveAngularVelocity(b.angular_velocity, prevRot, b.rotation, h);
+        // The angular half of the same split: a bias rotation is a position edit like `bias` above, so
+        // its contribution comes back out of the derived rate. Small angles, so the bias rotation
+        // (accumulated as an axis*angle vector) subtracts from the derived rate directly.
+        const biasAng = this._biasAng.get(b.id);
+        if (biasAng && (biasAng.x !== 0 || biasAng.y !== 0 || biasAng.z !== 0)) {
+            b.angular_velocity.x -= biasAng.x / h;
+            b.angular_velocity.y -= biasAng.y / h;
+            b.angular_velocity.z -= biasAng.z / h;
+        }
+
     }
 };
 
-// Exact exponential-map quaternion integration: dq = (cos(theta/2), sin(theta/2)*axis).
 Solver._integrateRotation = function (rotation, angularVelocity, h) {
     const wx = angularVelocity.x, wy = angularVelocity.y, wz = angularVelocity.z;
     const wLenSq = wx * wx + wy * wy + wz * wz;
@@ -101,13 +103,12 @@ Solver._integrateRotation = function (rotation, angularVelocity, h) {
     rotation.normalize();
 };
 
-// Angular velocity from the rotation delta between prevRot and rotation: dq = rotation * conj(prevRot).
 Solver._deriveAngularVelocity = function (out, prevRot, rotation, h) {
     let dqx = rotation.w * (-prevRot.x) + rotation.x * prevRot.w + rotation.y * (-prevRot.z) - rotation.z * (-prevRot.y);
     let dqy = rotation.w * (-prevRot.y) - rotation.x * (-prevRot.z) + rotation.y * prevRot.w + rotation.z * (-prevRot.x);
     let dqz = rotation.w * (-prevRot.z) + rotation.x * (-prevRot.y) - rotation.y * (-prevRot.x) + rotation.z * prevRot.w;
     let dqw = rotation.w * prevRot.w - rotation.x * (-prevRot.x) - rotation.y * (-prevRot.y) - rotation.z * (-prevRot.z);
-    if (dqw < 0) { dqx = -dqx; dqy = -dqy; dqz = -dqz; dqw = -dqw; } // shorter path
+    if (dqw < 0) { dqx = -dqx; dqy = -dqy; dqz = -dqz; dqw = -dqw; }
     const sinHalf = Math.sqrt(dqx * dqx + dqy * dqy + dqz * dqz);
     if (sinHalf < 1e-12) { out.x = 0; out.y = 0; out.z = 0; return; }
     const halfAngle = Scalar.atan2(sinHalf, dqw);

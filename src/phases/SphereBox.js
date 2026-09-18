@@ -1,4 +1,3 @@
-// Closed-form sphere-box: closest point on the oriented box to the sphere center, clamped per-axis.
 const SphereBox = {};
 
 SphereBox.applies = function (placedA, placedB) {
@@ -6,7 +5,6 @@ SphereBox.applies = function (placedA, placedB) {
         (placedA.shape instanceof BoxShape && placedB.shape instanceof SphereShape);
 };
 
-// Below this distance from box surface to sphere center the normal is undefined; use a fixed axis.
 SphereBox.DEGENERATE_EPSILON = 1e-9;
 
 SphereBox.test = function (placedA, placedB, out) {
@@ -15,14 +13,11 @@ SphereBox.test = function (placedA, placedB, out) {
     const boxPlaced = sphereFirst ? placedB : placedA;
     const sphere = spherePlaced.shape, box = boxPlaced.shape;
 
-    // Sphere center in the box's local frame.
     const invRot = SphereBox._scratchQuat.copy(boxPlaced.rotation).invert();
     const local = SphereBox._scratchV1;
     local.copy(spherePlaced.position).subInPlace(boxPlaced.position);
     invRot.transformVectorInPlace(local);
 
-    // Closest point on the box to that center, clamped per axis; also track whether the center is
-    // strictly inside (all three axes already within their half-extent - deep penetration).
     const hw = box.halfWidth, hh = box.halfHeight, hd = box.halfDepth;
     const insideX = local.x > -hw && local.x < hw;
     const insideY = local.y > -hh && local.y < hh;
@@ -32,7 +27,7 @@ SphereBox.test = function (placedA, placedB, out) {
     const closest = SphereBox._scratchV2;
     let localNx = 0, localNy = 0, localNz = 0, penetration = 0;
     if (inside) {
-        // Center inside the box: push out along the axis of least penetration.
+
         const px = hw - Math.abs(local.x), py = hh - Math.abs(local.y), pz = hd - Math.abs(local.z);
         if (px <= py && px <= pz) { localNx = local.x >= 0 ? 1 : -1; penetration = px; closest.set(local.x >= 0 ? hw : -hw, local.y, local.z); }
         else if (py <= pz) { localNy = local.y >= 0 ? 1 : -1; penetration = py; closest.set(local.x, local.y >= 0 ? hh : -hh, local.z); }
@@ -51,7 +46,7 @@ SphereBox.test = function (placedA, placedB, out) {
 
     let worldNx, worldNy, worldNz;
     if (inside) {
-        // Normal already chosen above (box-local axis of least penetration).
+
         SphereBox._scratchV1.set(localNx, localNy, localNz);
         boxPlaced.rotation.transformVectorInPlace(SphereBox._scratchV1);
     } else if (dist > SphereBox.DEGENERATE_EPSILON) {
@@ -62,7 +57,7 @@ SphereBox.test = function (placedA, placedB, out) {
         boxPlaced.rotation.transformVectorInPlace(SphereBox._scratchV1);
     }
     worldNx = SphereBox._scratchV1.x; worldNy = SphereBox._scratchV1.y; worldNz = SphereBox._scratchV1.z;
-    // Local derivation gives sphere->box; flip to the pipeline's B->A when the box is placed first.
+
     if (!sphereFirst) { worldNx = -worldNx; worldNy = -worldNy; worldNz = -worldNz; }
 
     const worldClosest = SphereBox._scratchV3;
@@ -73,7 +68,7 @@ SphereBox.test = function (placedA, placedB, out) {
     const signedDistance = inside ? (sphere.radius + penetration) : (sphere.radius - dist);
 
     const pointOnSphere = SphereBox._scratchV4;
-    // Point on the sphere's own surface, along the normal from the box back toward the sphere.
+
     const towardSphereX = sphereFirst ? worldNx : -worldNx, towardSphereY = sphereFirst ? worldNy : -worldNy, towardSphereZ = sphereFirst ? worldNz : -worldNz;
     pointOnSphere.set(
         spherePlaced.position.x - towardSphereX * sphere.radius,

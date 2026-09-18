@@ -1,5 +1,3 @@
-// A finite zero-thickness rectangle. `orientation` ('x'/'y'/'z') is the normal axis; halfW/halfL
-// extend along the other two in cross-product cyclic order (y,z)/(z,x)/(x,y).
 class PlaneShape extends Shape {
     constructor(orientation, halfW, halfL) {
         super('plane');
@@ -8,8 +6,6 @@ class PlaneShape extends Shape {
         this.halfL = halfL;
     }
 
-    // Zero thickness means the support point always lies exactly on the plane, regardless of
-    // the direction's component along the normal.
     supportInto(out, direction) {
         if (this.orientation === 'x') {
             out.x = 0;
@@ -34,8 +30,6 @@ class PlaneShape extends Shape {
         return out;
     }
 
-    // A plane is meant for static/kinematic use (infinite-mass equivalent geometry); it carries
-    // zero volume and zero-mass data rather than pretending to a solid it is not.
     volume() { return 0; }
 
     computeMassData() {

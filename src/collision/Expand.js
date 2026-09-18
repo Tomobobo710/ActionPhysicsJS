@@ -1,15 +1,12 @@
-// EPA expansion loop and result extraction.
 var proto = EPA.prototype;
 
-// Expands `simplex` into penetration depth and normal. maxIterations guards non-convergence;
-// hitting the cap still returns the live polytope's closest alive face.
 proto.run = function (support, simplex, maxIterations) {
     maxIterations = maxIterations || 64;
     this._vertexCount = 0;
     this._faceCount = 0;
 
     if (!this._buildInitialTetrahedron(support, simplex)) {
-        return this._zeroDepthResult(simplex); // exact touch / numerically flat: zero depth
+        return this._zeroDepthResult(simplex);
     }
     const idx = [0, 1, 2, 3];
     const cx = (this._wx[idx[0]] + this._wx[idx[1]] + this._wx[idx[2]] + this._wx[idx[3]]) / 4;
@@ -17,7 +14,6 @@ proto.run = function (support, simplex, maxIterations) {
     const cz = (this._wz[idx[0]] + this._wz[idx[1]] + this._wz[idx[2]] + this._wz[idx[3]]) / 4;
     const centroid = { x: cx, y: cy, z: cz };
 
-    // The 4 faces of the seed tetrahedron.
     this._addFace(idx[0], idx[1], idx[2], centroid);
     this._addFace(idx[0], idx[1], idx[3], centroid);
     this._addFace(idx[0], idx[2], idx[3], centroid);
@@ -32,7 +28,7 @@ proto.run = function (support, simplex, maxIterations) {
 
         const newDist = this._newW.x * this._faceNx[face] + this._newW.y * this._faceNy[face] + this._newW.z * this._faceNz[face];
 
-        if (newDist - faceDist < 1e-6) break; // converged
+        if (newDist - faceDist < 1e-6) break;
 
         this._expandAt(this._newW, this._newA, this._newB, centroid);
     }
@@ -40,7 +36,6 @@ proto.run = function (support, simplex, maxIterations) {
     return this._resultFromFace(this._closestAliveFace());
 };
 
-// Linear scan for the alive face closest to the origin (polytope stays small).
 proto._closestAliveFace = function () {
     let best = -1, bestDist = Infinity;
     for (let i = 0; i < this._faceCount; i++) {
@@ -50,13 +45,9 @@ proto._closestAliveFace = function () {
     return best;
 };
 
-// Adds `newPoint` and re-triangulates: every alive face visible from it is removed, and the
-// resulting hole's horizon is re-closed with new faces to the new point.
 proto._expandAt = function (newW, newA, newB, centroid) {
     const newIdx = this._pushVertex(newW, newA, newB);
 
-    // Horizon: edges shared by exactly one visible face and one non-visible face. A shared
-    // internal edge between two visible faces is seen twice and cancels out.
     const horizonA = [], horizonB = [];
     function edgeKey(a, b) { return a < b ? a + ',' + b : b + ',' + a; }
     const edgeSeen = new Map();
@@ -85,14 +76,11 @@ proto._expandAt = function (newW, newA, newB, centroid) {
     }
 };
 
-// Recovers { distance, normal, pointA, pointB } from a face - barycentric weights of the face's
-// own closest point to the origin, applied to its three world witness points.
 proto._resultFromFace = function (face) {
     const ia = this._faceA[face], ib = this._faceB[face], ic = this._faceC[face];
     const nx = this._faceNx[face], ny = this._faceNy[face], nz = this._faceNz[face];
     const dist = this._faceDist[face];
 
-    // The plane is {x : x.n_hat = dist}, so dist*n_hat is the closest point on it to the origin.
     const ax = this._wx[ia], ay = this._wy[ia], az = this._wz[ia];
     const closestX = nx * dist, closestY = ny * dist, closestZ = nz * dist;
 
@@ -127,7 +115,6 @@ proto._resultFromFace = function (face) {
         u * this._bz[ia] + v * this._bz[ib] + w * this._bz[ic]
     );
 
-    // Face normal points A-side to B-side; negate for the pipeline's B->A convention.
     return {
         distance: Math.max(0, dist),
         normal: new Vector3(-nx, -ny, -nz),

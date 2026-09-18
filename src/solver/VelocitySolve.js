@@ -10,18 +10,27 @@ var proto = Solver.prototype;
 proto.COPLANAR_NORMAL_DOT = 0.9999;
 
 proto._boxFacePatchVelocity = function (manifold, bodyA, bodyB, gravity, h) {
+    const facePatch = manifold.points.length > 1 && manifold.points[0].fromFacePatch;
+
     const pts = manifold.points, n = pts.length;
     if (n < 2) return false;
     const bothBoxes = (bodyA.shape instanceof BoxShape) && (bodyB.shape instanceof BoxShape);
+    if (facePatch) {
+        for (let i = 0; i < n; i++) if (!pts[i].fromFacePatch) return false;
+    }
     let allMeshFace = !bothBoxes;
-    if (allMeshFace) for (let i = 0; i < n; i++) if (!pts[i].fromMeshFace) { allMeshFace = false; break; }
+    if (allMeshFace) for (let i = 0; i < n; i++) if (!pts[i].fromMeshFace && !pts[i].fromFacePatch) { allMeshFace = false; break; }
     if (!bothBoxes && !allMeshFace) return false;
 
     // A mesh face patch is one face by construction, so use all its points for the centroid - not
     // just the ones the position sweep left engaged this substep. A BoxBox patch uses engaged-only.
     const useAll = allMeshFace;
-    let cAx = 0, cAy = 0, cAz = 0, cBx = 0, cBy = 0, cBz = 0;
+    // How the anchor is chosen (below) depends on whether the patch is a polygon of a flat-faced
+    // body. A curved body's points sample the shape's own surface instead, and a shape with mixed
+    // children (a compound with a cylinder in it) counts as curved.
+    const dyn = bodyA.bodyType === RigidBody.DYNAMIC ? bodyA : bodyB;
     let nx = 0, ny = 0, nz = 0, cnt = 0, engaged = 0, maxPre = 0, totLam = 0;
+    let curved = !isFlatFaced(dyn.shape);
     for (let i = 0; i < n; i++) {
         const p = pts[i];
         const isEngaged = p.normalLambda < 0;
@@ -30,11 +39,8 @@ proto._boxFacePatchVelocity = function (manifold, bodyA, bodyB, gravity, h) {
             if (p._preSolveNormalVel > maxPre) maxPre = p._preSolveNormalVel;
             totLam += Math.abs(p.normalLambda);
         }
+        if (p.fromCurvedTri) curved = true; // a probe cloud, not a polygon patch - see below
         if (!useAll && !isEngaged) continue;
-        p.currentAnchorAInto(this._rA, bodyA);
-        p.currentAnchorBInto(this._rB, bodyB);
-        cAx += this._rA.x; cAy += this._rA.y; cAz += this._rA.z;
-        cBx += this._rB.x; cBy += this._rB.y; cBz += this._rB.z;
         nx += p.normal.x; ny += p.normal.y; nz += p.normal.z;
         cnt++;
     }
@@ -42,16 +48,65 @@ proto._boxFacePatchVelocity = function (manifold, bodyA, bodyB, gravity, h) {
     const nl = Math.sqrt(nx * nx + ny * ny + nz * nz);
     if (nl < 1e-9) return false;
     nx /= nl; ny /= nl; nz /= nl;
+
+    // The anchor is the centre of the contact REGION, and these points are only a SAMPLE of it - four
+    // at most, chosen by a spread-maximizing reduction, plus whatever vertices a mesh triangle's clip
+    // adds. Their arithmetic mean is therefore not the region's centre: on a slab resting flat across
+    // a tile seam this manifold holds three of the face's four corners plus the point where the seam
+    // crosses one edge, and that mean lands half a metre off the body - so restitution was applied a
+    // half-metre to one side and spun a slab that had been dropped dead flat (measured 0 -> 3.9 rad/s
+    // in a single substep, against exactly 0 on the same square drawn as one box face). The centre of
+    // the sample's EXTENT along the patch plane does not depend on WHICH interior points the reduction
+    // kept, so it stays on the region; for any patch whose points are a fair sample the two agree.
+    //
+    // A CURVED body is the exception, and keeps the mean: its points sample the SHAPE's surface
+    // across the contact band rather than outlining a polygon, so the extreme samples sit out on the
+    // shape's shoulders and the midpoint of those extremes is not the centre of the band. Measured:
+    // taking a lying cylinder's seam contact from the mean to the extent midpoint stops it rolling
+    // (the coin-pusher roller manages 0.63 turns where it needs 3) and drops it through the floor.
+    let minAx = Infinity, maxAx = -Infinity, minAy = Infinity, maxAy = -Infinity, minAz = Infinity, maxAz = -Infinity;
+    let minBx = Infinity, maxBx = -Infinity, minBy = Infinity, maxBy = -Infinity, minBz = Infinity, maxBz = -Infinity;
+    let sumAx = 0, sumAy = 0, sumAz = 0, sumBx = 0, sumBy = 0, sumBz = 0;
     for (let i = 0; i < n; i++) {
         const p = pts[i];
         if (!useAll && p.normalLambda >= 0) continue;
         if (p.normal.x * nx + p.normal.y * ny + p.normal.z * nz < this.COPLANAR_NORMAL_DOT) return false; // not coplanar
+        p.currentAnchorAInto(this._rA, bodyA);
+        sumAx += this._rA.x; sumAy += this._rA.y; sumAz += this._rA.z;
+        if (this._rA.x < minAx) minAx = this._rA.x;
+        if (this._rA.x > maxAx) maxAx = this._rA.x;
+        if (this._rA.y < minAy) minAy = this._rA.y;
+        if (this._rA.y > maxAy) maxAy = this._rA.y;
+        if (this._rA.z < minAz) minAz = this._rA.z;
+        if (this._rA.z > maxAz) maxAz = this._rA.z;
+        p.currentAnchorBInto(this._rB, bodyB);
+        sumBx += this._rB.x; sumBy += this._rB.y; sumBz += this._rB.z;
+        if (this._rB.x < minBx) minBx = this._rB.x;
+        if (this._rB.x > maxBx) maxBx = this._rB.x;
+        if (this._rB.y < minBy) minBy = this._rB.y;
+        if (this._rB.y > maxBy) maxBy = this._rB.y;
+        if (this._rB.z < minBz) minBz = this._rB.z;
+        if (this._rB.z > maxBz) maxBz = this._rB.z;
     }
 
     const inv = 1 / cnt;
-    cAx *= inv; cAy *= inv; cAz *= inv; cBx *= inv; cBy *= inv; cBz *= inv;
-    this._rA.set(cAx - bodyA.position.x, cAy - bodyA.position.y, cAz - bodyA.position.z);
-    this._rB.set(cBx - bodyB.position.x, cBy - bodyB.position.y, cBz - bodyB.position.z);
+    let ax, ay, az, bx, by, bz;
+    if (curved) {
+        ax = sumAx * inv; ay = sumAy * inv; az = sumAz * inv;
+        bx = sumBx * inv; by = sumBy * inv; bz = sumBz * inv;
+    } else {
+        // Midpoint of that extent, shifted back onto the patch plane (the plane through the sampled
+        // points, p.n = mean) along the normal, so the anchor carries no lever arm in the normal
+        // direction either - friction is tangential and would see one.
+        ax = (minAx + maxAx) * 0.5; ay = (minAy + maxAy) * 0.5; az = (minAz + maxAz) * 0.5;
+        bx = (minBx + maxBx) * 0.5; by = (minBy + maxBy) * 0.5; bz = (minBz + maxBz) * 0.5;
+        const shiftA = (ax * nx + ay * ny + az * nz) - (sumAx * nx + sumAy * ny + sumAz * nz) * inv;
+        const shiftB = (bx * nx + by * ny + bz * nz) - (sumBx * nx + sumBy * ny + sumBz * nz) * inv;
+        ax -= shiftA * nx; ay -= shiftA * ny; az -= shiftA * nz;
+        bx -= shiftB * nx; by -= shiftB * ny; bz -= shiftB * nz;
+    }
+    this._rA.set(ax - bodyA.position.x, ay - bodyA.position.y, az - bodyA.position.z);
+    this._rB.set(bx - bodyB.position.x, by - bodyB.position.y, bz - bodyB.position.z);
 
     // --- Restitution at the centroid ---
     const restitution = Math.max(bodyA.restitution, bodyB.restitution);
@@ -88,9 +143,87 @@ proto._boxFacePatchVelocity = function (manifold, bodyA, bodyB, gravity, h) {
                 const tx = vtx / vtMag, ty = vty / vtMag, tz = vtz / vtMag;
                 const wT = this._effectiveMass(bodyA, bodyB, this._rA, this._rB, tx, ty, tz);
                 if (wT >= 1e-12) {
-                    let jt = vtMag / wT;
+                    let jt = vtMag / wT; // impulse to fully stop tangential motion, clamped to Coulomb cap
                     if (jt > maxImpulse) jt = maxImpulse;
                     this._applyVelocityImpulse(bodyA, bodyB, this._rA, this._rB, -tx, -ty, -tz, jt);
+                }
+            }
+        }
+    }
+    return true;
+};
+
+// One velocity solve for a whole coplanar contact set (see Solver._coplanarPatchGroups): restitution
+// and friction applied ONCE at the set's shared centroid, so a body resting on four butting mesh
+// tiles sees exactly the impulse it would see on one mesh of the same shape. The dynamic body is
+// treated as A and every grouped surface as the static B, so the only impulse applied is the one to
+// the body. Returns false when the set is not solvable as one (points on two planes, nothing
+// engaged), in which case the caller falls back to the per-point solves.
+proto._solvePatchGroup = function (group, gravity, h) {
+    const dyn = group.dyn, other = group.other;
+    const anchor = this._tmpDispA;
+    let engaged = 0, maxPre = 0, totLam = 0, cnt = 0;
+    let nx = group.nx, ny = group.ny, nz = group.nz;
+    let cx = 0, cy = 0, cz = 0;
+    for (let g = 0; g < group.manifolds.length; g++) {
+        const m = group.manifolds[g];
+        const dynIsA = m.bodyA === dyn;
+        for (let i = 0; i < m.points.length; i++) {
+            const p = m.points[i];
+            const isEngaged = p.normalLambda < 0;
+            if (isEngaged) {
+                engaged++;
+                if (p._preSolveNormalVel > maxPre) maxPre = p._preSolveNormalVel;
+                totLam += Math.abs(p.normalLambda);
+            } else if (!group.useAll) continue;
+            if (dynIsA) p.currentAnchorAInto(anchor, m.bodyA);
+            else p.currentAnchorBInto(anchor, m.bodyB);
+            cx += anchor.x; cy += anchor.y; cz += anchor.z;
+            cnt++;
+        }
+    }
+    if (engaged < 1 || cnt < 2) return false;
+
+    const inv = 1 / cnt;
+    cx *= inv; cy *= inv; cz *= inv;
+    this._rA.set(cx - dyn.position.x, cy - dyn.position.y, cz - dyn.position.z);
+
+    // --- Restitution at the shared centroid (the grouped surfaces are static: no velocity) ---
+    const restitution = Math.max(dyn.restitution, other.restitution);
+    if (restitution > 0) {
+        const g = dyn.gravity || other.gravity || gravity;
+        const gravityMag = Math.sqrt(g.x * g.x + g.y * g.y + g.z * g.z);
+        const restitutionThreshold = gravityMag * h * Solver.RESTITUTION_SLOP_FACTOR;
+        if (maxPre > restitutionThreshold) {
+            const va = this._pointVelocity(dyn, this._rA, this._tmpDispB);
+            const relN = -(va.x * nx + va.y * ny + va.z * nz);
+            const targetN = -restitution * maxPre;
+            if (targetN < relN) {
+                this._rB.set(0, 0, 0);
+                const wN = this._effectiveMass(dyn, other, this._rA, this._rB, nx, ny, nz);
+                if (wN >= 1e-12) this._applyVelocityImpulse(dyn, other, this._rA, this._rB, nx, ny, nz, (targetN - relN) / wN);
+            }
+        }
+    }
+
+    // --- Friction at the shared centroid (Coulomb cap = friction * total engaged normal impulse) ---
+    const friction = group.friction;
+    if (friction > 0) {
+        const maxImpulse = friction * totLam / h;
+        if (maxImpulse > 0) {
+            const va = this._pointVelocity(dyn, this._rA, this._tmpDispB);
+            const rvx = -va.x, rvy = -va.y, rvz = -va.z;
+            const vn = rvx * nx + rvy * ny + rvz * nz;
+            const vtx = rvx - vn * nx, vty = rvy - vn * ny, vtz = rvz - vn * nz;
+            const vtMag = Math.sqrt(vtx * vtx + vty * vty + vtz * vtz);
+            if (vtMag >= 1e-12) {
+                const tx = vtx / vtMag, ty = vty / vtMag, tz = vtz / vtMag;
+                this._rB.set(0, 0, 0);
+                const wT = this._effectiveMass(dyn, other, this._rA, this._rB, tx, ty, tz);
+                if (wT >= 1e-12) {
+                    let jt = vtMag / wT;
+                    if (jt > maxImpulse) jt = maxImpulse;
+                    this._applyVelocityImpulse(dyn, other, this._rA, this._rB, -tx, -ty, -tz, jt);
                 }
             }
         }
@@ -106,6 +239,7 @@ proto._solveContactVelocity = function (point, bodyA, bodyB, gravity, h) {
     Vector3.subInto(this._rA, this._rA, bodyA.position);
     Vector3.subInto(this._rB, this._rB, bodyB.position);
     const nx = point.normal.x, ny = point.normal.y, nz = point.normal.z;
+    const stableVertical = this._suppressQuietVerticalLanding(bodyA, bodyB, point, nx, ny, nz);
 
     // --- Restitution (normal) ---
     const restitution = Math.max(bodyA.restitution, bodyB.restitution);
@@ -115,9 +249,9 @@ proto._solveContactVelocity = function (point, bodyA, bodyB, gravity, h) {
     const restitutionThreshold = gravityMag * h * Solver.RESTITUTION_SLOP_FACTOR;
     if (restitution > 0 && point._preSolveNormalVel > restitutionThreshold) {
         const targetN = -restitution * point._preSolveNormalVel;
-        if (targetN < relN) { // only add separation, never damp an already-separating contact
+        if (targetN < relN) {
             const wN = this._effectiveMass(bodyA, bodyB, this._rA, this._rB, nx, ny, nz);
-            if (wN >= 1e-12) this._applyVelocityImpulse(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, (targetN - relN) / wN);
+            if (wN >= 1e-12) this._applyVelocityImpulse(bodyA, bodyB, this._rA, this._rB, nx, ny, nz, (targetN - relN) / wN, stableVertical);
         }
     }
 
@@ -129,16 +263,16 @@ proto._solveContactVelocity = function (point, bodyA, bodyB, gravity, h) {
 
     this._contactRelativeVelocity(point, bodyA, bodyB, this._tmpDispA);
     const vn = this._tmpDispA.x * nx + this._tmpDispA.y * ny + this._tmpDispA.z * nz;
-    let vtx = this._tmpDispA.x - vn * nx, vty = this._tmpDispA.y - vn * ny, vtz = this._tmpDispA.z - vn * nz;
+    const vtx = this._tmpDispA.x - vn * nx, vty = this._tmpDispA.y - vn * ny, vtz = this._tmpDispA.z - vn * nz;
     const vtMag = Math.sqrt(vtx * vtx + vty * vty + vtz * vtz);
     if (vtMag < 1e-12) return;
 
     const tx = vtx / vtMag, ty = vty / vtMag, tz = vtz / vtMag;
     const wT = this._effectiveMass(bodyA, bodyB, this._rA, this._rB, tx, ty, tz);
     if (wT < 1e-12) return;
-    let jt = vtMag / wT; // impulse to fully stop tangential motion, clamped to Coulomb cap
+    let jt = vtMag / wT;
     if (jt > maxImpulse) jt = maxImpulse;
-    this._applyVelocityImpulse(bodyA, bodyB, this._rA, this._rB, -tx, -ty, -tz, jt);
+    this._applyVelocityImpulse(bodyA, bodyB, this._rA, this._rB, -tx, -ty, -tz, jt, stableVertical);
 };
 
 // Damps relative angular velocity in the contact's tangent plane (spin about the normal is left
@@ -241,19 +375,19 @@ proto._contactRelativeNormalVelocityPreGravity = function (point, bodyA, bodyB) 
 };
 
 // Applies velocity-space impulse j*(dx,dy,dz) at contact offsets rA/rB (A: -j, B: +j).
-proto._applyVelocityImpulse = function (bodyA, bodyB, rA, rB, dx, dy, dz, j) {
+proto._applyVelocityImpulse = function (bodyA, bodyB, rA, rB, dx, dy, dz, j, suppressAngular) {
     const px = dx * j, py = dy * j, pz = dz * j;
     if (bodyA._mass_inverted > 0) {
         bodyA.linear_velocity.x -= px * bodyA._mass_inverted * bodyA.linear_factor.x;
         bodyA.linear_velocity.y -= py * bodyA._mass_inverted * bodyA.linear_factor.y;
         bodyA.linear_velocity.z -= pz * bodyA._mass_inverted * bodyA.linear_factor.z;
-        this._applyAngularVelocityImpulse(bodyA, rA, -px, -py, -pz);
+        if (!suppressAngular) this._applyAngularVelocityImpulse(bodyA, rA, -px, -py, -pz);
     }
     if (bodyB._mass_inverted > 0) {
         bodyB.linear_velocity.x += px * bodyB._mass_inverted * bodyB.linear_factor.x;
         bodyB.linear_velocity.y += py * bodyB._mass_inverted * bodyB.linear_factor.y;
         bodyB.linear_velocity.z += pz * bodyB._mass_inverted * bodyB.linear_factor.z;
-        this._applyAngularVelocityImpulse(bodyB, rB, px, py, pz);
+        if (!suppressAngular) this._applyAngularVelocityImpulse(bodyB, rB, px, py, pz);
     }
 };
 

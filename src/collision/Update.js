@@ -1,21 +1,5 @@
-// Per-tick manifold update: match existing points against this tick's narrowphase result, warm-
-// start matched points, add genuinely new ones, remove unconfirmed ones. Fires contact lifecycle
-// events on both bodies:
-//   speculativeContact - a predicted point the body has NOT yet reached (still more than a
-//                        speculative-margin away), vetoable by a listener
-//   contact            - EVERY tick a point is "in contact": overlapping, OR held right at the
-//                        surface by the speculative solve (signedDistance >= -CONTACT_BAND). Fires
-//                        on the tick it first touches and every tick it stays - matching "while in
-//                        contact" semantics, not just the leading edge. Because speculation stops a
-//                        slow body BEFORE it overlaps, an exact-touch-only band would never fire for
-//                        a body resting against a wall it approached slowly.
-//   endContact         - a point that was present last tick is gone this tick
-//   endAllContact      - the manifold went from having points to having none
 var proto = ContactManifold.prototype;
 
-// A point at or within this signed-distance of the surface counts as "in contact" for events: the
-// solver is actively constraining the pair against each other here (it holds a speculative body at
-// roughly the base speculative margin, not at exactly 0). Matches RigidBody.SPECULATIVE_MARGIN.
 ContactManifold.CONTACT_BAND = 0.02;
 ContactManifold._isTouching = function (signedDistance) {
     return signedDistance >= -ContactManifold.CONTACT_BAND;
@@ -25,8 +9,6 @@ proto.update = function (newContacts, dt) {
     const hadPointsBefore = this.points.length > 0;
     const matched = new Array(newContacts.length).fill(false);
 
-    // Match each existing point against the best (closest, in bodyA-local space) unmatched
-    // incoming contact.
     for (let i = this.points.length - 1; i >= 0; i--) {
         const existing = this.points[i];
         const existingLocal = this._localAnchors[i];
@@ -40,19 +22,18 @@ proto.update = function (newContacts, dt) {
             if (distSq < bestDistSq) { bestDistSq = distSq; bestJ = j; }
         }
         if (bestJ === -1) {
-            // Not re-confirmed this tick: remove (the only removal path, never mid-substep).
+
             this.points.splice(i, 1);
             this._localAnchors.splice(i, 1);
             this._emitBoth('endContact', existing);
             continue;
         }
         matched[bestJ] = true;
-        // Capture the warm-start lambdas before copy() zeroes them from the fresh incoming contact.
+
         const keepNormalLambda = existing.normalLambda;
         const keepTangentLambda1 = existing.tangentLambda1;
         const keepTangentLambda2 = existing.tangentLambda2;
-        // Inside EXACT_TOUCH_BAND, GJK/EPA's recovered normal is ambiguous - keep the established
-        // one, or a persistent contact hits a penetrate-then-launch limit cycle.
+
         const keepNormal = Math.abs(newContacts[bestJ].signedDistance) < ContactManifold.EXACT_TOUCH_BAND
             ? ContactManifold._scratchNormal.copy(existing.normal)
             : null;
@@ -63,20 +44,17 @@ proto.update = function (newContacts, dt) {
         existing.tangentLambda2 = keepTangentLambda2;
         if (keepNormal) existing.normal.copy(keepNormal);
         ContactManifold._toLocal(this.bodyA, existing.pointOnA, existingLocal);
-        // Fire 'contact' every tick the point is touching (not just the entry edge), so a body
-        // resting against another keeps notifying its listeners. `wasOverlapping` is unused now but
-        // kept above in case a consumer ever wants an entry-only variant.
+
         void wasOverlapping;
         if (ContactManifold._isTouching(existing.signedDistance)) this._emitBoth('contact', existing);
     }
 
-    // Any incoming contact not matched to an existing point is genuinely new.
     for (let j = 0; j < newContacts.length; j++) {
         if (matched[j]) continue;
         const nc = newContacts[j];
         if (nc.signedDistance < 0 && !ContactManifold._isTouching(nc.signedDistance)) {
-            // Genuinely separated (beyond the exact-touch band): a predicted point only.
-            if (!this._speculativeAllowed(nc)) continue; // vetoed by a listener
+
+            if (!this._speculativeAllowed(nc)) continue;
             this._addPoint(nc);
             this._emitBoth('speculativeContact', nc);
         } else {
@@ -88,8 +66,6 @@ proto.update = function (newContacts, dt) {
     if (hadPointsBefore && this.points.length === 0) this._emitBoth('endAllContact', null);
 };
 
-// MATCH_DISTANCE widened by the contact point's tangential travel this tick, so a fast-sliding or
-// rolling contact's point still matches instead of rebuilding the manifold (and losing warm-start).
 proto._matchDistance = function (point, dt) {
     if (!dt) return ContactManifold.MATCH_DISTANCE;
     const bodyA = this.bodyA, bodyB = this.bodyB;
@@ -109,7 +85,6 @@ proto._matchDistance = function (point, dt) {
     return ContactManifold.MATCH_DISTANCE + tangentialSpeed * dt;
 };
 
-// A speculativeContact listener on either body may veto the point before it's added.
 proto._speculativeAllowed = function (contact) {
     return this.bodyA._speculativeVeto(contact, this.bodyB) !== false &&
         this.bodyB._speculativeVeto(contact, this.bodyA) !== false;
@@ -120,7 +95,6 @@ proto._emitBoth = function (event, contact) {
     this.bodyB.emit(event, { contact: contact, other: this.bodyA });
 };
 
-// World point -> bodyA-local space, for next-tick matching. Writes into caller-owned `out`.
 ContactManifold._toLocal = function (bodyA, worldPoint, out) {
     Vector3.subInto(out, worldPoint, bodyA.position);
     ContactManifold._scratchInvRot.copy(bodyA.rotation).invert();

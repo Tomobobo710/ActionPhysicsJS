@@ -1,5 +1,3 @@
-// Recomputes tight AABB, fattened broadphase AABB, and world inverse inertia from position/rotation.
-// Runs once per body per tick; narrowphase and the solver assume it already has.
 var proto = RigidBody.prototype;
 
 proto.updateDerived = function (dt) {
@@ -9,13 +7,10 @@ proto.updateDerived = function (dt) {
     return this;
 };
 
-// The TIGHT world AABB: the exact rotated bound of the shape at the current transform, no margin -
-// the body's geometric truth, what getAABB()/a raycast wants. Broadphase uses the fattened variant.
 proto._recomputeAABB = function () {
     const local = RigidBody._scratchLocalAABB;
     this.shape.localAABBInto(local);
-    // Conservative rotated bound via the 8-corner sweep (same technique CompoundShape uses),
-    // correct for any rotation, not just axis-aligned ones.
+
     const rotMat = RigidBody._scratchMat3;
     rotMat.fromQuaternion(this.rotation);
     const corner = RigidBody._scratchVec;
@@ -36,12 +31,10 @@ proto._recomputeAABB = function () {
     this._aabbDirty = false;
 };
 
-// Tight AABB fattened by SPECULATIVE_MARGIN plus a directional velocity sweep, so a fast approach
-// is caught a tick before overlap. Fattening only adds candidate pairs; narrowphase culls precisely.
 proto._recomputeBroadphaseAABB = function (dt) {
     const m = RigidBody.SPECULATIVE_MARGIN;
     const sx = this.linear_velocity.x * dt, sy = this.linear_velocity.y * dt, sz = this.linear_velocity.z * dt;
-    // Angular sweep: a corner at bounding radius R moves at |omega|*R; applied isotropically.
+
     const ex = (this._aabb.max.x - this._aabb.min.x) * 0.5;
     const ey = (this._aabb.max.y - this._aabb.min.y) * 0.5;
     const ez = (this._aabb.max.z - this._aabb.min.z) * 0.5;
@@ -67,13 +60,10 @@ proto._recomputeWorldInverseInertia = function () {
     this._worldInverseInertiaTensor.multiply(rotT);
 };
 
-// Assumes updateDerived() has already run this tick - never recomputes on its own, so a stale call
-// is a caller bug surfaced as a stale box, not silently patched over here.
 proto.getAABB = function () {
     return this._aabb;
 };
 
-// Broadphase/midphase read THIS, not getAABB(), so a pair surfaces the tick before overlap.
 proto.getBroadphaseAABB = function () {
     return this._broadphaseAABB;
 };

@@ -1,6 +1,3 @@
-// Part of ActionMath - the shared math library. This file is pasted here VERBATIM from its source of
-// truth and must not be edited locally. Anything this engine needs is added to ActionMath first, then
-// arrives here through the same paste.
 class Quaternion {
     constructor(x = 0, y = 0, z = 0, w = 1) {
         this.x = x;
@@ -9,7 +6,6 @@ class Quaternion {
         this.w = w;
     }
 
-    // Normalises the axis, for the same reason as setAxisAngle below.
     static fromAxisAngle(axis, angle) {
         return new Quaternion().setAxisAngle(axis, angle);
     }
@@ -20,9 +16,7 @@ class Quaternion {
     }
 
     static fromEuler(roll, pitch, yaw) {
-        // Convert euler angles to quaternion
-        // Rotation order: roll (Z-axis) -> pitch (X-axis) -> yaw (Y-axis)
-        // This matches the old Arwing.transformVertex() rotation order
+
         const cr = Scalar.cos(roll * 0.5);
         const sr = Scalar.sin(roll * 0.5);
         const cp = Scalar.cos(pitch * 0.5);
@@ -30,7 +24,6 @@ class Quaternion {
         const cy = Scalar.cos(yaw * 0.5);
         const sy = Scalar.sin(yaw * 0.5);
 
-        // ZXY order: Qz * Qx * Qy
         const w = cy * cp * cr + sy * sp * sr;
         const x = cy * sp * cr + sy * cp * sr;
         const y = sy * cp * cr - cy * sp * sr;
@@ -39,9 +32,6 @@ class Quaternion {
         return new Quaternion(x, y, z, w);
     }
 
-    // Orientation that points a +Z-forward object (mesh, projectile) along a direction vector.
-    // Uses the same Euler convention as fromEuler(0, -pitch, yaw), so a +Z model faces exactly
-    // where it's heading. Returns identity for a near-zero vector.
     static fromDirection(vx, vy, vz) {
         const sp = Scalar.hypot3(vx, vy, vz);
         if (sp < 1e-6) return new Quaternion(0, 0, 0, 1);
@@ -50,7 +40,6 @@ class Quaternion {
         return Quaternion.fromEuler(0, -pitch, yaw);
     }
 
-    // Hamilton product a∘b (applies b first, then a). Composes two rotations into one.
     static multiply(a, b) {
         return new Quaternion(
             a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
@@ -60,9 +49,6 @@ class Quaternion {
         );
     }
 
-    // The axis is normalized here, so a non-unit axis still yields a unit quaternion. Skipping that
-    // scales the whole quaternion by |axis|, and a non-unit quaternion silently scales every vector it
-    // rotates. A zero axis gives identity rather than NaN.
     setAxisAngle(axis, angle) {
         const lsq = axis.x * axis.x + axis.y * axis.y + axis.z * axis.z;
         if (lsq === 0) return this.identity();
@@ -77,9 +63,7 @@ class Quaternion {
     }
 
     setFromEuler(roll, pitch, yaw) {
-        // Convert euler angles to quaternion
-        // Rotation order: roll (Z-axis) -> pitch (X-axis) -> yaw (Y-axis)
-        // This matches the old Arwing.transformVertex() rotation order
+
         const cr = Scalar.cos(roll * 0.5);
         const sr = Scalar.sin(roll * 0.5);
         const cp = Scalar.cos(pitch * 0.5);
@@ -87,7 +71,6 @@ class Quaternion {
         const cy = Scalar.cos(yaw * 0.5);
         const sy = Scalar.sin(yaw * 0.5);
 
-        // ZXY order: Qz * Qx * Qy
         this.w = cy * cp * cr + sy * sp * sr;
         this.x = cy * sp * cr + sy * cp * sr;
         this.y = sy * cp * cr - cy * sp * sr;
@@ -125,12 +108,6 @@ class Quaternion {
         );
     }
 
-    /**
-     * Transform a vector by this quaternion rotation
-     * Uses the formula: v' = q * v * q^-1
-     * @param {Vector3} vector - The vector to rotate
-     * @returns {Vector3} The rotated vector
-     */
     transformVector(vector) {
         const x = vector.x,
             y = vector.y,
@@ -140,23 +117,17 @@ class Quaternion {
             qz = this.z,
             qw = this.w;
 
-        // Calculate q * v
         const ix = qw * x + qy * z - qz * y;
         const iy = qw * y + qz * x - qx * z;
         const iz = qw * z + qx * y - qy * x;
         const iw = -qx * x - qy * y - qz * z;
 
-        // Calculate (q * v) * q^-1
         const rx = ix * qw + iw * -qx + iy * -qz - iz * -qy;
         const ry = iy * qw + iw * -qy + iz * -qx - ix * -qz;
         const rz = iz * qw + iw * -qz + ix * -qy - iy * -qx;
 
         return new Vector3(rx, ry, rz);
     }
-
-    // ---- in-place / allocation-free forms ----
-    // The physics solver runs these thousands of times per tick and cannot allocate per operation.
-    // The allocating forms above are unchanged.
 
     set(x, y, z, w) {
         this.x = x; this.y = y; this.z = z; this.w = w;
@@ -176,12 +147,10 @@ class Quaternion {
         return this.set(0, 0, 0, 1);
     }
 
-    // this = this * q
     multiplyInPlace(q) {
         return this.multiplyQuaternions(this, q);
     }
 
-    // this = a * b. Safe when this aliases either argument.
     multiplyQuaternions(a, b) {
         const ax = a.x, ay = a.y, az = a.z, aw = a.w;
         const bx = b.x, by = b.y, bz = b.z, bw = b.w;
@@ -192,11 +161,6 @@ class Quaternion {
         return this;
     }
 
-    // Rescale to unit length. A rotation built by repeated multiplication drifts off the unit sphere,
-    // and a non-unit quaternion silently SCALES every vector it rotates - the object appears to grow or
-    // shrink. slerp() also assumes unit length: its acos(dot) is only the half-angle if both are unit,
-    // which is what the >= 1.0 guard there is really working around.
-    // A zero quaternion becomes identity rather than NaN.
     normalize() {
         const lsq = this.x * this.x + this.y * this.y + this.z * this.z + this.w * this.w;
         if (lsq === 0) return this.identity();
@@ -205,7 +169,6 @@ class Quaternion {
         return this;
     }
 
-    // this = inverse of q. Conjugate only - assumes unit length.
     invertQuaternion(q) {
         this.x = -q.x; this.y = -q.y; this.z = -q.z; this.w = q.w;
         return this;
@@ -227,7 +190,6 @@ class Quaternion {
         return Math.sqrt(this.lengthSquared());
     }
 
-    // Rotate `vector` IN PLACE. Cross-product form - no temporary quaternions, no allocation.
     transformVectorInPlace(vector) {
         const qx = this.x, qy = this.y, qz = this.z, qw = this.w;
         const vx = vector.x, vy = vector.y, vz = vector.z;
@@ -242,20 +204,17 @@ class Quaternion {
         return vector;
     }
 
-    // out = this applied to vector, leaving vector untouched.
     transformVectorInto(vector, out) {
         out.x = vector.x; out.y = vector.y; out.z = vector.z;
         return this.transformVectorInPlace(out);
     }
 
-    // Unsigned angle to q, in [0, PI]. |dot| handles double cover: q and -q are the same rotation.
     angleBetween(q) {
         let d = Math.abs(this.dot(q));
         if (d > 1) d = 1;
         return 2 * Scalar.acos(d);
     }
 
-    // Signed angle about `axis`, in [-PI, PI]. Joint limits need direction, not just magnitude.
     signedAngleBetween(q, axis) {
         const ix = -this.x, iy = -this.y, iz = -this.z, iw = this.w;
         const dx = q.w * ix + q.x * iw + q.y * iz - q.z * iy;

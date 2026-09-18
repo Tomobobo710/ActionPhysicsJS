@@ -1,11 +1,7 @@
-// One ContactManifold per body pair, keyed by canonical id. refresh() runs once per tick and
-// prunes any manifold left with zero points.
 class ContactManifoldList {
     constructor() {
-        this._manifolds = new Map(); // "idA:idB" (idA < idB) -> ContactManifold
-        // Singly-linked-list view over the live (non-empty) manifolds, relinked at the end of every
-        // refresh(). Walk it as: for (let m = list.first; m; m = m.next_manifold). The canonical
-        // iteration is values(); this exists for consumers that expect the linked-list shape.
+        this._manifolds = new Map();
+
         this.first = null;
     }
 
@@ -13,7 +9,6 @@ class ContactManifoldList {
         return bodyA.id < bodyB.id ? bodyA.id + ':' + bodyB.id : bodyB.id + ':' + bodyA.id;
     }
 
-    // Lower id becomes bodyA, so local-space matching is stable regardless of argument order.
     getOrCreate(bodyA, bodyB) {
         const key = ContactManifoldList._key(bodyA, bodyB);
         let m = this._manifolds.get(key);
@@ -26,8 +21,6 @@ class ContactManifoldList {
         return m;
     }
 
-    // contactsByPair: key -> ContactDetails[] for this tick (missing = empty). Callers create new
-    // pairs via getOrCreate() before this runs.
     refresh(contactsByPair, dt) {
         for (const [key, manifold] of this._manifolds) {
             const contacts = contactsByPair.get(key) || [];
@@ -37,8 +30,13 @@ class ContactManifoldList {
         this._relink();
     }
 
-    // Rebuild the .first / .next_manifold chain over the surviving manifolds, in Map insertion
-    // order (same order values() yields), so the linked-list view and values() agree.
+    removeBody(body) {
+        for (const [key, manifold] of this._manifolds) {
+            if (manifold.bodyA === body || manifold.bodyB === body) this._manifolds.delete(key);
+        }
+        this._relink();
+    }
+
     _relink() {
         let prev = null;
         this.first = null;

@@ -1,10 +1,8 @@
-// Static triangle mesh: vertex list plus flat index triples. Zero mass; static/kinematic only.
-// The midphase BVH over its triangles is built lazily elsewhere.
 class MeshShape extends Shape {
     constructor(vertices, indices) {
         super('mesh');
-        this.vertices = vertices;   // Vector3[]
-        this.indices = indices;     // flat Uint32Array-able index triples
+        this.vertices = vertices;
+        this.indices = indices;
         this.triangleCount = (indices.length / 3) | 0;
     }
 
@@ -16,8 +14,6 @@ class MeshShape extends Shape {
         outA.copy(va); outB.copy(vb); outC.copy(vc);
     }
 
-    // A mesh has no single well-defined support point (it's a shell, not a solid convex body) —
-    // narrowphase dispatches per-triangle via TriangleShape instead of calling this directly.
     supportInto(out, direction) {
         throw new Error('MeshShape.supportInto: dispatch per-triangle, a mesh is not itself convex');
     }

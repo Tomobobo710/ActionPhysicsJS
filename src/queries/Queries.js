@@ -1,6 +1,3 @@
-// Ray casts and shape sweeps against world.bodies, via GJK's closest-distance result (a ray is a
-// zero-radius sphere). O(n) over the body list after a cheap AABB reject. See RayIntersect.js,
-// ShapeIntersect.js, Advance.js.
 class Queries {
     static _isIgnored(body, ignore) {
         if (!ignore) return false;
@@ -16,19 +13,15 @@ class Queries {
         return typeof MeshShape !== 'undefined' && shape instanceof MeshShape;
     }
 
-    // World-space placement of one mesh triangle onto a cached scratch TriangleShape (no per-
-    // triangle allocation). MeshShape.triangleAt already hands back body-local vertices.
     static _placedTriangleInto(outPlaced, body, triShape, a, b, c) {
         triShape.a = a; triShape.b = b; triShape.c = c;
         outPlaced.shape = triShape;
-        // Copy, not alias: outPlaced is a shared scratch that _placedChildInto later mutates.
+
         outPlaced.position.copy(body.position);
         outPlaced.rotation.copy(body.rotation);
         return outPlaced;
     }
 
-    // World-space placement of one compound child, matching Midphase's own convention: world
-    // position = bodyPos + bodyRot * childLocalPos; world rotation = bodyRot * childLocalRot.
     static _placedChildInto(outPlaced, body, child) {
         outPlaced.shape = child.shape;
         outPlaced.rotation.multiplyQuaternions(body.rotation, child.localRotation);
@@ -46,14 +39,14 @@ Queries._scratchPos = new Vector3();
 Queries._scratchPlacedA = { shape: null, position: new Vector3(), rotation: new Quaternion(0, 0, 0, 1) };
 Queries._scratchPlacedB = { shape: null, position: new Vector3(), rotation: new Quaternion(0, 0, 0, 1) };
 Queries._scratchSupport = new MinkowskiSupport(Queries._scratchPlacedA, Queries._scratchPlacedB);
-Queries._scratchPointShape = new SphereShape(0); // zero-radius sphere: a point, via the existing Shape contract
+Queries._scratchPointShape = new SphereShape(0);
 Queries._scratchLocalAABB = new AABB();
 Queries._scratchExpandedAABB = new AABB();
 Queries._scratchCompoundChild = { shape: null, position: new Vector3(), rotation: new Quaternion(0, 0, 0, 1) };
-// Copy target for _scratchPlacedB.position, so it never aliases a live RigidBody.position.
+
 Queries._scratchPlacedBPos = new Vector3();
 Queries._scratchTriangleShape = new TriangleShape(new Vector3(), new Vector3(), new Vector3());
-// Mesh/compound BVH-prune scratch (RayIntersect.js / ShapeIntersect.js).
+
 Queries._scratchInvRot = new Quaternion(0, 0, 0, 1);
 Queries._scratchCorner = new Vector3();
 Queries._scratchLeafList = [];

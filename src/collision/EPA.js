@@ -1,16 +1,12 @@
-// EPA: penetration depth, normal (B->A), and witness points from a GJK simplex that already
-// encloses the origin (van den Bergen). See InitialTetrahedron.js and Expand.js.
 class EPA {
     constructor() {
-        // Polytope vertices, parallel arrays like GJK's. Capacity grows geometrically.
+
         this._capacity = 64;
         this._wx = new Float64Array(this._capacity); this._wy = new Float64Array(this._capacity); this._wz = new Float64Array(this._capacity);
         this._ax = new Float64Array(this._capacity); this._ay = new Float64Array(this._capacity); this._az = new Float64Array(this._capacity);
         this._bx = new Float64Array(this._capacity); this._by = new Float64Array(this._capacity); this._bz = new Float64Array(this._capacity);
         this._vertexCount = 0;
 
-        // Faces: index triples + outward normal + distance-to-origin. Removed faces are marked dead
-        // (faceAlive), not spliced, to avoid reindexing.
         this._faceCapacity = 128;
         this._faceA = new Int32Array(this._faceCapacity);
         this._faceB = new Int32Array(this._faceCapacity);
@@ -56,9 +52,6 @@ class EPA {
         return i;
     }
 
-    // Adds a face from three vertex indices, oriented outward from `centroidHint`. Returns the new
-    // face's index, or -1 if the three points are degenerate (collinear/zero area) - skipped
-    // rather than added with an undefined normal.
     _addFace(ia, ib, ic, centroidHint) {
         const ax = this._wx[ia], ay = this._wy[ia], az = this._wz[ia];
         const bx = this._wx[ib], by = this._wy[ib], bz = this._wz[ib];

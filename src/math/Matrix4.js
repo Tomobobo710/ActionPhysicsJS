@@ -1,21 +1,9 @@
-// Part of ActionMath - the shared math library. This file is pasted here VERBATIM from its source of
-// truth and must not be edited locally. Anything this engine needs is added to ActionMath first, then
-// arrives here through the same paste.
 class Matrix4 {
-    // Float32Array: what a GPU wants, and what rendering should use.
+
     static create() {
         return new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
     }
 
-    // Float64Array, for callers that cannot afford 32-bit rounding.
-    //
-    // float32 carries ~7 significant digits, so a position in the tens resolves to about 1e-5 - coarser
-    // than the quantities a physics solver works in (contact depths around 1e-3, and corrections an
-    // order of magnitude below that). It also defeats reproducibility, since the rounding compounds
-    // through every transform.
-    //
-    // Every static below is written as plain indexed reads and writes, so all of them operate on either
-    // array type without change.
     static createPrecise() {
         return new Float64Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
     }
@@ -39,13 +27,7 @@ class Matrix4 {
         out[15] = 1;
         return out;
     }
-    /**
-     * Multiply a vector by a matrix
-     * @param {Array} out - Output vector (will be modified)
-     * @param {Array|Float32Array} matrix - 4x4 matrix
-     * @param {Array} vec - Input vector [x, y, z, w]
-     * @returns {Array} - The output vector
-     */
+
     static multiplyVector(out, matrix, vec) {
         const x = vec[0];
         const y = vec[1];
@@ -61,7 +43,7 @@ class Matrix4 {
     }
 
     static transformVector(vector, viewMatrix, projectionMatrix) {
-        // First multiply by view matrix
+
         const viewResult = [0, 0, 0, 0];
         for (let i = 0; i < 4; i++) {
             viewResult[i] =
@@ -71,7 +53,6 @@ class Matrix4 {
                 vector[3] * viewMatrix[i + 12];
         }
 
-        // Then multiply by projection matrix
         const result = [0, 0, 0, 0];
         for (let i = 0; i < 4; i++) {
             result[i] =
@@ -84,9 +65,8 @@ class Matrix4 {
         return result;
     }
 
-    // In-place version that writes to output array (no allocation)
     static transformVectorInto(vector, viewMatrix, projectionMatrix, out) {
-        // First multiply by view matrix
+
         const viewResultX =
             vector[0] * viewMatrix[0] +
             vector[1] * viewMatrix[4] +
@@ -108,7 +88,6 @@ class Matrix4 {
             vector[2] * viewMatrix[11] +
             vector[3] * viewMatrix[15];
 
-        // Then multiply by projection matrix
         out[0] =
             viewResultX * projectionMatrix[0] +
             viewResultY * projectionMatrix[4] +
@@ -172,32 +151,27 @@ class Matrix4 {
     }
 
     static fromLightDirection(out, dir) {
-        // Make sure the direction is normalized
+
         const nx = dir.x;
         const ny = dir.y;
         const nz = dir.z;
 
-        // Find a perpendicular vector for the "right" direction
-        // Using world-up (0,1,0) as a reference
         const right = [
-            nz, // Cross product of dir with (0,1,0)
+            nz,
             0,
             -nx
         ];
 
-        // Normalize right vector
         const rLength = Math.sqrt(right[0] * right[0] + right[2] * right[2]);
         right[0] /= rLength;
         right[2] /= rLength;
 
-        // Get up vector by crossing right with direction
         const up = [
-            -nx * ny, // Cross product of right with dir
+            -nx * ny,
             nx * nx + nz * nz,
             -ny * nz
         ];
 
-        // Build the view matrix
         out[0] = right[0];
         out[1] = up[0];
         out[2] = nx;
@@ -296,7 +270,7 @@ class Matrix4 {
         return out;
     }
     static fromRotationTranslation(out, q, v) {
-        // Similar to his code but using our Quaternion class
+
         const x = q.x,
             y = q.y,
             z = q.z,
@@ -350,7 +324,7 @@ class Matrix4 {
     }
 
     static transformNormal(normal, modelMatrix) {
-        // Calculate inverse transpose of 3x3 portion of model matrix
+
         const a = modelMatrix[0],
             b = modelMatrix[1],
             c = modelMatrix[2],
@@ -626,23 +600,20 @@ class Matrix4 {
         z1 *= len;
         z2 *= len;
 
-        // Cross product of up and z
         x0 = upy * z2 - upz * z1;
         x1 = upz * z0 - upx * z2;
         x2 = upx * z1 - upy * z0;
         len = Scalar.hypot3(x0, x1, x2);
 
-        // Handle the case where up and z are colinear (or nearly so)
         if (len < 0.000001) {
-            // Find a perpendicular vector to z
-            // Try cross product with (1,0,0) first
+
             if (Math.abs(z0) < 0.9) {
-                // Cross with X axis
+
                 x0 = 0;
                 x1 = z2;
                 x2 = -z1;
             } else {
-                // Cross with Z axis if Z is near X
+
                 x0 = z1;
                 x1 = -z0;
                 x2 = 0;
@@ -653,7 +624,7 @@ class Matrix4 {
             x1 *= len;
             x2 *= len;
         } else {
-            // Normal case - normalize the computed cross product
+
             len = 1 / len;
             x0 *= len;
             x1 *= len;
@@ -760,7 +731,6 @@ class Matrix4 {
         out[10] = a22 * c - a12 * s;
         out[11] = a23 * c - a13 * s;
 
-        // If the source and destination differ, we need to copy the unchanged rows
         if (a !== out) {
             out[0] = a[0];
             out[1] = a[1];
@@ -795,7 +765,6 @@ class Matrix4 {
         out[6] = a12 * c - a02 * s;
         out[7] = a13 * c - a03 * s;
 
-        // If the source and destination differ, we need to copy the unchanged rows
         if (a !== out) {
             out[8] = a[8];
             out[9] = a[9];
@@ -831,7 +800,6 @@ class Matrix4 {
         out[10] = a02 * s + a22 * c;
         out[11] = a03 * s + a23 * c;
 
-        // If the source and destination differ, we need to copy the unchanged rows
         if (a !== out) {
             out[4] = a[4];
             out[5] = a[5];

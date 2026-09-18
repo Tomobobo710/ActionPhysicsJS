@@ -1,18 +1,3 @@
-// Part of ActionMath - the shared math library. This file is pasted here VERBATIM from its source of
-// truth and must not be edited locally. Anything this engine needs is added to ActionMath first, then
-// arrives here through the same paste.
-/**
- * Matrix3 - 3x3 matrix with instance fields, allocation-free.
- *
- * The rotation/inertia type. Every operation writes into the receiver or an out parameter rather than
- * returning a new object, because callers run these in tight loops.
- *
- * Element naming is eRC: row R, column C.
- *
- *      | e00 e01 e02 |
- *      | e10 e11 e12 |
- *      | e20 e21 e22 |
- */
 class Matrix3 {
 
     constructor() {
@@ -42,17 +27,12 @@ class Matrix3 {
         return this;
     }
 
-    /** Diagonal matrix from a vector — how a principal-axis inertia tensor is built. */
     setDiagonal(v) {
         this.zero();
         this.e00 = v.x; this.e11 = v.y; this.e22 = v.z;
         return this;
     }
 
-    /**
-     * Rotation matrix equivalent to a unit quaternion. Assumes q is normalized; a non-unit
-     * quaternion produces a matrix that also scales.
-     */
     fromQuaternion(q) {
         const x = q.x, y = q.y, z = q.z, w = q.w;
         const x2 = x + x, y2 = y + y, z2 = z + z;
@@ -66,7 +46,6 @@ class Matrix3 {
         return this;
     }
 
-    /** this = transpose(m). For a rotation matrix this is also its inverse. */
     transposeInto(m) {
         const e01 = m.e01, e02 = m.e02, e12 = m.e12;
         this.e00 = m.e00; this.e01 = m.e10; this.e02 = m.e20;
@@ -79,12 +58,10 @@ class Matrix3 {
         return this.transposeInto(this);
     }
 
-    /** this = this * m */
     multiply(m) {
         return this.multiplyFrom(this, m);
     }
 
-    /** this = a * b. Safe when `this` aliases either argument. */
     multiplyFrom(a, b) {
         const a00 = a.e00, a01 = a.e01, a02 = a.e02;
         const a10 = a.e10, a11 = a.e11, a12 = a.e12;
@@ -111,13 +88,6 @@ class Matrix3 {
              + this.e02 * (this.e10 * this.e21 - this.e11 * this.e20);
     }
 
-    /**
-     * this = inverse(m). Returns false and leaves `this` as identity if m is singular.
-     *
-     * Singular is a real, reachable case: a body with zero inertia about some axis (an
-     * infinitely thin shape, or a degenerate mesh) produces one. Reporting it lets the
-     * caller decide, rather than propagating Infinity into every subsequent computation.
-     */
     invertInto(m) {
         const c00 = m.e11 * m.e22 - m.e12 * m.e21;
         const c01 = m.e12 * m.e20 - m.e10 * m.e22;
@@ -150,7 +120,6 @@ class Matrix3 {
         return this.invertInto(this);
     }
 
-    /** Rotate v in place by this matrix. */
     transformVector3(v) {
         const x = v.x, y = v.y, z = v.z;
         v.x = this.e00 * x + this.e01 * y + this.e02 * z;

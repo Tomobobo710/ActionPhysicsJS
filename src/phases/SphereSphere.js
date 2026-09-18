@@ -1,11 +1,9 @@
-// Closed-form sphere-sphere.
 const SphereSphere = {};
 
 SphereSphere.applies = function (placedA, placedB) {
     return placedA.shape instanceof SphereShape && placedB.shape instanceof SphereShape;
 };
 
-// Below this center-to-center distance the separating direction is undefined; use a fixed axis.
 SphereSphere.DEGENERATE_EPSILON = 1e-9;
 
 SphereSphere.test = function (placedA, placedB, out) {
@@ -18,7 +16,7 @@ SphereSphere.test = function (placedA, placedB, out) {
 
     let nx, ny, nz;
     if (dist > SphereSphere.DEGENERATE_EPSILON) {
-        // normal points B -> A, matching GJK/EPA's own convention.
+
         nx = -dx / dist; ny = -dy / dist; nz = -dz / dist;
     } else {
         nx = 0; ny = 1; nz = 0;
@@ -27,7 +25,7 @@ SphereSphere.test = function (placedA, placedB, out) {
     out.pointOnA.set(ax - nx * ra, ay - ny * ra, az - nz * ra);
     out.pointOnB.set(bx + nx * rb, by + ny * rb, bz + nz * rb);
     out.normal.set(nx, ny, nz);
-    out.signedDistance = (ra + rb) - dist; // positive = overlapping, matching the pipeline convention
+    out.signedDistance = (ra + rb) - dist;
     Vector3.addInto(out.point, out.pointOnA, out.pointOnB).scaleInPlace(0.5);
     return out;
 };

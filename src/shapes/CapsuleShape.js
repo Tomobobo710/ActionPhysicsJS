@@ -1,5 +1,3 @@
-// Axis is local Y. Constructor takes TOTAL height (includes hemispherical caps), unlike every
-// other shape's half-extent convention.
 class CapsuleShape extends Shape {
     constructor(radius, totalHeight) {
         super('capsule');
@@ -11,8 +9,6 @@ class CapsuleShape extends Shape {
         this.segmentHalfLength = totalHeight / 2 - radius;
     }
 
-    // Sphere-swept-segment support: radius*normalize(dir) offset by the farther cap center. At
-    // dir.y ~0 the true farthest point is the barrel equator, not a cap center - handled explicitly.
     supportInto(out, direction) {
         const lsq = direction.x * direction.x + direction.y * direction.y + direction.z * direction.z;
         if (lsq === 0) { out.x = 0; out.y = 0; out.z = 0; return out; }
@@ -45,7 +41,6 @@ class CapsuleShape extends Shape {
         return cylinder + sphere;
     }
 
-    // Cylinder core + two hemispherical caps, each with its own parallel-axis term.
     computeMassData() {
         const r = this.radius, hs = this.segmentHalfLength;
         const cylinderVolume = Scalar.PI * r * r * (2 * hs);

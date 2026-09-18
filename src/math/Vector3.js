@@ -1,13 +1,9 @@
-// Part of ActionMath - the shared math library. This file is pasted here VERBATIM from its source of
-// truth and must not be edited locally. Anything this engine needs is added to ActionMath first, then
-// arrives here through the same paste.
 class Vector3 {
-    // Vector pool for object reuse
+
     static _pool = [];
     static _poolSize = 0;
     static _maxPoolSize = 1000;
 
-    // Get a vector from the pool or create a new one
     static getFromPool(x = 0, y = 0, z = 0) {
         if (Vector3._poolSize > 0) {
             const vec = Vector3._pool[--Vector3._poolSize];
@@ -17,7 +13,6 @@ class Vector3 {
         return new Vector3(x, y, z);
     }
 
-    // Return a vector to the pool when done with it
     static returnToPool(vec) {
         if (Vector3._poolSize < Vector3._maxPoolSize) {
             Vector3._pool[Vector3._poolSize++] = vec;
@@ -30,12 +25,12 @@ class Vector3 {
     }
     set(x, y, z) {
         if (y === undefined && z === undefined && x.x !== undefined) {
-            // If passed another vector
+
             this.x = x.x;
             this.y = x.y;
             this.z = x.z;
         } else {
-            // If passed 3 numbers
+
             this.x = x;
             this.y = y;
             this.z = z;
@@ -43,12 +38,10 @@ class Vector3 {
         return this;
     }
 
-    // Distance between two vectors
     static distance(a, b) {
         return Scalar.hypot3(a.x - b.x, a.y - b.y, a.z - b.z);
     }
 
-    // For distance calculations between points
     distanceTo(other) {
         const dx = this.x - other.x;
         const dy = this.y - other.y;
@@ -56,7 +49,6 @@ class Vector3 {
         return Math.sqrt(dx * dx + dy * dy + dz * dz);
     }
 
-    // More efficient squared distance, avoids costly sqrt when possible
     distanceSquared(other) {
         const dx = this.x - other.x;
         const dy = this.y - other.y;
@@ -64,26 +56,22 @@ class Vector3 {
         return dx * dx + dy * dy + dz * dz;
     }
 
-    // For horizontal distance (ignoring Y) - useful for camera calculations
     horizontalDistanceTo(other) {
         const dx = this.x - other.x;
         const dz = this.z - other.z;
         return Math.sqrt(dx * dx + dz * dz);
     }
 
-    // More efficient squared horizontal distance
     horizontalDistanceSquared(other) {
         const dx = this.x - other.x;
         const dz = this.z - other.z;
         return dx * dx + dz * dz;
     }
 
-    // For applying movement/translation
     translate(direction, amount) {
         return new Vector3(this.x + direction.x * amount, this.y + direction.y * amount, this.z + direction.z * amount);
     }
 
-    // In-place version to avoid creating a new Vector3
     translateInPlace(direction, amount) {
         this.x += direction.x * amount;
         this.y += direction.y * amount;
@@ -91,14 +79,12 @@ class Vector3 {
         return this;
     }
 
-    // For rotation around Y axis (useful for camera orbiting)
     rotateY(angle) {
         const cos = Scalar.cos(angle);
         const sin = Scalar.sin(angle);
         return new Vector3(this.x * cos + this.z * sin, this.y, -this.x * sin + this.z * cos);
     }
 
-    // In-place version to avoid creating a new Vector3
     rotateYInPlace(angle) {
         const cos = Scalar.cos(angle);
         const sin = Scalar.sin(angle);
@@ -109,13 +95,12 @@ class Vector3 {
         return this;
     }
 
-    // Gets a normalized vector representing just the horizontal component
     horizontalNormalize() {
         return new Vector3(this.x, 0, this.z).normalize();
     }
 
     static transformMat4(vec, mat) {
-        // Make sure we can access the matrix data whether it's Array or Float32Array
+
         const getElement = (idx) => (mat[idx] !== undefined ? mat[idx] : mat.at(idx));
 
         const x = vec.x;
@@ -151,12 +136,10 @@ class Vector3 {
         return new Vector3(x, y, z);
     }
 
-    // Add optimized add operation that creates less garbage
     add(other) {
         return new Vector3(this.x + other.x, this.y + other.y, this.z + other.z);
     }
 
-    // In-place addition
     addInPlace(other) {
         this.x += other.x;
         this.y += other.y;
@@ -164,15 +147,14 @@ class Vector3 {
         return this;
     }
 
-    // Add optimized subtract operation
     sub(other) {
         return new Vector3(this.x - other.x, this.y - other.y, this.z - other.z);
     }
-    // Subtract vector b from vector a
+
     static subtract(a, b) {
         return new Vector3(a.x - b.x, a.y - b.y, a.z - b.z);
     }
-    // In-place subtraction
+
     subInPlace(other) {
         this.x -= other.x;
         this.y -= other.y;
@@ -180,7 +162,6 @@ class Vector3 {
         return this;
     }
 
-    // Vector normalization
     normalize() {
         const len = Math.sqrt(this.x * this.x + this.y * this.y + this.z * this.z);
         if (len === 0) {
@@ -189,7 +170,6 @@ class Vector3 {
         return new Vector3(this.x / len, this.y / len, this.z / len);
     }
 
-    // In-place normalization
     normalizeInPlace() {
         const len = Math.sqrt(this.x * this.x + this.y * this.y + this.z * this.z);
         if (len !== 0) {
@@ -200,12 +180,10 @@ class Vector3 {
         return this;
     }
 
-    // Add dot product operation
     dot(other) {
         return this.x * other.x + this.y * other.y + this.z * other.z;
     }
 
-    // Add cross product operation
     cross(other) {
         return new Vector3(
             this.y * other.z - this.z * other.y,
@@ -214,9 +192,6 @@ class Vector3 {
         );
     }
 
-    // Static cross product that writes to an output vector (no allocation)
-    // Both operands are read into locals BEFORE any write, so this is safe when `out` is also `a` or
-    // `b`. Writing directly would corrupt components still needed by the next line.
     static crossInto(out, a, b) {
         const ax = a.x, ay = a.y, az = a.z;
         const bx = b.x, by = b.y, bz = b.z;
@@ -226,17 +201,14 @@ class Vector3 {
         return out;
     }
 
-    // Array conversion
     toArray() {
         return [this.x, this.y, this.z];
     }
 
-    // Length calculation
     length() {
         return Math.sqrt(this.x * this.x + this.y * this.y + this.z * this.z);
     }
 
-    // Squared length (faster, avoids sqrt)
     lengthSquared() {
         return this.x * this.x + this.y * this.y + this.z * this.z;
     }
@@ -249,7 +221,6 @@ class Vector3 {
         return new Vector3(this.x * scalar, this.y * scalar, this.z * scalar);
     }
 
-    // Scale a vector by a scalar
     static scale(v, scalar) {
         return new Vector3(v.x * scalar, v.y * scalar, v.z * scalar);
     }
@@ -268,7 +239,7 @@ class Vector3 {
     }
 
     equals(other) {
-        const epsilon = 0.000001; // Small threshold for floating point comparison
+        const epsilon = 0.000001;
         return (
             Math.abs(this.x - other.x) < epsilon &&
             Math.abs(this.y - other.y) < epsilon &&
@@ -280,11 +251,6 @@ class Vector3 {
         return new Vector3(this.x, this.y, this.z);
     }
 
-    /**
-     * Copy the values from another Vector3 into this one
-     * @param {Vector3} v - Vector to copy from
-     * @returns {Vector3} this vector
-     */
     copy(v) {
         this.x = v.x;
         this.y = v.y;
@@ -300,29 +266,21 @@ class Vector3 {
         );
     }
 
-    // ---- in-place / allocation-free forms ----
-    // The physics solver runs these thousands of times per tick and cannot allocate per operation.
-    // The allocating forms above are unchanged. `Into` follows the existing crossInto: write into `out`.
-
-    // out = a + b
     static addInto(out, a, b) {
         out.x = a.x + b.x; out.y = a.y + b.y; out.z = a.z + b.z;
         return out;
     }
 
-    // out = a - b
     static subInto(out, a, b) {
         out.x = a.x - b.x; out.y = a.y - b.y; out.z = a.z - b.z;
         return out;
     }
 
-    // out = v * s
     static scaleInto(out, v, s) {
         out.x = v.x * s; out.y = v.y * s; out.z = v.z * s;
         return out;
     }
 
-    // out = normalized v. A zero vector stays zero rather than becoming NaN.
     static normalizeInto(out, v) {
         const lsq = v.x * v.x + v.y * v.y + v.z * v.z;
         if (lsq === 0) { out.x = 0; out.y = 0; out.z = 0; return out; }
@@ -331,7 +289,6 @@ class Vector3 {
         return out;
     }
 
-    // this += v * s
     addScaledInPlace(v, s) {
         this.x += v.x * s; this.y += v.y * s; this.z += v.z * s;
         return this;
@@ -342,7 +299,6 @@ class Vector3 {
         return this;
     }
 
-    // Component-wise product, in place.
     multiplyInPlace(v) {
         this.x *= v.x; this.y *= v.y; this.z *= v.z;
         return this;
@@ -353,7 +309,6 @@ class Vector3 {
         return this;
     }
 
-    // this = this x v. Caches BOTH operands - v may be this, and v x v must give zero.
     crossInPlace(v) {
         const x = this.x, y = this.y, z = this.z;
         const vx = v.x, vy = v.y, vz = v.z;
@@ -363,8 +318,6 @@ class Vector3 {
         return this;
     }
 
-    // A unit vector perpendicular to v. Crosses with the cardinal axis v is LEAST aligned to - a
-    // nearly-parallel axis gives a near-zero vector that normalizes into noise.
     findOrthogonal(v) {
         const ax = Math.abs(v.x), ay = Math.abs(v.y), az = Math.abs(v.z);
         if (ax <= ay && ax <= az) { this.x = 0; this.y = -v.z; this.z = v.y; }
@@ -395,7 +348,6 @@ class Vector3 {
         return this.x === 0 && this.y === 0 && this.z === 0;
     }
 
-    // Exact equality - equals() above uses an epsilon, which is wrong for identity checks.
     equalsExact(v) {
         return this.x === v.x && this.y === v.y && this.z === v.z;
     }

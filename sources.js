@@ -86,6 +86,7 @@ module.exports = [
     'src/phases/SphereSphere.js',
     'src/phases/SphereBox.js',
     'src/phases/BoxBox.js',
+    'src/phases/PolyClip.js',
     'src/phases/TriTri.js',
     'src/phases/ConvexTri.js',
     'src/phases/BoxTriFace.js',

@@ -1,10 +1,8 @@
-// Ball/socket joint: pins bodyA's local anchor to bodyB's (or a fixed world point if bodyB null).
-// Full 3x3 coupled XPBD solve (C = worldB - worldA), not 3 independent scalar passes.
 class PointConstraint extends Constraint {
     constructor(bodyA, bodyB, localAnchorA, localAnchorB) {
         super(bodyA, bodyB);
         this.localAnchorA = new Vector3().copy(localAnchorA);
-        this.localAnchorB = new Vector3().copy(localAnchorB); // world point if bodyB is null
+        this.localAnchorB = new Vector3().copy(localAnchorB);
 
         this._worldA = new Vector3();
         this._worldB = new Vector3();
@@ -14,7 +12,7 @@ class PointConstraint extends Constraint {
         this._delta = new Vector3();
         this._K = new Matrix3();
         this._Kinv = new Matrix3();
-        this.breaking_threshold = null; // null = never breaks
+        this.breaking_threshold = null;
     }
 
     _anchorAWorld(out) {
@@ -57,8 +55,6 @@ class PointConstraint extends Constraint {
             K.e20 * cx + K.e21 * cy + K.e22 * cz
         );
 
-        // delta/h^2 is the force-equivalent breaking_threshold checks - raw C alone stays near zero
-        // regardless of load.
         if (this.breaking_threshold != null && this._delta.length() / (h * h) > this.breaking_threshold) {
             this.enabled = false;
             return;
@@ -68,7 +64,6 @@ class PointConstraint extends Constraint {
         if (hasB) this._applyCorrection(bodyB, this._rB, this._delta, 1);
     }
 
-    // K = (1/mA + 1/mB)*I3 - [rA×]*IA^-1*[rA×] - [rB×]*IB^-1*[rB×].
     _buildEffectiveMassMatrix(out, bodyA, bodyB, rA, rB) {
         const mSum = bodyA._mass_inverted + (bodyB ? bodyB._mass_inverted : 0);
         out.e00 = mSum; out.e01 = 0; out.e02 = 0;
@@ -78,7 +73,6 @@ class PointConstraint extends Constraint {
         if (bodyB && bodyB._mass_inverted > 0) PointConstraint._subtractSkewInertiaSkew(out, rB, bodyB._worldInverseInertiaTensor);
     }
 
-    // out -= [r×]^T * I * [r×]
     static _subtractSkewInertiaSkew(out, r, I) {
         const rx = r.x, ry = r.y, rz = r.z;
         const m00 = I.e01 * rz - I.e02 * ry, m01 = -I.e00 * rz + I.e02 * rx, m02 = I.e00 * ry - I.e01 * rx;
@@ -89,7 +83,6 @@ class PointConstraint extends Constraint {
         out.e20 -= (-ry * m00 + rx * m10); out.e21 -= (-ry * m01 + rx * m11); out.e22 -= (-ry * m02 + rx * m12);
     }
 
-    // sign: -1 for bodyA, +1 for bodyB (matches C = worldB - worldA).
     _applyCorrection(body, r, delta, sign) {
         if (body._mass_inverted <= 0) return;
         body.position.x += sign * delta.x * body._mass_inverted * body.linear_factor.x;

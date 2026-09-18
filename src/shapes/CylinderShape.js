@@ -1,5 +1,3 @@
-// Axis is local Y. halfHeight is a half-extent, matching every other shape's convention
-// (CapsuleShape's total-height constructor is the one deliberate exception).
 class CylinderShape extends Shape {
     constructor(radius, halfHeight) {
         super('cylinder');
@@ -34,8 +32,8 @@ class CylinderShape extends Shape {
     computeMassData() {
         const r = this.radius, h = 2 * this.halfHeight;
         const mass = this.volume();
-        const iAxis = 0.5 * mass * r * r;                                   // about Y
-        const iSide = mass * (3 * r * r + h * h) / 12;                       // about X and Z
+        const iAxis = 0.5 * mass * r * r;
+        const iSide = mass * (3 * r * r + h * h) / 12;
         const inertia = new Matrix3().setDiagonal(new Vector3(iSide, iAxis, iSide));
         return { mass: mass, inertia: inertia, centerOfMass: new Vector3(0, 0, 0) };
     }

@@ -1,4 +1,3 @@
-// Dimensions are half-extents.
 class BoxShape extends Shape {
     constructor(halfWidth, halfHeight, halfDepth) {
         super('box');
@@ -27,7 +26,7 @@ class BoxShape extends Shape {
     computeMassData() {
         const w = 2 * this.halfWidth, h = 2 * this.halfHeight, d = 2 * this.halfDepth;
         const mass = this.volume();
-        // Solid cuboid, density 1: I_xx = m(h^2+d^2)/12, cyclic.
+
         const inertia = new Matrix3().setDiagonal(new Vector3(
             mass * (h * h + d * d) / 12,
             mass * (w * w + d * d) / 12,
