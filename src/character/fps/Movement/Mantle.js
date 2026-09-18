@@ -41,14 +41,9 @@ proto._probeLedgeAhead = function(dx, dz) {
         var scanBot = feetY + this.stepHeight + this._skin;
         if (scanTop <= scanBot) { continue; }
 
-        // World.rayIntersect reports only the single NEAREST body along the down-probe. Walk past any
-        // surface that doesn't belong to the grabbed face's own object (e.g. a ceiling or disconnected
-        // surface above it) by adding each mismatched hit to the query's own `ignore` list and
-        // re-querying, restoring the "skip past it, find the real one" behavior a single-hit query
-        // can't give for free. This was a REAL, confirmed bug: a ledge with a low ceiling directly
-        // above it (a common "duck under this, mantle that" layout) made the down-probe find the
-        // ceiling's OWN surface first, discard it as a mismatch, and give up outright — reporting no
-        // ledge top at all instead of the real one just below, indistinguishable from "no ledge here."
+        // The down-probe reports only the NEAREST body, so walk past surfaces that don't belong to the
+        // grabbed face's own object (e.g. a low ceiling above the ledge) by ignoring each mismatch and
+        // re-querying, until the real ledge top is found.
         var downIgnore = this._ghost ? [this.body, this._ghost] : [this.body];
         var downHit = null;
         for (var dtries = 0; dtries < 4; dtries++) {
@@ -78,8 +73,8 @@ proto._probeLedgeAhead = function(dx, dz) {
 };
 
 /**
- * Mantle state machine, mirrors _updateLadder's contract. Called once per beginStep before the
- * main dispatch; returns true while the arc owns the tick.
+ * Mantle state machine, mirrors _updateLadder's contract. Called once per beginStep before the main
+ * dispatch; returns true while the arc owns the tick.
  * @method _updateMantle
  * @private
  * @param {Object} cmd
@@ -91,8 +86,8 @@ proto._updateMantle = function(cmd, moveYaw, dt) {
     var gb = this.body.linear_velocity;
     var p = this.body.position;
 
-    // Active arc: drives position directly (bypasses _collideAndSlide, which would otherwise
-    // treat the grabbed face as a blocking wall).
+    // Active arc: drives position directly (bypasses _collideAndSlide, which would treat the grabbed
+    // face as a blocking wall).
     if (this._mantleActive) {
         this._mantleTimer += dt;
         var total = this.mantleDuration;
@@ -145,9 +140,8 @@ proto._updateMantle = function(cmd, moveYaw, dt) {
     var chestHeight = this.standHeight * FPSC.MANTLE_CHEST_HEIGHT_FRAC;
     if (rise > chestHeight && this.grounded) { return false; }
 
-    // Landing point: advance from the grab point past the face by the character's own depth,
-    // stepping back toward the face if that overshoots a shallow ledge, until solid standable
-    // ground is found.
+    // Landing point: advance from the grab point past the face by the character's own depth, stepping
+    // back toward the face if that overshoots a shallow ledge, until solid standable ground is found.
     var dx = ledge.probeDx, dz = ledge.probeDz;
     var topBodyY = ledge.topPoint.y + this.height / 2;
     var desiredAdvance = this.depth;
@@ -171,8 +165,7 @@ proto._updateMantle = function(cmd, moveYaw, dt) {
     }
     if (!landFound) { return false; }
 
-    // The arc drives position directly, so nothing else checks headroom along the way — verify
-    // both the grab point and the landing point can stand up.
+    // The arc drives position directly, so verify both the grab point and the landing point can stand up.
     var clearanceAtGrab = this._ceilingClearanceAt(p.x, p.z, ledge.topPoint.y);
     if (clearanceAtGrab < this.standHeight - this._skin) { return false; }
     var clearanceAtLand = this._ceilingClearanceAt(landX, landZ, ledge.topPoint.y);

@@ -1,15 +1,10 @@
 // Internal statics for FPSCharacterController: algorithm constants (FPSC) and the private raycast
-// helper. LOAD ORDER REQUIREMENT: this file must load AFTER FPSCharacterController.js (which defines
-// `FPSCharacterController` as the constructor function) — these assignments attach static
-// properties onto that function object, so the function must already exist. Nothing at module-load
-// time in any other file reads FPSC/`_raycast` before first use (only inside function bodies invoked
-// later, e.g. at `new FPSCharacterController(...)` time), so this ordering is safe. See
-// gulpfile.js's buildOrder comment for the explicit ordering this depends on.
+// helper. LOAD ORDER: this file must load AFTER FPSCharacterController.js, since it attaches static
+// properties onto that constructor function.
 
-// Internal algorithm constants — the thresholds/epsilons/factors baked into the controller's collision,
-// grounding, slope and ghost math. These are NOT caller-facing feel knobs (those live in
-// FPS_CONTROLLER_DEFAULTS); they are implementation tolerances kept named here so nothing is a bare literal
-// at a use site. Changing them changes solver behavior — treat as internals, not tuning.
+// Internal algorithm constants — thresholds/epsilons/factors baked into the collision, grounding,
+// slope and ghost math. NOT caller-facing feel knobs (those live in FPS_CONTROLLER_DEFAULTS); kept
+// named so nothing is a bare literal. Changing them changes solver behavior.
 FPSCharacterController.FPSC = {
     // Contact tolerances (meters, multiplied by the character scale where used).
     SKIN: 0.01,               // sweep/contact skin width
@@ -30,22 +25,15 @@ FPSCharacterController.FPSC = {
     NY_FLOORLIKE: 0.1,        // normal.y above this tilts up (floor-like), below is a vertical wall
     N_DEGENERATE: 0.5,        // reject a contact normal whose length is below this (bad EPA result)
     TOE_BAND_FRAC: 0.6,       // a too-steep floor-like contact only blocks as a slope-toe within this
-                              // fraction of body height above the feet; higher is an overhang (headroom
-                              // gate's job), not a wall to clip horizontal velocity against
+                              // fraction of body height above the feet; higher is an overhang
 
-    // Slide reversal (see _updateSlide's onSlope steering). Below this dot product between wish and
-    // current slide direction, wish counts as a deliberate reversal (brake) rather than a carve.
+    // Below this dot between wish and current slide direction, wish is a deliberate reversal (brake)
+    // rather than a carve.
     SLIDE_REVERSAL_DOT: -0.5,
 
-    // MOVEMENT STATE — one flat enum, mutually exclusive, decided ONCE per tick by endStep (the only
-    // place with a fresh ground probe) and read everywhere else (beginStep dispatches on it verbatim;
-    // nothing re-derives it from other flags). See the "Movement state machine" comment above endStep
-    // for the full design and why it replaced the old grounded+sliding+wishSlide flag soup.
-    //   LADDER   = mounted on a ladder; _updateLadder owns velocity fully.
-    //   AIRBORNE = no ground contact; gravity + air control own velocity.
-    //   WALK     = grounded, standable surface, not sliding: ordinary input-driven movement.
-    //   SLIP     = grounded, too-steep surface, not sliding: gravity-fed slip, weak air-control.
-    //   SLIDE    = grounded, crouch-at-speed slide: _updateSlide's surface-tracking model owns velocity.
+    // MOVEMENT STATE — one flat, mutually exclusive enum, decided ONCE per tick by endStep and read
+    // everywhere else (beginStep dispatches on it verbatim; nothing re-derives it).
+    //   LADDER / AIRBORNE / WALK / SLIP / SLIDE (see Movement/Step.js).
     MOVE_LADDER: 'ladder',
     MOVE_AIRBORNE: 'airborne',
     MOVE_WALK: 'walk',
@@ -53,8 +41,7 @@ FPSCharacterController.FPSC = {
     MOVE_SLIDE: 'slide',
     MOVE_MANTLE: 'mantle',
 
-    // Mantle: a grounded (flat-footed) mantle tap is only allowed up to this fraction of standHeight
-    // (roughly chest height) — anything taller needs a running jump first (see _updateMantle).
+    // A grounded mantle tap is only allowed up to this fraction of standHeight (~chest height).
     MANTLE_CHEST_HEIGHT_FRAC: 0.77,
 
     // Knockback gating (see _readGhostKnockback).
@@ -73,13 +60,10 @@ FPSCharacterController.FPSC = {
     // Wall clip / step-up / depenetration.
     KEEP_BLOCKED: 0.01,       // keep-fraction below this = a non-yielding wall (fully blocks / triggers step-up)
     NY_NEAR_VERTICAL: 0.2,    // |normal.y| below this = a near-vertical face (steppable candidate)
-    // Depenetration back-probe step, as a fraction of the character's own half-width — independent of
-    // skin (skin is a contact/tunneling tolerance, not a "how fast should a buried body recover" rate;
-    // coupling the two meant shrinking skin for tunneling reasons silently crippled buried-recovery speed).
+    // Depenetration back-probe step, as a fraction of the character's own half-width (independent of skin).
     BACKPROBE_WIDTH_FRAC: 0.1,
-    // Climbable-slope look-ahead sample points, as multiples of the character's DEPTH past the footprint
-    // edge (so the probe reaches the same RELATIVE forward zone at any scale — a fixed-meter reach would
-    // under-reach a big character and over-reach a small one, breaking steep-slope walk off default scale).
+    // Climbable-slope look-ahead sample points, as multiples of DEPTH past the footprint edge
+    // (scale-invariant: a fixed-meter reach would mis-reach at other scales).
     CLIMB_PROBE_DEPTH_MULTS: [0, 0.5, 1.0, 1.67],
 
     // Render.
@@ -87,24 +71,11 @@ FPSCharacterController.FPSC = {
 };
 
 /**
- * Cast a ray from start to end in the physics world, kept private since nothing outside the
- * CharacterController subsystem needs it. Returns the nearest hit not among `ignoreObjects`, or
- * null.
- *
- * Adapts World.rayIntersect's own result shape ({body, point, normal, distance, fraction}, single
- * hit or null - see Queries.js) to the {object, point, normal, t} shape every caller in this
- * subsystem already expects, so only this one function needs to know the difference.
- *
- * `ignoreObjects` (body `.name` values) is resolved to actual body REFERENCES and passed to
- * World.rayIntersect's own `ignore` parameter, so those bodies are excluded from candidates BEFORE
- * the query finds its nearest hit - not filtered after the fact. This matters here specifically: a
- * ground probe casts from just above the character's own body, which is almost always the nearest
- * thing directly below the ray origin. Filtering after the query (checking the single reported
- * body's name against the ignore list, returning null on a match) would report "no hit" on every
- * such probe instead of finding the real ground behind/below the character's own shape - this was
- * a real, verified bug (a dropped controller found the ground once, then immediately lost it again
- * the very next tick with zero movement in between, because its own body was the "nearest hit" the
- * post-hoc filter then discarded).
+ * Cast a ray from start to end in the physics world, returning the nearest hit not among
+ * `ignoreObjects`, or null. Adapts World.rayIntersect's result shape to the {object, point, normal, t}
+ * shape callers expect. `ignoreObjects` (body `.name` values) is resolved to body references and
+ * passed to the query's own `ignore` param, so those bodies are excluded BEFORE the nearest-hit
+ * search runs.
  *
  * @method _raycast
  * @private

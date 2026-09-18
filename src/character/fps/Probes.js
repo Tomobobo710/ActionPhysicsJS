@@ -1,17 +1,12 @@
-// Ground/ceiling/ladder raycast probes: the hand-written spatial queries beginStep/endStep read each
-// tick to decide grounding, standable-slope classification, headroom, and ladder mounting. No probe
-// here writes any sim state itself — each one just reports what's in the world.
+// Ground/ceiling/ladder raycast probes: the spatial queries beginStep/endStep read each tick to
+// decide grounding, slope classification, headroom and ladder mounting. None writes sim state.
 var proto = FPSCharacterController.prototype;
 var FPSC = FPSCharacterController.FPSC;
 var raycast = FPSCharacterController._raycast;
 
 /**
  * Multi-point ground probe (center + four edge midpoints). Returns ALL floor-like hits, highest
- * first — NOT collapsed to a single "best" here, because the caller needs to fall back to a
- * lower (but valid) hit when the highest one is rejected as too tall to step onto (e.g. one edge
- * ray grazing a box pushed against the footprint, while the other four rays are still squarely
- * over real floor). Collapsing to one hit here would throw the floor away before the caller ever
- * gets a chance to prefer it.
+ * first, so the caller can fall back to a lower valid hit when the highest is too tall to step onto.
  * @method _probeGroundCandidates
  * @private
  * @param {Number} maxSnap - max downward reach (below the feet) to probe, before scale/skin margins.
@@ -20,8 +15,8 @@ var raycast = FPSCharacterController._raycast;
 proto._probeGroundCandidates = function(maxSnap) {
     var half = this.height / 2;
     var p = this.body.position;
-    // Cast from the higher of this tick's start position and the current position, so a fast
-    // descent that penetrated the floor this tick doesn't miss it.
+    // Cast from the higher of this tick's start position and the current position, so a fast descent
+    // that penetrated the floor this tick doesn't miss it.
     var topY = Math.max(this._prevY !== undefined ? this._prevY : p.y, p.y) + this._skin;
     var bottomY = p.y - (half + maxSnap + this._skin);
     var ix = this.width / 2 - this._skin;
@@ -36,8 +31,7 @@ proto._probeGroundCandidates = function(maxSnap) {
         var end = new Vector3(p.x + ox, bottomY, p.z + oz);
         var hit = raycast(this.world, start, end, this._ignoreSelf);
         if (!hit || hit.normal.y < FPSC.NY_FLOORLIKE) { continue; }
-        // Exclude a pushable object as ground only when walking INTO its side (pushing it), not
-        // when it's roughly under our own center (standing on it).
+        // Exclude a pushable object as ground only when walking INTO its side, not when standing on it.
         var gBody = hit.object;
         var gm = gBody && gBody._mass;
         var isPushable = gBody && gBody.bodyType === RigidBody.DYNAMIC && gm > 0 && gm <= this._pushMassLimit;
@@ -57,9 +51,8 @@ proto._probeGroundCandidates = function(maxSnap) {
 };
 
 /**
- * Multi-ray UP probe across the footprint. Returns the LOWEST ceiling (down-facing
- * surface) within `reachAboveFeet` of the feet, or null. Mirror of _probeGround; covers
- * sloped overhead geometry (e.g. a ramp underside) that forward rays can't see.
+ * Multi-ray UP probe across the footprint. Returns the LOWEST ceiling (down-facing surface) within
+ * `reachAboveFeet` of the feet, or null. Covers sloped overhead geometry forward rays can't see.
  *
  * @method _probeCeiling
  * @private
@@ -89,25 +82,9 @@ proto._probeCeiling = function(reachAboveFeet) {
 };
 
 /**
- * Same contract as the private _raycast helper (excludes this body + its ghost, returns the
- * nearest remaining hit), but ALSO skips a hit body tagged isPlatform. A scripted moving platform is
- * deliberately excluded from the solver's own contact resolution (see _baseVelocity's constructor
- * comment / platform()'s collision_mask) so a rider is carried via scripted base-velocity, never a
- * real physical shove — but a raw raycast doesn't consult collision_mask at all, so without this a
- * fast-rising platform that catches back up to a character mid-jump gets misread as a solid ceiling
- * overhead by _ceilingSlide, capping the jump's vertical velocity and killing it a few ticks after
- * liftoff, even though no real contact manifold ever forms between the two bodies (the phantom
- * ceiling is a pure raycast/collision_mask mismatch, not a real collision). Used ONLY by
- * _probeCeiling — _probeGround intentionally still sees platforms (that's how riding one works at
- * all), and ordinary walls/ramps/props aren't tagged isPlatform so they're unaffected.
- *
- * Self+ghost exclusion goes through World.rayIntersect's own `ignore` parameter (bodies excluded
- * from candidates BEFORE the nearest-hit search runs), not post-hoc name filtering on the single
- * reported hit — a probe cast from the character's own body would otherwise almost always find
- * itself as the "nearest hit" and get discarded, reporting no ceiling even when a real one is
- * there. Platform exclusion still can't do the same (World.rayIntersect reports only the single
- * nearest body, so a platform hit is reported as "no ceiling" rather than passed over to a real
- * ceiling behind it) — narrower, left as a known gap.
+ * Like _raycast (excludes this body + ghost), but also skips a hit body tagged isPlatform. A raw
+ * raycast doesn't consult collision_mask, so without this a platform catching back up to a character
+ * mid-jump reads as a solid ceiling over _ceilingSlide. Used only by _probeCeiling.
  *
  * @method _raycastSkipPlatforms
  * @private
@@ -137,10 +114,9 @@ proto._canStand = function() {
 };
 
 /**
- * Single ray probe for a ladder ahead, along `dir` (horizontal, need not be unit length). Placed
- * halfway between the feet and stepHeight above them rather than the body center. Returns the raw
- * hit `{object, point, normal, t}` with the normal flipped to point OUT of the face (toward the
- * caller), or null.
+ * Single ray probe for a ladder ahead, along `dir`. Placed halfway between the feet and stepHeight
+ * above them rather than at the body center. Returns the raw hit with the normal flipped to point OUT
+ * of the face (toward the caller), or null.
  *
  * @method _findLadderAhead
  * @private
@@ -164,9 +140,8 @@ proto._findLadderAhead = function(dir) {
 };
 
 /**
- * Is there a too-steep-but-climbable slope surface rising just ahead of the move? Used only when
- * climbSteepSlopes is on. Casts down-rays a short distance ahead and looks for an upward-tilted,
- * too-steep-to-stand hit that is still a real slope (not flat floor, not a vertical wall).
+ * Is there a too-steep-but-climbable slope surface rising just ahead of the move? Only used when
+ * climbSteepSlopes is on.
  * @method _climbableSlopeAhead
  * @private
  * @param {Vector3} start
@@ -202,8 +177,7 @@ proto._climbableSlopeAhead = function(start, dx, dz) {
  * @return {Number} clearance in units above feetY, or Infinity.
  */
 proto._ceilingClearanceAt = function(cx, cz, feetY) {
-    // Start above step-up height so a steppable obstacle (stair/low box) doesn't register as a
-    // low ceiling; anything below feet+stepHeight is the ground clamp's job, not the gate's.
+    // Start above step-up height so a steppable obstacle (stair/low box) doesn't register as a ceiling.
     var startY = feetY + this.stepHeight + this._skin;
     var endY = feetY + this.standHeight + this._skin;
     var ix = this.width / 2 - this._skin;
@@ -218,20 +192,12 @@ proto._ceilingClearanceAt = function(cx, cz, feetY) {
             new Vector3(cx + ox, endY, cz + oz),
             this._ignoreSelf);
         if (!hit || hit.normal.y > FPSC.NY_CEILING) { continue; } // not a ceiling (must face downward)
-        // A dynamic/pushable object is never a "ceiling" — it's something the swept mover + push handle,
-        // not the headroom gate. Without this, an object being actively shoved forward can wobble a few
-        // degrees off-axis from contact torque, and its top face intermittently pokes above the
-        // stepHeight cutoff below on some ticks but not others, flickering the character's forward
-        // velocity to zero and back as the box jitters. Only STATIC geometry (mass===Infinity) counts
-        // as an overhang.
+        // Only STATIC geometry counts as an overhang — a shoved dynamic object can wobble its top face
+        // above the cutoff intermittently.
         if (hit.object && hit.object.bodyType === RigidBody.DYNAMIC) { continue; }
         var clr = hit.point.y - feetY;
-        // A "ceiling" clearance at or below step height is NOT an overhang — it's a low obstacle at
-        // shin/waist level that the swept mover + push handle, not the headroom gate. Without this, a
-        // low stepHeight drops the ray start (feetY+stepHeight) INTO a waist-high object ahead, and the
-        // ray reports a bogus ~stepHeight-clearance "ceiling", so the gate walls the character in open
-        // space in front of a pushable box (worse the lower stepHeight is). Only count genuine overhangs
-        // — clearance meaningfully above the step line — as ceilings.
+        // A clearance at or below step height is a low obstacle, not an overhang (the swept mover + push
+        // handle it), so it must not wall the character in.
         if (clr <= this.stepHeight + this._skin) { continue; }
         if (clr < lowest) { lowest = clr; }
     }
@@ -240,7 +206,7 @@ proto._ceilingClearanceAt = function(cx, cz, feetY) {
 
 /**
  * The "too steep to stand on" rule — a floor whose normal tilts below the standable limit gives no
- * footing (MOVE_SLIP). climbSteepSlopes opts out.
+ * footing. climbSteepSlopes opts out.
  * @method _isSlipSurface
  * @private
  * @param {Object} normal - a surface normal (uses .y)

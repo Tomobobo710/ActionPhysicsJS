@@ -1,16 +1,12 @@
 // Airborne assists: deflecting velocity off a ceiling on the way up (_ceilingSlide), and gating
-// horizontal advance into an overhang too low to fit under (_headroomGate). Neither owns a movement
-// state by itself — both act as filters on whatever velocity the active state produced this tick.
+// horizontal advance into an overhang too low to fit under (_headroomGate). Both are filters on the
+// velocity the active movement state produced this tick.
 var proto = FPSCharacterController.prototype;
 var FPSC = FPSCharacterController.FPSC;
 
 /**
- * Deflect velocity along an overhead surface we're about to contact, instead of capping the
- * rise to zero — a hard cap leaves no velocity to escape and glues us to ceilings, flat AND
- * sloped. Projects out the into-surface component using the ceiling's own normal: v -= (v.n) n.
- * A flat underside (n straight down) zeroes only the vertical, so horizontal motion survives; a
- * sloped underside redirects the upward motion down-and-along the slope, sliding us out. Only
- * acts when actually rising toward a ceiling within this tick's reach.
+ * Deflect velocity along an overhead surface instead of capping the rise to zero (a hard cap glues us
+ * to ceilings). Projects out the into-surface component using the ceiling's normal: v -= (v.n)n.
  *
  * @method _ceilingSlide
  * @private
@@ -18,10 +14,7 @@ var FPSC = FPSCharacterController.FPSC;
  * @param {Number} vy
  * @param {Number} vz
  * @param {Number} dt
- * @return {Object} result
- * @return {Number} result.vx
- * @return {Number} result.vy
- * @return {Number} result.vz
+ * @return {Object} result - { vx, vy, vz }
  */
 proto._ceilingSlide = function(vx, vy, vz, dt) {
     if (vy <= 0) { return { vx: vx, vy: vy, vz: vz }; } // not rising -> nothing overhead to resolve
@@ -42,17 +35,14 @@ proto._ceilingSlide = function(vx, vy, vz, dt) {
 };
 
 /**
- * Treat insufficient headroom as a virtual wall: gate on ceiling clearance ahead (rather than
- * surface normal, which a near-horizontal ramp underside can't provide) and slide along the
- * horizontal gradient of increasing clearance.
+ * Treat insufficient headroom as a virtual wall: gate on ceiling clearance ahead (a near-horizontal
+ * ramp underside provides no usable surface normal) and slide along the horizontal clearance gradient.
  * @method _headroomGate
  * @private
  * @param {Number} vx
  * @param {Number} vz
  * @param {Number} dt
- * @return {Object} result
- * @return {Number} result.x - gated horizontal velocity, x.
- * @return {Number} result.z - gated horizontal velocity, z.
+ * @return {Object} result - { x, z }
  */
 proto._headroomGate = function(vx, vz, dt) {
     var speed = Math.sqrt(vx * vx + vz * vz);
@@ -67,10 +57,8 @@ proto._headroomGate = function(vx, vz, dt) {
     var need = this.height + this._skin;
     var halfDiag = Math.sqrt((this.width / 2) * (this.width / 2) + (this.depth / 2) * (this.depth / 2));
 
-    // Check clearance centered at the CURRENT position, not a forward-projected point — _ceilingClearanceAt
-    // already samples +-(width/2-skin) / +-(depth/2-skin) around its center argument, which is the box's own
-    // full footprint including its leading edge. Projecting a "reach" forward on top of that double-counts.
-    // The footprint offsets ARE the reach.
+    // Check clearance at the CURRENT position: _ceilingClearanceAt already samples the full footprint
+    // including the leading edge, so projecting a "reach" forward would double-count.
     if (this._ceilingClearanceAt(p.x, p.z, feetY) >= need) { return { x: vx, z: vz }; }
 
     var eps = halfDiag + this._skin;

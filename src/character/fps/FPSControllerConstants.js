@@ -1,13 +1,8 @@
 /**
- * Every tunable default for FPSCharacterController, in ONE place, grouped by subsystem. The
- * controller reads each default from here (constructor: `o.walkSpeed !== undefined ?
- * o.walkSpeed : FPS_CONTROLLER_DEFAULTS.movement.walkSpeed`), so a caller can still
- * override any single value per-instance via the options object — this is only the fallback.
+ * Every tunable default for FPSCharacterController, grouped by subsystem. The controller reads each
+ * default from here, but any single value can be overridden per-instance via the options object.
  *
- * What is NOT here (on purpose): algorithm-internal epsilons/thresholds inside the collision +
- * slope math (1e-4 guards, normal.y classifications, sub-step fractions) — those are
- * implementation details, not feel knobs, and stay at their use site in
- * CharacterController/Constants.js (the FPSC object).
+ * Algorithm-internal epsilons/thresholds are NOT here — they live in the FPSC object (Constants.js).
  *
  * @class FPS_CONTROLLER_DEFAULTS
  * @static
@@ -19,7 +14,7 @@ var FPS_CONTROLLER_DEFAULTS = {
         depth: 0.6,
         height: 1.8,
         mass: 10,
-        eyeHeightRatio: 0.42, // eyeHeight default = height * this (overridable directly via o.eyeHeight)
+        eyeHeightRatio: 0.42, // eyeHeight default = height * this (overridable via o.eyeHeight)
         crouchRatio: 0.55,    // crouched collider height as a fraction of standing height
     },
 
@@ -38,7 +33,7 @@ var FPS_CONTROLLER_DEFAULTS = {
     // ---- Jump + forgiveness windows ----
     jump: {
         jumpSpeed: 4.6,
-        stepHeight: 0.4,       // max ledge height the mover steps up onto (base/1x; scales linearly with player scale)
+        stepHeight: 0.4,       // max ledge height the mover steps up onto (base/1x; scales with player scale)
         stepDownDist: 0.5,     // max drop the mover snaps down to keep grounded
         coyoteTime: 0.1,       // sec after leaving a ledge a jump still registers
         jumpBuffer: 0.12,      // sec before landing a jump press is remembered and fires on touchdown
@@ -70,9 +65,8 @@ var FPS_CONTROLLER_DEFAULTS = {
     ladder: {
         climbSpeed: 2.5,        // vertical speed while climbing (pre-scale)
         strafeSpeed: 2.5,       // lateral speed along the ladder's face while climbing (pre-scale)
-        // Forward/back and strafe contributions are summed WITHOUT normalizing the combined wish
-        // vector, unlike ground movement — holding both diagonally into a ladder climbs strictly
-        // faster than either alone. Intentional.
+        // Forward/back and strafe are summed WITHOUT normalizing the combined wish (unlike ground
+        // movement), so diagonal input climbs strictly faster than either alone — intentional.
         mountReach: 0.2,        // reach (pre-scale) past the collider's own half-width for the mount probe
         dismountPushSpeed: 7.0, // horizontal shove speed away from the face on a jump-off dismount (pre-scale)
     },
@@ -80,10 +74,9 @@ var FPS_CONTROLLER_DEFAULTS = {
     // ---- Ghost: the solver body that trails the player and pushes objects (see _syncGhost) ----
     ghost: {
         pushMassBaseMult: 35,  // objects heavier than mass * this block like a wall; lighter yield proportionally
-        // Physics material of the ghost body itself (not the chase drive, which targets the
-        // character's predicted end-of-tick position directly). Zero friction/restitution/
-        // linearDamping so the chase-drive velocity is never fought by the solver; high
-        // angularDamping keeps contact torque from spinning it up while it shoves objects.
+        // Physics material of the ghost body itself. Zero friction/restitution/linearDamping so the
+        // chase-drive velocity is never fought by the solver; high angularDamping keeps contact torque
+        // from spinning it up.
         material: {
             friction: 0,
             restitution: 0,
@@ -97,11 +90,11 @@ var FPS_CONTROLLER_DEFAULTS = {
         receivePush: true,        // gate the whole knockback path
         maxSpeed: 16,             // cap on received knockback speed
         knockbackFraction: 1.0,   // scale received knockback
-        selfPush: false,          // false = only an object with its OWN inbound momentum knocks you (no self-push
-                                  //         oscillation); true = legacy relative-closing gate (oscillates)
+        selfPush: false,          // false = only an object with its OWN inbound momentum knocks you;
+                                  // true = legacy relative-closing gate (oscillates)
     },
 
-    // ---- Netcode / prediction behavior for the ghost (both default ON; false reverts to older behavior) ----
+    // ---- Netcode / prediction behavior for the ghost (both default ON) ----
     netcode: {
         driveGhostDuringResim: true,    // run the ghost drive during rollback resim (off = objects rubber-band)
         hardsnapGhostOnReconcile: true, // snap ghost onto authority on setState (off = objects oscillate)

@@ -1,12 +1,10 @@
-// View/aim/render-interpolation surface, plus the small read-only state accessors a caller polls
-// every frame (sliding, moveState, bodyId, raycastIgnore). None of this touches simulation state
-// except look()/setLook()/aim(), which are the caller's own facing/aim writes.
+// View/aim/render-interpolation surface plus small read-only accessors a caller polls every frame.
+// None touches simulation state except look()/setLook()/aim(), the caller's own facing writes.
 var proto = FPSCharacterController.prototype;
 var FPSC = FPSCharacterController.FPSC;
 
 /**
- * True while a slide is active this tick. Reads the single authoritative _moveState field that
- * endStep sets — see the "Movement state machine" comment above endStep (Movement/Step.js).
+ * True while a slide is active this tick (reads the authoritative _moveState).
  * @property sliding
  * @type {Boolean}
  * @readOnly
@@ -15,9 +13,7 @@ Object.defineProperty(proto, 'sliding', { get: function() { return this._moveSta
 
 /**
  * This tick's movement state: one of FPSC.MOVE_LADDER / MOVE_AIRBORNE / MOVE_WALK / MOVE_SLIP /
- * MOVE_SLIDE. Set exactly once per tick, by endStep, from a fresh ground probe — beginStep (which
- * runs BEFORE endStep, on the state endStep decided last tick) only ever READS this, never
- * re-derives it. See the "Movement state machine" comment above endStep for the full design.
+ * MOVE_SLIDE. Set once per tick by endStep; beginStep only reads it.
  * @property moveState
  * @type {String}
  * @readOnly
@@ -33,8 +29,7 @@ Object.defineProperty(proto, 'moveState', { get: function() { return this._moveS
 Object.defineProperty(proto, 'bodyId', { get: function() { return this._bodyName; } });
 
 /**
- * The body-name list this controller's own probes ignore — pass to a game's own raycasts
- * (weapons, line-of-sight) so a shooter's cast doesn't hit itself.
+ * The body-name list this controller's own probes ignore — pass to a game's own raycasts.
  * @property raycastIgnore
  * @type {String[]}
  * @readOnly
@@ -76,10 +71,8 @@ proto.getLookDirection = function() {
 };
 
 /**
- * Set the LIVE, caller-owned aim — call once per render frame from your mouse-look. Render-only:
- * this NEVER enters the simulation (it doesn't touch yaw/pitch, the command, or movement), it just
- * keeps a viewmodel/camera glued to the present view instead of the 60Hz sim yaw — fixing the
- * between-tick "dangle" in every mode.
+ * Set the LIVE, caller-owned aim — call once per render frame from mouse-look. Render-only: never
+ * enters the simulation, just keeps a viewmodel/camera glued to the present view.
  *
  * @method aim
  * @param {Number} yaw
@@ -114,8 +107,7 @@ proto.getForwardHorizontal = function(yaw) {
 };
 
 /**
- * Horizontal right for a given yaw (defaults to current facing). Negated to match a
- * left-handed view convention so DirRight strafes to the character's visual right.
+ * Horizontal right for a given yaw (defaults to current facing).
  * @method getRightHorizontal
  * @param {Number} [yaw]
  * @return {Vector3}
@@ -136,9 +128,8 @@ proto.getEyePosition = function() {
 };
 
 /**
- * Return the artificial vertical eye displacement accumulated since the last call (step/landing
- * snaps + crouch/scale swaps) and reset it. A camera folds this into a decaying offset so it
- * eases over those discontinuities. Call once per render frame. Render-only — does not affect sim.
+ * Return the artificial vertical eye displacement accumulated since the last call and reset it. A
+ * camera folds this into a decaying offset. Call once per render frame. Render-only.
  * @method consumeViewDisplacementY
  * @return {Number}
  */
@@ -149,10 +140,8 @@ proto.consumeViewDisplacementY = function() {
 };
 
 /**
- * Peek at the pending vertical eye displacement WITHOUT consuming it. A render-side smoother
- * consumes (consumeViewDisplacementY); a caller that only wants to DETECT a discontinuity this
- * frame (e.g. to snap interpolation instead of sliding the eye) reads this and leaves the value
- * for the smoother. Read-only — never mutates sim or render state.
+ * Peek at the pending vertical eye displacement WITHOUT consuming it (for detecting a discontinuity
+ * while leaving the value for the smoother). Read-only.
  * @method peekViewDisplacementY
  * @return {Number}
  */
@@ -161,10 +150,8 @@ proto.peekViewDisplacementY = function() {
 };
 
 /**
- * Stash this fixed tick's eye for sub-tick render interpolation. Call ONCE per REAL fixed step,
- * right after the step settles. A teleport-sized jump (respawn / kill-plane / hard resync) or an
- * artificial step/crouch eye snap snaps the interpolation — prev := curr — so the eye doesn't
- * smear across the discontinuity.
+ * Stash this fixed tick's eye for sub-tick render interpolation. Call once per REAL fixed step, right
+ * after the step settles. A teleport or an artificial step/crouch eye snap resets prev := curr.
  *
  * @method captureRenderState
  */
@@ -181,9 +168,8 @@ proto.captureRenderState = function() {
 };
 
 /**
- * The render-only eye position: the last two captured fixed-tick eyes lerped by the sub-tick factor
- * `alpha` (0..1, the fraction into the current fixed step the renderer hands the draw call). Falls
- * back to the live physics eye until two ticks have been captured.
+ * The render-only eye position: the last two captured fixed-tick eyes lerped by `alpha` (0..1, the
+ * fraction into the current fixed step). Falls back to the live physics eye until two ticks captured.
  *
  * @method renderEye
  * @param {Number} alpha

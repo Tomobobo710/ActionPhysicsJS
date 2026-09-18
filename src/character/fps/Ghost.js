@@ -1,25 +1,18 @@
-// Ghost body lifecycle: a solver-participating dynamic body that trails the kinematic character for
-// object-contact purposes. The character's own body is excluded from solver contacts (collision_mask
-// 1); the ghost is its stand-in for object contact. Control is one-way: character position -> ghost
-// target. The ghost's position never writes back to the character; only contact-derived knockback
-// flows back (_syncGhost / _readGhostKnockback), as a velocity nudge. See _syncGhost.
+// Ghost body lifecycle: a solver-participating dynamic body that trails the kinematic character to
+// give it object contact (the character's own body is excluded from the solver). Control is one-way:
+// character position -> ghost target. Only contact-derived knockback flows back, as a velocity nudge.
 var proto = FPSCharacterController.prototype;
 var FPSC = FPSCharacterController.FPSC;
 
 /**
- * GHOST: a solver-participating dynamic body that trails the kinematic character. The character's own
- * body is excluded from solver contacts (collision_mask 1); the ghost is its stand-in for object
- * contact. Control is one-way: character position -> ghost target. The ghost's position never writes
- * back to the character; only contact-derived knockback flows back (_syncGhost), as a velocity nudge.
- *
+ * Create the ghost body that trails the character for object contact.
  * @method _buildGhost
  * @private
  * @param {Vector3} position - the character body's current position.
  * @param {Object} [carriedVel] - {x,y,z} velocity to seed the ghost with (carried over a rebuild).
  */
 proto._buildGhost = function(position, carriedVel) {
-    // Ghost bottom is inset above the character's feet so it doesn't overlap a surface the character is
-    // standing on (that's _probeGround's job). Top is unchanged, so head-height contact is unaffected.
+    // Inset the ghost's bottom above the character's feet so it doesn't overlap standing ground.
     var groundInset = this.height * FPSC.GHOST_GROUND_INSET;
     var ghostHeight = this.height - groundInset;
     var ghostPos = new Vector3(position.x, position.y + groundInset / 2, position.z);
@@ -39,9 +32,8 @@ proto._buildGhost = function(position, carriedVel) {
     this._ghost.name = this._bodyName + "_ghost";
     this._ghost.angular_factor.set(0, 0, 0);
     this._ghost.isKinematicCharacter = true;
-    // Distinguishes this body from a real character body for OTHER controllers' sweeps: their own
-    // kinematic body is never a wall (it has no mass to yield against), but this ghost IS a real
-    // solver-participating mass and should block/get pushed like any other object.
+    // Distinguishes this ghost from a raw character body for other controllers' sweeps: a ghost is a
+    // real solver mass and should block/get pushed like any other object.
     this._ghost.isCharacterGhost = true;
     this._ghostGroundInset = groundInset;
     if (carriedVel) { this._ghost.linear_velocity.set(carriedVel.x, carriedVel.y, carriedVel.z); }
@@ -74,11 +66,8 @@ proto._syncGhost = function(dt) {
     var p = this.body.position;
     var cv = this.body.linear_velocity;
     var gp = this._ghost.position;
-    // Target where the character WILL BE at the end of this tick (p + v*dt), not where it is right
-    // now — closing "the gap as of the start of the tick" is already stale by the time it's applied,
-    // since the character moves by v*dt over that same tick. Without this the ghost permanently lags
-    // by ~one tick's worth of the character's own motion, growing with speed, even at constant
-    // velocity (no acceleration needed to produce it).
+    // Target the character's predicted end-of-tick position (p + v*dt), not its current one, so the
+    // ghost doesn't permanently lag by ~one tick of the character's own motion.
     var targetX = p.x + cv.x * dt;
     var targetY = p.y + cv.y * dt + (this._ghostGroundInset || 0) / 2;
     var targetZ = p.z + cv.z * dt;
@@ -86,7 +75,7 @@ proto._syncGhost = function(dt) {
     var gap = Math.sqrt(dx * dx + dy * dy + dz * dz);
     var gv = this._ghost.linear_velocity;
 
-    // A gap this large is a rebuild/respawn/teleport: beam the ghost to the character instead of chasing.
+    // A gap this large is a rebuild/respawn/teleport: beam the ghost instead of chasing.
     var teleportDist = Math.max(this.width, this.height) * 2;
     if (gap > teleportDist) {
         this._ghost.position.set(p.x, p.y + (this._ghostGroundInset || 0) / 2, p.z);
@@ -95,16 +84,11 @@ proto._syncGhost = function(dt) {
         return;
     }
 
-    // Knockback signal = (ghost's actual velocity) - (velocity the drive commanded last tick). This
-    // runs during resim too: an authority that never resims applies knockback in its own live step, so
-    // skipping it here while resimulating would reconcile the character's velocity to a value that
-    // permanently disagrees with authority by the knockback amount. It only needs to be deterministic
-    // run-to-run (it is — the read is a pure function of the current contact state).
+    // Knockback signal = (ghost's actual velocity) - (last tick's commanded velocity). Runs during
+    // resim too, so reconciliations stay consistent with an authority that applies knockback live.
     this._readGhostKnockback();
 
-    // Drive the ghost directly at the velocity that closes the (predicted) gap this tick. No cap:
-    // any cap below the gap-closing speed just reintroduces a residual gap on fast motion — the
-    // predicted-target math above already keeps this bounded and small under normal conditions.
+    // Drive at the velocity that closes the predicted gap this tick (no cap needed).
     gv.x = dx / dt; gv.y = dy / dt; gv.z = dz / dt;
 
     // Clip the ghost's horizontal velocity through the same swept collide-and-slide the character uses.
@@ -121,12 +105,11 @@ proto._syncGhost = function(dt) {
         this._ghost.position.set(gp.x + clip.depenX, gp.y, gp.z + clip.depenZ);
     }
 
-    this._ghostCommandedVel = { x: gv.x, y: gv.y, z: gv.z }; // baseline for next tick's (actual - commanded) knockback read
+    this._ghostCommandedVel = { x: gv.x, y: gv.y, z: gv.z }; // baseline for next tick's knockback read
 };
 
 /**
- * Knockback speed = mass ratio (objectMass/(objectMass+playerMass)) x the object's closing speed
- * onto the character, gated to only apply when the object is moving into the character above a small
+ * Knockback speed = the object's closing speed onto the character, gated to only apply above a small
  * momentum floor. Horizontal only; never moves position, only velocity.
  *
  * @method _readGhostKnockback
@@ -154,34 +137,21 @@ proto._readGhostKnockback = function() {
             var nz = this._ghost.position.z - other.position.z;
             var nlen = Math.sqrt(nx * nx + nz * nz);
             if (nlen > FPSC.EPS_LEN) { nx /= nlen; nz /= nlen; } else { nx = 0; nz = 0; }
-            // n points box->character. The knockback should trigger on how fast the BOX is coming at you
-            // (ov.n), NOT the relative closing speed (ov-pb).n. Using the relative speed folds in YOUR
-            // OWN approach velocity (-pb.n > 0 when you walk into the box), so pushing a box knocked you
-            // backward every tick — you push, it shoves you back, you re-approach: a limit cycle that
-            // renders as the box micro-oscillating toward/away from you at close range. Gating on the
-            // box's own inbound speed means a box only knocks you when IT carries momentum at you
-            // (someone else shoved it, an explosion) — your own push no longer bounces back. Opt-out via
-            // receiveSelfPush to restore the old relative-speed behavior.
+            // n points box->character. Gate on the BOX's own inbound speed (ov.n), not relative closing
+            // speed, so walking into a box doesn't push you back. Opt out via receiveSelfPush.
             var closing = this._receiveSelfPush ?
                 (ov.x - pb.x) * nx + (ov.z - pb.z) * nz :   // legacy: relative closing (self-push included)
                 ov.x * nx + ov.z * nz;                      // box's own inbound speed only
             if (closing > FPSC.KB_CLOSING_MIN) {
-                // `closing` is the object's velocity AFTER the solver already resolved its collision
-                // with the ghost — the mass exchange is already baked in. Scaling it again by the
-                // mass ratio below double-counted the mass penalty, cutting knockback to a fraction
-                // of what a free body of the character's mass actually keeps (~0.46 vs ~4 in K1).
+                // `closing` is already post-collision (mass exchange baked in), so it is NOT scaled by
+                // the mass ratio again (that double-counted the penalty).
                 // var massRatio = mB / (mB + mP);
                 // var kbv = massRatio * closing;
                 var kbv = closing;
                 if (kbv > this._receiveMaxSpeed) { kbv = this._receiveMaxSpeed; }
                 kbv *= this._receiveKnockbackFraction;
-                // Cap the RESULTING along-n speed, not just this tick's increment: clamping only kb
-                // bounds each tick's contribution but not the running total, so sustained contact (a
-                // heavy object pressed against the character for many ticks) adds another kb-worth of speed
-                // every tick and blows straight past receiveMaxSpeed. Clamp what the character's velocity
-                // ALONG n would become after this tick's push to receiveMaxSpeed instead — a fresh hit
-                // (little/no existing along-n speed) still gets up to the full kb, but once already at
-                // the cap from prior contact, further ticks add nothing more.
+                // Cap the RESULTING along-n speed, not this tick's increment, so sustained contact
+                // can't add another full kb every tick past receiveMaxSpeed.
                 var alongN = pb.x * nx + pb.z * nz;
                 var room = this._receiveMaxSpeed - alongN;
                 if (room > 0) { kbv = Math.min(kbv, room); } else { kbv = 0; }
@@ -189,12 +159,8 @@ proto._readGhostKnockback = function() {
                     pb.x += nx * kbv;
                     pb.z += nz * kbv;
                     this.grounded = false;
-                    // This runs mid-tick, inside beginStep's ghost sync — the movement-state dispatch
-                    // for THIS tick already ran (it's earlier in beginStep), so this can't retroactively
-                    // change what velocity model owned this tick's motion. It CAN and must fix what the
-                    // NEXT tick sees: without this, next tick's dispatch would read the stale grounded
-                    // sub-state (WALK) and immediately re-clamp the character back onto the ground via
-                    // WALK's kinematic model, killing the knockback before it ever got airborne.
+                    // Fix what NEXT tick sees: without this, the next dispatch would read the stale WALK
+                    // sub-state and re-clamp the character before knockback got airborne.
                     this._moveState = FPSC.MOVE_AIRBORNE;
                     if (this._groundSuppress < FPSC.GROUND_SUPPRESS_KB) { this._groundSuppress = FPSC.GROUND_SUPPRESS_KB; }
                 }
