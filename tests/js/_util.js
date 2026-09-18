@@ -71,44 +71,23 @@
 		return [x * s, y * s, z * s, Math.cos(ang / 2)];
 	}
 
-	// Build a dynamic mesh body that is actually SIMULABLE, instead of feeding authored vertices straight
-	// into MeshShape. Two things go wrong with the naive path, and both are fixed here:
-	//
-	//   1. WRONG PIVOT. A RigidBody's position is its center of mass / rotation pivot. Authored meshes
-	//      usually have their local origin at the base (y=0) for placement convenience, not at their
-	//      geometric center. Pivoting about an off-center origin injects a small persistent torque every
-	//      rotation step — a resting body slowly rocks and eventually tips upright on its own. Fix:
-	//      recenter every vertex to the vertex centroid and spawn the body at pos + centroid, so it lands
-	//      in the same place but pivots about its true mass center.
-	//
-	//   2. NEGATIVE INERTIA -> EXPLOSION. A mesh shape's own inertia derivation assumes ONE closed,
-	//      consistently-wound, non-self-overlapping solid. Authored bodies are the opposite: several
-	//      overlapping boxes plus flat/double-sided sheets merged into one vertex buffer. For that input
-	//      the derivation is not a valid rigid body and can yield a NEGATIVE moment of inertia — physically
-	//      impossible, and the solver "lowers energy" by spinning the body faster at every contact, so it
-	//      launches and spins without bound. Fix: keep the full concave mesh for COLLISION, but compute
-	//      INERTIA from the mesh vertices treated as equal point masses about their centroid. That respects
-	//      the true anisotropy, needs no closed/consistent topology, and is guaranteed positive-definite.
-	//
-	//   t        the test context      verts  [[x,y,z],...]   faces  flat index triples
-	//   mass, opts  as for t.mesh (opts.pos is the intended spawn origin, pre-recenter)
-	// Returns the raw RigidBody.
+	// Build a dynamic mesh body around its actual centroid. Authored scene meshes commonly use a
+	// placement origin at the base and may contain overlapping/double-sided tiles, so using that
+	// origin as the rigid-body pivot or deriving inertia from invalid solid topology destabilizes
+	// resting contacts. Collision still uses the complete authored mesh.
 	function meshBody(t, w, verts, faces, mass, opts) {
 		opts = withMat(opts || {});
 		var n = verts.length, cx = 0, cy = 0, cz = 0;
 		for (var i = 0; i < n; i++) { cx += verts[i][0]; cy += verts[i][1]; cz += verts[i][2]; }
 		if (n > 0) { cx /= n; cy /= n; cz /= n; }
 		var centered = verts.map(function (v) { return [v[0] - cx, v[1] - cy, v[2] - cz]; });
-
-		// Spawn at pos + centroid so the recentered body still lands where intended.
 		var pos = opts.pos || [0, 0, 0];
-		var o2 = {}; for (var k in opts) if (Object.prototype.hasOwnProperty.call(opts, k)) o2[k] = opts[k];
-		o2.pos = [pos[0] + cx, pos[1] + cy, pos[2] + cz];
+		var adjusted = {};
+		for (var k in opts) if (Object.prototype.hasOwnProperty.call(opts, k)) adjusted[k] = opts[k];
+		adjusted.pos = [pos[0] + cx, pos[1] + cy, pos[2] + cz];
+		var body = t.mesh(w, centered, faces, mass, adjusted);
 
-		var body = t.mesh(w, centered, faces, mass, o2);
-
-		// Point-cloud inertia about the centroid (verts are already centered, so centroid ≈ 0).
-		if (mass !== 0 && isFinite(mass)) {
+		if (mass !== 0 && isFinite(mass) && n > 0) {
 			var pm = mass / n, Ixx = 0, Iyy = 0, Izz = 0, Ixy = 0, Ixz = 0, Iyz = 0;
 			for (var j = 0; j < n; j++) {
 				var x = centered[j][0], y = centered[j][1], z = centered[j][2];
@@ -120,7 +99,7 @@
 			I.e10 = Ixy; I.e11 = Iyy; I.e12 = Iyz;
 			I.e20 = Ixz; I.e21 = Iyz; I.e22 = Izz;
 			I.invertInto(body.inverseInertiaTensor);
-			if (body.updateDerived) body.updateDerived();
+			body.updateDerived();
 		}
 		return body;
 	}

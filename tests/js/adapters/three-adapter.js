@@ -75,9 +75,23 @@
 		scene.add(new THREE.AmbientLight(0x999999));
 		var dir = new THREE.DirectionalLight(0xffffff, 0.7); dir.position.set(6, 12, 8); scene.add(dir);
 		scene.add(new THREE.GridHelper(40, 40, 0x223344, 0x151f28));
+
+		// World axis lines on the ground plane, part of the scene, rendered by the real camera.
+		// Bright red = +X, bright blue = +Z; the dim halves are the negative directions.
+		function axisLine(ax, ay, az, bx, by, bz, hex) {
+			var g = new THREE.Geometry();
+			g.vertices.push(new THREE.Vector3(ax, ay, az), new THREE.Vector3(bx, by, bz));
+			return new THREE.Line(g, new THREE.LineBasicMaterial({ color: hex }));
+		}
+		scene.add(axisLine(0, 0.02, 0, 20, 0.02, 0, 0xff4444));   // +X bright
+		scene.add(axisLine(-20, 0.02, 0, 0, 0.02, 0, 0x662222));  // -X dim
+		scene.add(axisLine(0, 0.02, 0, 0, 0.02, 20, 0x4488ff));   // +Z bright
+		scene.add(axisLine(0, 0.02, -20, 0, 0.02, 0, 0x224466));  // -Z dim
+
 		R = { renderer: renderer, scene: scene, camera: camera, controls: controls, meshes: [], extras: [], _vp: vp };
 		return R;
 	}
+
 	function resize() {
 		if (!R) return; var vp = R._vp;
 		if (!vp.clientWidth) return;

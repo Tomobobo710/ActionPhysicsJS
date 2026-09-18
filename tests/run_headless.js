@@ -64,7 +64,8 @@ var suiteDirs = fs.readdirSync(jsDir).filter(function (f) {
 });
 // Load in display order (mirrors runner.js SUITE_ORDER); folders not listed here load last.
 var ORDER = ['math', 'shapes', 'collision-detection', 'contacts', 'solver', 'stacking',
-	'constraints', 'queries', 'character', 'fps', 'scenes'];
+	'shape-pairs', 'compound-floor', 'mesh-contact', 'constraints', 'queries',
+	'character', 'fps', 'scenes'];
 suiteDirs.sort(function (a, b) {
 	var ia = ORDER.indexOf(a), ib = ORDER.indexOf(b);
 	if (ia === -1) ia = ORDER.length; if (ib === -1) ib = ORDER.length;

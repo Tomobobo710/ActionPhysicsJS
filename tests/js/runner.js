@@ -33,17 +33,21 @@
 	// generation -> solver -> stacking stress -> constraints -> queries -> character -> fps -> loose
 	// scenes. An unlisted suite still runs, it just sorts last.
 	var SUITE_ORDER = [
-		'math', 'shapes', 'collision-detection', 'contacts', 'solver', 'stacking',
-		'compound-floor', 'constraints', 'queries', 'character', 'fps', 'scenes'
+		'math', 'shapes', 'collision-detection', 'contacts', 'flat-drop', 'solver', 'stacking',
+		'shape-pairs', 'compound-floor', 'mesh-contact', 'constraints', 'queries',
+		'character', 'fps', 'scenes'
 	];
 	var SUITE_NAMES = {
 		math: 'Math',
 		shapes: 'Shapes',
 		'collision-detection': 'Collision Detection',
 		contacts: 'Contacts',
+		'flat-drop': 'Flat Drop',
 		solver: 'Solver',
 		stacking: 'Stacking',
+		'shape-pairs': 'Shape Pairs',
 		'compound-floor': 'Compound Floor',
+		'mesh-contact': 'Mesh Contact',
 		constraints: 'Constraints',
 		queries: 'Queries',
 		character: 'Character',
@@ -304,6 +308,7 @@
 			// A real thrown error (not an assertion — criteria no longer throw) fails the test outright.
 			r.ok = false;
 			r.error = (e && e.message) ? e.message : String(e);
+			if (process.env.STACK) console.log('!!! STACK ' + r.name + ' ' + (e && e.stack ? e.stack : e));
 			if (!(e instanceof AssertionError)) r.error = 'ERROR: ' + r.error;
 		}
 		// Derive ok/error from the criteria checklist.
