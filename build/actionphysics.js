@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-09-18T00:44:10.820Z
+// ActionPhysics 0.1.0 — built 2026-09-18T22:54:55.132Z
 // ==== src/intro.js ====
 (function (root, factory) {
     'use strict';
@@ -10583,15 +10583,10 @@ ActionPhysics.CharacterController = CharacterController;
 
 // ==== src/character/fps/FPSControllerConstants.js ====
 /**
- * Every tunable default for FPSCharacterController, in ONE place, grouped by subsystem. The
- * controller reads each default from here (constructor: `o.walkSpeed !== undefined ?
- * o.walkSpeed : FPS_CONTROLLER_DEFAULTS.movement.walkSpeed`), so a caller can still
- * override any single value per-instance via the options object — this is only the fallback.
+ * Every tunable default for FPSCharacterController, grouped by subsystem. The controller reads each
+ * default from here, but any single value can be overridden per-instance via the options object.
  *
- * What is NOT here (on purpose): algorithm-internal epsilons/thresholds inside the collision +
- * slope math (1e-4 guards, normal.y classifications, sub-step fractions) — those are
- * implementation details, not feel knobs, and stay at their use site in
- * CharacterController/Constants.js (the FPSC object).
+ * Algorithm-internal epsilons/thresholds are NOT here — they live in the FPSC object (Constants.js).
  *
  * @class FPS_CONTROLLER_DEFAULTS
  * @static
@@ -10603,7 +10598,7 @@ var FPS_CONTROLLER_DEFAULTS = {
         depth: 0.6,
         height: 1.8,
         mass: 10,
-        eyeHeightRatio: 0.42, // eyeHeight default = height * this (overridable directly via o.eyeHeight)
+        eyeHeightRatio: 0.42, // eyeHeight default = height * this (overridable via o.eyeHeight)
         crouchRatio: 0.55,    // crouched collider height as a fraction of standing height
     },
 
@@ -10622,7 +10617,7 @@ var FPS_CONTROLLER_DEFAULTS = {
     // ---- Jump + forgiveness windows ----
     jump: {
         jumpSpeed: 4.6,
-        stepHeight: 0.4,       // max ledge height the mover steps up onto (base/1x; scales linearly with player scale)
+        stepHeight: 0.4,       // max ledge height the mover steps up onto (base/1x; scales with player scale)
         stepDownDist: 0.5,     // max drop the mover snaps down to keep grounded
         coyoteTime: 0.1,       // sec after leaving a ledge a jump still registers
         jumpBuffer: 0.12,      // sec before landing a jump press is remembered and fires on touchdown
@@ -10654,9 +10649,8 @@ var FPS_CONTROLLER_DEFAULTS = {
     ladder: {
         climbSpeed: 2.5,        // vertical speed while climbing (pre-scale)
         strafeSpeed: 2.5,       // lateral speed along the ladder's face while climbing (pre-scale)
-        // Forward/back and strafe contributions are summed WITHOUT normalizing the combined wish
-        // vector, unlike ground movement — holding both diagonally into a ladder climbs strictly
-        // faster than either alone. Intentional.
+        // Forward/back and strafe are summed WITHOUT normalizing the combined wish (unlike ground
+        // movement), so diagonal input climbs strictly faster than either alone — intentional.
         mountReach: 0.2,        // reach (pre-scale) past the collider's own half-width for the mount probe
         dismountPushSpeed: 7.0, // horizontal shove speed away from the face on a jump-off dismount (pre-scale)
     },
@@ -10664,10 +10658,9 @@ var FPS_CONTROLLER_DEFAULTS = {
     // ---- Ghost: the solver body that trails the player and pushes objects (see _syncGhost) ----
     ghost: {
         pushMassBaseMult: 35,  // objects heavier than mass * this block like a wall; lighter yield proportionally
-        // Physics material of the ghost body itself (not the chase drive, which targets the
-        // character's predicted end-of-tick position directly). Zero friction/restitution/
-        // linearDamping so the chase-drive velocity is never fought by the solver; high
-        // angularDamping keeps contact torque from spinning it up while it shoves objects.
+        // Physics material of the ghost body itself. Zero friction/restitution/linearDamping so the
+        // chase-drive velocity is never fought by the solver; high angularDamping keeps contact torque
+        // from spinning it up.
         material: {
             friction: 0,
             restitution: 0,
@@ -10681,11 +10674,11 @@ var FPS_CONTROLLER_DEFAULTS = {
         receivePush: true,        // gate the whole knockback path
         maxSpeed: 16,             // cap on received knockback speed
         knockbackFraction: 1.0,   // scale received knockback
-        selfPush: false,          // false = only an object with its OWN inbound momentum knocks you (no self-push
-                                  //         oscillation); true = legacy relative-closing gate (oscillates)
+        selfPush: false,          // false = only an object with its OWN inbound momentum knocks you;
+                                  // true = legacy relative-closing gate (oscillates)
     },
 
-    // ---- Netcode / prediction behavior for the ghost (both default ON; false reverts to older behavior) ----
+    // ---- Netcode / prediction behavior for the ghost (both default ON) ----
     netcode: {
         driveGhostDuringResim: true,    // run the ghost drive during rollback resim (off = objects rubber-band)
         hardsnapGhostOnReconcile: true, // snap ghost onto authority on setState (off = objects oscillate)
@@ -10727,91 +10720,34 @@ ActionPhysics.FPS_CONTROLLER_DEFAULTS = FPS_CONTROLLER_DEFAULTS;
 
 // ==== src/character/fps/FPSCharacterController.js ====
 /**
- * Engine-agnostic, reusable first-person character controller built on the physics engine
- * (NOT `CharacterController` — that's a separate, spring-based capsule controller; this
- * one is a kinematic box mover with its own ground/wall/slope/ghost handling). Uses a BOX
- * collider that is angular-locked so it can never tip. Grounding, slopes, walls and resting are
- * handled by hand-written raycast/sweep probes each tick, not by the physics solver — the
- * controller does NOT hard-teleport the body to the ground every frame (that fights the solver
- * and jitters). It only:
- *   - sets HORIZONTAL velocity from input each step (snappy, no momentum fighting),
- *   - projects that velocity along the ground plane (no sliding on slopes) and off walls
- *     (smooth move-and-slide, so we never ram the solver), and
- *   - applies targeted raycast assists for STEP-UP and STEP-DOWN, which the solver can't
- *     do with a box collider.
- * Vertical motion (gravity, landing) is left to the solver; only jump / jetpack thrust write
- * the vertical velocity directly.
+ * Engine-agnostic first-person character controller built on a physics body, using an angular-locked
+ * BOX collider (never tips). Grounding, slopes, walls and resting are handled by hand-written
+ * raycast/sweep probes each tick, not the solver:
+ *   - HORIZONTAL velocity is set from input each step, then projected along the ground plane and off
+ *     walls (move-and-slide), and
+ *   - raycast assists handle STEP-UP and STEP-DOWN, which a box collider can't do via the solver.
+ * Vertical motion (gravity, landing) is left to the solver; only jump/jetpack thrust writes the
+ * vertical velocity directly. Ladder climbing (_updateLadder) and moving platforms (_baseVelocity)
+ * are the two extra movement states.
  *
- * Also handles two further movement states parallel to ground/air: climbing a body tagged
- * isLadder (see _updateLadder), and riding a body tagged isPlatform via base-velocity inheritance
- * (see _baseVelocity in the constructor, and beginStep/endStep/_updateVertical) — jumping off a
- * rising platform adds its velocity into the jump.
+ * DESIGN SEAMS: the controller never reads input. Gameplay samples a pure-data command and brackets a
+ * single world step:
+ *       const cmd = mySampleInput(input);   // input mapping is policy, outside this class
+ *       controller.beginStep(cmd, dt);      // pre-physics: velocity + assists
+ *       world.step(dt);                     // ONE world step (all bodies)
+ *       controller.endStep(dt);             // post-physics: grounded + step-down
  *
- * DESIGN SEAMS:
- *   The controller never reads input directly. Gameplay samples an input command (pure data, so
- *   any caller can run remote characters' commands through the exact same path) and feeds it in,
- *   bracketing a single physics world step:
- *       const cmd = mySampleInput(input);       // input mapping is policy, lives outside this class
- *       controller.beginStep(cmd, dt);           // pre-physics: velocity + assists
- *       world.step(dt);                          // ONE world step (all bodies)
- *       controller.endStep(dt);                  // post-physics: grounded + step-down
+ * EXTENSIBILITY: this base IS the default kit. A game adds a kit by subclassing and overriding
+ * `_updateVertical` and/or `_getMoveSpeed` without touching ground/step/wall logic.
  *
- * EXTENSIBILITY:
- *   This base IS the default "kit" (instantiate it directly). A game adds an alternate kit by
- *   subclassing and overriding `_updateVertical` (jump/gravity) and/or `_getMoveSpeed` without
- *   touching ground/step/wall logic.
- *
- * Units: METERS (gravity -9.81 by default); defaults are in meters (a ~1.8m human ≈ 1.8 units
- * tall). Use `scale` to resize the whole character.
+ * Units: METERS (gravity -9.81 by default); a ~1.8m human ≈ 1.8 units tall. `scale` resizes the
+ * whole character.
  *
  * @class FPSCharacterController
  * @constructor
  * @param {World} world - The physics world this controller's body/ghost live in.
- * @param {Object} [options] - See FPS_CONTROLLER_DEFAULTS (FPSControllerConstants.js) for every
- *   tunable default and its meaning; each `options.X` below overrides that default per-instance.
- * @param {Vector3} [options.position] - Spawn position (body center). Default (0,20,0).
- * @param {Number} [options.scale=1] - Uniform size multiplier for the whole character.
- * @param {Number} [options.width] - Collider width (x) before scale.
- * @param {Number} [options.depth] - Collider depth (z) before scale.
- * @param {Number} [options.height] - Collider height (y) before scale.
- * @param {Number} [options.mass] - Body mass before scale.
- * @param {Number} [options.eyeHeight] - Eye offset above body CENTER before scale.
- * @param {Number} [options.walkSpeed] - Held-walk gait speed before scale (slower than run).
- * @param {Number} [options.moveSpeed] - RUN speed (the default no-modifier gait) before scale.
- * @param {Number} [options.sprintSpeed] - Sprint move speed before scale.
- * @param {Number} [options.crouchSpeedMult] - Multiplier on the active gait while crouched.
- * @param {Number} [options.sprintDecay] - Rate (units/sec) the sprint boost fades after release.
- * @param {Number} [options.groundStopDecel] - Deceleration (units/sec) on releasing all move keys.
- * @param {Number} [options.airControl] - 0..1 horizontal steering authority per step while airborne.
- * @param {Number} [options.jumpSpeed] - Jump velocity before scale.
- * @param {Number} [options.friction] - Body friction (0 keeps wall-slides clean; kinematic
- *   grounding holds slopes without relying on solver friction).
- * @param {Number} [options.stepHeight] - Max step-UP height before scale.
- * @param {Number} [options.stepDownDist] - Max step-DOWN snap before scale.
- * @param {Number} [options.coyoteTime] - Seconds after leaving a ledge you can still jump (0=off).
- * @param {Number} [options.jumpBuffer] - Seconds before landing a jump press is remembered (0=off).
- * @param {Boolean} [options.slideEnabled=true] - Enable crouch-at-speed sliding.
- * @param {Boolean} [options.slideRequiresMoveInput=true] - Require a movement key held to START a slide (exit never requires it).
- * @param {Boolean} [options.slideAllowLandingWithoutInput=true] - Waive the movement-key requirement on the landing frame, so an impact-slide can start from crouch + speed alone.
- * @param {Number} [options.slideMinSpeed] - Min along-ground speed (pre-scale) to start a slide.
- * @param {Number} [options.slideEndSpeed] - Flat slide ends below this speed (pre-scale).
- * @param {Number} [options.slideFriction] - Speed bled per second on flat ground (pre-scale).
- * @param {Number} [options.slideBoost] - Launch speed multiplier at slide entry.
- * @param {Number} [options.slideControl] - 0..1 carve authority while sliding (speed-preserving).
- * @param {Number} [options.slideSlopeAccel] - Gravity-along-slope multiplier while sliding.
- * @param {Number} [options.slideSlopeMin] - Min slope (sin of angle) that sustains a slide via gravity.
- * @param {Number} [options.slideSlopeFriction] - Cross-slope bleed per second on a sustaining slope.
- * @param {Number} [options.slideReversalBrakeMult] - Multiplier on slideSlopeFriction for how hard a
- *   deliberate on-slope reversal (wish opposing current slide direction) brakes before the carve
- *   steering picks the new heading back up.
- * @param {Boolean} [options.receivePush=true] - Enable object-to-character knockback via the ghost body.
- * @param {Number} [options.receiveMaxSpeed] - Cap on how fast a single object hit can knock the character.
- * @param {Number} [options.receiveKnockbackFraction] - Fraction of the ghost's contact velocity transferred.
- * @param {Number} [options.maxSlopeAngle] - Max standable slope in degrees (90+ disables the limit).
- * @param {Boolean} [options.visible=false] - Whether a consumer should treat the collider as drawable
- *   (this controller does no rendering itself — see `object.isVisible`).
- * @param {String} [options.color] - Cosmetic color tag, opaque to this class.
- * @param {Number} [options.skin] - Contact/sweep tolerance override (see FPSC.SKIN).
+ * @param {Object} [options] - Per-instance overrides of FPS_CONTROLLER_DEFAULTS
+ *   (FPSControllerConstants.js), which documents every tunable.
  */
 var FPSCharacterController = function(world, options) {
     this.world = world;
@@ -10838,36 +10774,21 @@ var FPSCharacterController = function(world, options) {
     this._baseJumpSpeed = o.jumpSpeed !== undefined ? o.jumpSpeed : jmp.jumpSpeed;
     this._baseStepHeight = o.stepHeight !== undefined ? o.stepHeight : jmp.stepHeight;
     this._baseStepDownDist = o.stepDownDist !== undefined ? o.stepDownDist : jmp.stepDownDist;
-    // Contact/sweep tolerance. A per-instance override (not just FPSC.SKIN) lets a project tune this
-    // for a specific character without touching the shared engine default.
+    // Per-instance contact/sweep tolerance override.
     this._baseSkin = o.skin !== undefined ? o.skin : FPSCharacterController.FPSC.SKIN;
 
-    // Jump-off-a-platform base-velocity behavior — see _updateVertical. Two independent axes, opposite
-    // defaults: VERTICAL fling (jumping off a rising elevator flings you higher) defaults ON — it's the
-    // established, expected platforming feel and existing tests (PL3) depend on it. HORIZONTAL carry
-    // (jumping off a moving/rotating platform keeps its sideways speed) defaults OFF — carrying a fast
-    // platform's horizontal speed into a jump (especially a spinning platform's tangential speed) reads
-    // as an unwanted "fling" rather than a clean jump; a project that wants the classic
-    // conveyor-belt-momentum feel can opt back in per-instance.
+    // Jump-off-a-platform base-velocity behavior. Vertical fling defaults ON; horizontal carry OFF.
     this._jumpKeepsVerticalBaseVelocity = o.jumpKeepsVerticalBaseVelocity !== undefined ? o.jumpKeepsVerticalBaseVelocity !== false : true;
     this._jumpKeepsHorizontalBaseVelocity = o.jumpKeepsHorizontalBaseVelocity === true;
-    // A jump is the player's WISH to leave the surface — that wish should only ever be HELPED by the
-    // platform's current vertical motion, never fought. Default true (opt-out): a platform descending
-    // at jump time contributes nothing negative to the launch, only a rising one still flings higher
-    // (via jumpKeepsVerticalBaseVelocity above). Scoped to the jump moment only — normal ground-follow
-    // on a descending platform when NOT jumping is unaffected, still correctly rides it down.
+    // A descending platform must not subtract from a jump's launch (see _updateVertical).
     this._jumpIgnoresDescendingBaseVelocity = o.jumpIgnoresDescendingBaseVelocity !== undefined ? o.jumpIgnoresDescendingBaseVelocity !== false : true;
 
-    // Object interaction (push and be pushed) runs through the ghost body (see _buildGhost / _readGhostKnockback).
+    // Object interaction (push and be pushed) runs through the ghost body (see Ghost.js).
     this._receivePush = o.receivePush !== undefined ? o.receivePush !== false : kb.receivePush;
-    // Speed-like (a velocity cap), so it must scale with character size the same way sprintSpeed
-    // does — stored as a BASE here and scaled in _applyScale, not a fixed literal, so a 2x
-    // character's (faster, harder-hitting) knockback is judged against a 2x cap, not the 1x default.
+    // Speed-like, so stored as a base and scaled in _applyScale like sprintSpeed.
     this._baseReceiveMaxSpeed = o.receiveMaxSpeed !== undefined ? o.receiveMaxSpeed : kb.maxSpeed;
     this._receiveKnockbackFraction = o.receiveKnockbackFraction !== undefined ? o.receiveKnockbackFraction : kb.knockbackFraction;
     this._receiveSelfPush = o.receiveSelfPush !== undefined ? o.receiveSelfPush === true : kb.selfPush;
-    // Ghost body's physics material — read once here so _buildGhost (called on every rebuild:
-    // crouch, setScale, respawn) doesn't need its own access to FPS_CONTROLLER_DEFAULTS.
     this._ghostMaterial = o.ghostMaterial || gh.material;
     this._driveGhostDuringResim = o.driveGhostDuringResim !== undefined ? o.driveGhostDuringResim !== false : net.driveGhostDuringResim;
     this._hardsnapGhostOnReconcile = o.hardsnapGhostOnReconcile !== undefined ? o.hardsnapGhostOnReconcile !== false : net.hardsnapGhostOnReconcile;
@@ -10882,13 +10803,13 @@ var FPSCharacterController = function(world, options) {
     this._coyoteTimer = 0;
     this._jumpBufferTimer = 0;
 
-    // Max standable slope, in degrees. Stored as the cosine (_minStandableNormalY) since that's
-    // what the per-tick ground-normal check compares against. 90 (or more) disables the limit.
+    // Max standable slope in degrees; stored as the cosine the per-tick ground check compares against.
+    // 90+ disables the limit.
     this.maxSlopeAngle = o.maxSlopeAngle !== undefined ? o.maxSlopeAngle : slp.maxSlopeAngle;
     this._minStandableNormalY = Scalar.cos(Math.min(90, this.maxSlopeAngle) * Math.PI / 180);
     this.climbSteepSlopes = o.climbSteepSlopes !== undefined ? o.climbSteepSlopes === true : slp.climbSteepSlopes;
 
-    // Slide (crouch-at-speed). slide* tuning values only take effect once sliding.
+    // Slide (crouch-at-speed). slide* values only take effect once sliding.
     this.slideEnabled = o.slideEnabled !== undefined ? o.slideEnabled !== false : sld.enabled;
     this.slideRequiresMoveInput = o.slideRequiresMoveInput !== undefined ? !!o.slideRequiresMoveInput : sld.requiresMoveInput;
     this.slideAllowLandingWithoutInput = o.slideAllowLandingWithoutInput !== undefined ? !!o.slideAllowLandingWithoutInput : sld.allowLandingWithoutInput;
@@ -10900,16 +10821,14 @@ var FPSCharacterController = function(world, options) {
     this.slideSlopeAccel = o.slideSlopeAccel !== undefined ? o.slideSlopeAccel : sld.slopeAccel;
     this.slideSlopeMin = o.slideSlopeMin !== undefined ? o.slideSlopeMin : sld.slopeMin;
     this._baseSlideSlopeFriction = o.slideSlopeFriction !== undefined ? o.slideSlopeFriction : sld.slopeFriction;
-    // Reversal brake rate, as a multiplier on slideSlopeFriction — how hard a deliberate reversal
-    // (wish opposing current slide direction, see FPSC.SLIDE_REVERSAL_DOT) bleeds speed before the
-    // ordinary carve blend picks the new heading back up.
+    // Reversal brake rate as a multiplier on slideSlopeFriction (see _updateSlide).
     this.slideReversalBrakeMult = o.slideReversalBrakeMult !== undefined ? o.slideReversalBrakeMult : sld.reversalBrakeMult;
-    // Authoritative movement state — see the "Movement state machine" comment above endStep. Starts
-    // AIRBORNE; the first tick's endStep probe corrects it (e.g. to WALK if spawned on the ground).
+    // Authoritative movement state, decided once per endStep. Starts AIRBORNE; the first endStep
+    // corrects it.
     this._moveState = FPSCharacterController.FPSC.MOVE_AIRBORNE;
     this._slipJustEntered = false; // gates the SLIP branch's one-time velocity projection; set by endStep
-    this._wantCrouch = false; // this tick's crouch intent, stashed by beginStep for endStep to read
-    this._hasMoveInput = false; // this tick's movement input, stashed by beginStep for endStep to read
+    this._wantCrouch = false; // this tick's crouch intent, stashed by beginStep for endStep
+    this._hasMoveInput = false; // this tick's movement input, stashed by beginStep for endStep
     this._prevCrouch = false;
 
     // Ladders (see _updateLadder). base* values scale with the character like every other speed.
@@ -10920,7 +10839,7 @@ var FPSCharacterController = function(world, options) {
     this._onLadder = false;
     this._ladderNormal = new Vector3(0, 0, 1); // points OUT of the ladder face, toward the character
 
-    // Mantle (ledge grab + pull-up arc, see _updateMantle / Movement/Mantle.js).
+    // Mantle (ledge grab + pull-up arc, see _updateMantle).
     this._baseMantleHeight = o.mantleHeight !== undefined ? o.mantleHeight : man.height;
     this._baseMantleReach = o.mantleReach !== undefined ? o.mantleReach : man.reach;
     this._baseMantleSpeed = o.mantleSpeed !== undefined ? o.mantleSpeed : man.speed;
@@ -10928,10 +10847,7 @@ var FPSCharacterController = function(world, options) {
     this.mantleLiftFrac = o.mantleLiftFrac !== undefined ? o.mantleLiftFrac : man.liftFrac;
     this._mantleActive = false;
     this._mantleTimer = 0;
-    // Arc anchors: body-center start (X/Y/Z), body-center Y once feet clear the ledge top, and the
-    // XZ landing point past the ledge edge — all captured once at commit time (see _updateMantle's
-    // detection block) so the arc interpolates position directly instead of driving velocity
-    // through _collideAndSlide, which would treat the ledge face as a blocking wall.
+    // Arc anchors captured at commit time so the arc interpolates position directly (see _updateMantle).
     this._mantleStartX = 0;
     this._mantleStartY = 0;
     this._mantleStartZ = 0;
@@ -10939,15 +10855,9 @@ var FPSCharacterController = function(world, options) {
     this._mantleLandX = 0;
     this._mantleLandZ = 0;
 
-    // Moving platforms (see endStep's acquire + beginStep's apply). A body tagged isPlatform=true,
-    // when it's what the ground probe is currently resting on, has its linear_velocity read into
-    // this vector once per endStep. beginStep adds it into the horizontal move so collide-and-slide
-    // carries the rider through real swept collision; it stays baked into gb.x/z afterward (position
-    // integrates from gb on a LATER, separate world step, so subtracting it back out first would
-    // discard the ride). _ownVelocityX/Z tracks the character's OWN horizontal velocity separately, so
-    // endStep's groundStopDecel (and the sprint-decay branch) decay the character's momentum without
-    // also decaying the platform's contribution. The vertical component is folded into a jump's
-    // velocity ASSIGNMENT additively (not overwritten) in _updateVertical.
+    // Moving-platform base velocity, acquired each endStep and applied in the next beginStep (see
+    // endStep's acquire block and beginStep's apply). _ownVelocityX/Z is the character's own horizontal
+    // velocity, separate from this so decay never bleeds the platform's contribution.
     this._baseVelocity = new Vector3(0, 0, 0);
     this._ownVelocityX = 0;
     this._ownVelocityZ = 0;
@@ -10956,8 +10866,8 @@ var FPSCharacterController = function(world, options) {
     this._gravityVec = new Vector3(0, g.y, 0);
     this._groundSuppress = 0;
     this._jumpRising = false; // see _updateVertical's jump branch + endStep's `suppressed`
-    this._prevTopCandidateY = null; // last tick's highest ground candidate — see the slide-launch gate in endStep
-    this._slideLaunched = false; // latched true the tick a slide apex launch fires; see endStep
+    this._prevTopCandidateY = null; // last tick's highest ground candidate (slide-launch gate)
+    this._slideLaunched = false; // latched the tick a slide apex launch fires; see endStep
 
     this._color = o.color || msc.color;
     this._visible = o.visible !== undefined ? o.visible === true : msc.visible;
@@ -10967,23 +10877,16 @@ var FPSCharacterController = function(world, options) {
     this.pitch = o.pitch !== undefined ? o.pitch : vw.pitch;
     this.maxPitch = o.maxPitch !== undefined ? o.maxPitch : vw.maxPitch;
 
-    // Live, render-only aim set per frame via aim(). Separate from yaw/pitch (the commanded,
-    // networked, fixed-tick facing) so the view can update every frame without touching the
-    // simulation. Falls back to yaw/pitch until aim() is called. See getLiveAimDirection().
+    // Render-only aim set per frame via aim(); falls back to yaw/pitch until then.
     this._liveYaw = this.yaw;
     this._livePitch = this.pitch;
     this._liveAimSet = false;
 
-    // Render interpolation: the body steps at the fixed tick but the screen draws at display
-    // refresh. captureRenderState() stashes the last two fixed-tick eyes; renderEye(alpha) lerps
-    // them for the draw. _renderSnapDist2 is the squared per-tick eye jump above which the
-    // interpolation snaps instead of sliding (teleport/respawn).
+    // Render interpolation: captureRenderState stashes the last two fixed-tick eyes; renderEye(alpha)
+    // lerps them. Snap when the per-tick eye jump exceeds _renderSnapDist2 (teleport/respawn).
     this._prevEye = null;
     this._currEye = null;
-    // Base (scale-1) interp snap distance. The SQUARED, scale-adjusted value used at the compare site
-    // is (re)derived in _applyScale — a scaled character legitimately moves the eye N× farther per tick,
-    // so a fixed 1× threshold would read normal motion as a teleport and snap every tick (killing the
-    // sub-tick smoothing → jitter at high scale).
+    // Base (scale-1) snap distance; the squared scale-adjusted value is derived in _applyScale.
     this._baseRenderSnapDist = o.renderSnapDist !== undefined ? o.renderSnapDist : rnd.snapDist;
     this._renderSnapDist2 = this._baseRenderSnapDist * this._baseRenderSnapDist;
     this._renderProxy = null;
@@ -10991,20 +10894,16 @@ var FPSCharacterController = function(world, options) {
     this.grounded = false;
     this.groundNormal = new Vector3(0, 1, 0);
     this.velocityY = 0;
-    // Vertical eye displacement this controller applied via the ground-clamp/crouch/scale snaps
-    // (not from velocity integration). Render-only; a camera consumes it to smooth those snaps.
+    // Render-only vertical eye displacement from the ground-clamp/crouch/scale snaps.
     this._viewDisplacementY = 0;
-    // True while the caller is resimulating already-run commands (see beginResim/endResim).
-    // View-displacement is suppressed during resim so re-derived state doesn't double-count.
+    // True while resimulating already-run commands (beginResim/endResim); suppresses view displacement.
     this._resimulating = false;
 
-    // Crouch is an instant collider-height swap. crouchRatio is the fraction of standing
-    // height when crouched.
+    // Crouch is an instant collider-height swap; crouchRatio is the crouched fraction of standing height.
     this.crouchRatio = o.crouchRatio !== undefined ? o.crouchRatio : dim.crouchRatio;
     this.crouching = false;
 
-    // Opaque consumer payload; the controller never reads inside it. Rides the same
-    // command->state->snapshot path as crouch/scale.
+    // Opaque consumer payload; rides the command->state->snapshot path, never read here.
     this.userData = null;
 
     this.scale = 1;
@@ -11032,7 +10931,7 @@ proto._applyScale = function(scale) {
     this.moveSpeed = this._baseMoveSpeed * scale;
     this.sprintSpeed = this._baseSprintSpeed * scale;
     this.sprintDecay = this._baseSprintDecay * scale; // excess-speed bleed rate (Infinity = instant)
-    this.groundStopDecel = this._baseGroundStopDecel * scale; // idle ground stop rate (Infinity = instant hard-stop)
+    this.groundStopDecel = this._baseGroundStopDecel * scale; // idle ground stop rate (Infinity = instant)
     this.slideMinSpeed = this._baseSlideMinSpeed * scale;
     this.slideEndSpeed = this._baseSlideEndSpeed * scale;
     this.slideFriction = this._baseSlideFriction * scale;
@@ -11048,16 +10947,13 @@ proto._applyScale = function(scale) {
     this.mantleReach = this._baseMantleReach * scale;
     this.mantleSpeed = this._baseMantleSpeed * scale;
     this._skin = this._baseSkin * scale; // contact tolerance
-    this._groundTol = FPSCharacterController.FPSC.GROUND_TOL * scale; // how close feet must be to count as grounded
-    // Terminal fall speed. Also keeps per-step fall distance < ground-probe reach so
-    // the raycast ground clamp can't be tunneled through on big drops.
+    this._groundTol = FPSCharacterController.FPSC.GROUND_TOL * scale; // feet distance to count as grounded
+    // Terminal fall speed, kept under the ground-probe reach so big drops can't tunnel.
     this._maxFall = 22 * scale;
-    // Render interp snap threshold scales with the body: a 4x character sprints ~4x faster, so its eye
-    // legitimately jumps ~4x farther per tick. Without this, that normal motion trips the teleport-snap
-    // and the sub-tick smoother snaps every tick instead of easing — the high-scale render jitter.
+    // Snap threshold scales with the body so normal high-speed motion doesn't trip the teleport-snap.
     var rs = (this._baseRenderSnapDist || 0.8) * scale;
     this._renderSnapDist2 = rs * rs;
-    // Push-mass eligibility limit scales with the character, mass-like (volume, scale^3).
+    // Push-mass eligibility limit scales mass-like (volume, scale^3).
     this._pushMassLimit = this._pushMassLimitOverride !== undefined ?
         this._pushMassLimitOverride : this._baseMass * scale * scale * scale * this._pushMassBaseMult;
     this._receiveMaxSpeed = this._baseReceiveMaxSpeed * scale;
@@ -11077,8 +10973,8 @@ proto.setScale = function(scale) {
     if (!this._resimulating) { this._viewDisplacementY += this.body.position.y + this.eyeHeight - eyeBefore; } // eye jump from the resize
 };
 
-// Instantly enter/leave crouch by rebuilding the collider at the new height. Grounded: feet
-// planted, top comes down. Airborne: top planted, feet rise up (crouch-jump clearance aid).
+// Instantly enter/leave crouch by rebuilding the collider at the new height. Grounded: feet planted,
+// top comes down. Airborne: top planted, feet rise (crouch-jump clearance aid).
 proto._setCrouch = function(want) {
     if (want === this.crouching) { return; }
     var p = this.body.position;
@@ -11139,17 +11035,12 @@ ActionPhysics.FPSCharacterController = FPSCharacterController;
 
 // ==== src/character/fps/Constants.js ====
 // Internal statics for FPSCharacterController: algorithm constants (FPSC) and the private raycast
-// helper. LOAD ORDER REQUIREMENT: this file must load AFTER FPSCharacterController.js (which defines
-// `FPSCharacterController` as the constructor function) — these assignments attach static
-// properties onto that function object, so the function must already exist. Nothing at module-load
-// time in any other file reads FPSC/`_raycast` before first use (only inside function bodies invoked
-// later, e.g. at `new FPSCharacterController(...)` time), so this ordering is safe. See
-// gulpfile.js's buildOrder comment for the explicit ordering this depends on.
+// helper. LOAD ORDER: this file must load AFTER FPSCharacterController.js, since it attaches static
+// properties onto that constructor function.
 
-// Internal algorithm constants — the thresholds/epsilons/factors baked into the controller's collision,
-// grounding, slope and ghost math. These are NOT caller-facing feel knobs (those live in
-// FPS_CONTROLLER_DEFAULTS); they are implementation tolerances kept named here so nothing is a bare literal
-// at a use site. Changing them changes solver behavior — treat as internals, not tuning.
+// Internal algorithm constants — thresholds/epsilons/factors baked into the collision, grounding,
+// slope and ghost math. NOT caller-facing feel knobs (those live in FPS_CONTROLLER_DEFAULTS); kept
+// named so nothing is a bare literal. Changing them changes solver behavior.
 FPSCharacterController.FPSC = {
     // Contact tolerances (meters, multiplied by the character scale where used).
     SKIN: 0.01,               // sweep/contact skin width
@@ -11170,22 +11061,15 @@ FPSCharacterController.FPSC = {
     NY_FLOORLIKE: 0.1,        // normal.y above this tilts up (floor-like), below is a vertical wall
     N_DEGENERATE: 0.5,        // reject a contact normal whose length is below this (bad EPA result)
     TOE_BAND_FRAC: 0.6,       // a too-steep floor-like contact only blocks as a slope-toe within this
-                              // fraction of body height above the feet; higher is an overhang (headroom
-                              // gate's job), not a wall to clip horizontal velocity against
+                              // fraction of body height above the feet; higher is an overhang
 
-    // Slide reversal (see _updateSlide's onSlope steering). Below this dot product between wish and
-    // current slide direction, wish counts as a deliberate reversal (brake) rather than a carve.
+    // Below this dot between wish and current slide direction, wish is a deliberate reversal (brake)
+    // rather than a carve.
     SLIDE_REVERSAL_DOT: -0.5,
 
-    // MOVEMENT STATE — one flat enum, mutually exclusive, decided ONCE per tick by endStep (the only
-    // place with a fresh ground probe) and read everywhere else (beginStep dispatches on it verbatim;
-    // nothing re-derives it from other flags). See the "Movement state machine" comment above endStep
-    // for the full design and why it replaced the old grounded+sliding+wishSlide flag soup.
-    //   LADDER   = mounted on a ladder; _updateLadder owns velocity fully.
-    //   AIRBORNE = no ground contact; gravity + air control own velocity.
-    //   WALK     = grounded, standable surface, not sliding: ordinary input-driven movement.
-    //   SLIP     = grounded, too-steep surface, not sliding: gravity-fed slip, weak air-control.
-    //   SLIDE    = grounded, crouch-at-speed slide: _updateSlide's surface-tracking model owns velocity.
+    // MOVEMENT STATE — one flat, mutually exclusive enum, decided ONCE per tick by endStep and read
+    // everywhere else (beginStep dispatches on it verbatim; nothing re-derives it).
+    //   LADDER / AIRBORNE / WALK / SLIP / SLIDE (see Movement/Step.js).
     MOVE_LADDER: 'ladder',
     MOVE_AIRBORNE: 'airborne',
     MOVE_WALK: 'walk',
@@ -11193,8 +11077,7 @@ FPSCharacterController.FPSC = {
     MOVE_SLIDE: 'slide',
     MOVE_MANTLE: 'mantle',
 
-    // Mantle: a grounded (flat-footed) mantle tap is only allowed up to this fraction of standHeight
-    // (roughly chest height) — anything taller needs a running jump first (see _updateMantle).
+    // A grounded mantle tap is only allowed up to this fraction of standHeight (~chest height).
     MANTLE_CHEST_HEIGHT_FRAC: 0.77,
 
     // Knockback gating (see _readGhostKnockback).
@@ -11213,13 +11096,10 @@ FPSCharacterController.FPSC = {
     // Wall clip / step-up / depenetration.
     KEEP_BLOCKED: 0.01,       // keep-fraction below this = a non-yielding wall (fully blocks / triggers step-up)
     NY_NEAR_VERTICAL: 0.2,    // |normal.y| below this = a near-vertical face (steppable candidate)
-    // Depenetration back-probe step, as a fraction of the character's own half-width — independent of
-    // skin (skin is a contact/tunneling tolerance, not a "how fast should a buried body recover" rate;
-    // coupling the two meant shrinking skin for tunneling reasons silently crippled buried-recovery speed).
+    // Depenetration back-probe step, as a fraction of the character's own half-width (independent of skin).
     BACKPROBE_WIDTH_FRAC: 0.1,
-    // Climbable-slope look-ahead sample points, as multiples of the character's DEPTH past the footprint
-    // edge (so the probe reaches the same RELATIVE forward zone at any scale — a fixed-meter reach would
-    // under-reach a big character and over-reach a small one, breaking steep-slope walk off default scale).
+    // Climbable-slope look-ahead sample points, as multiples of DEPTH past the footprint edge
+    // (scale-invariant: a fixed-meter reach would mis-reach at other scales).
     CLIMB_PROBE_DEPTH_MULTS: [0, 0.5, 1.0, 1.67],
 
     // Render.
@@ -11227,24 +11107,11 @@ FPSCharacterController.FPSC = {
 };
 
 /**
- * Cast a ray from start to end in the physics world, kept private since nothing outside the
- * CharacterController subsystem needs it. Returns the nearest hit not among `ignoreObjects`, or
- * null.
- *
- * Adapts World.rayIntersect's own result shape ({body, point, normal, distance, fraction}, single
- * hit or null - see Queries.js) to the {object, point, normal, t} shape every caller in this
- * subsystem already expects, so only this one function needs to know the difference.
- *
- * `ignoreObjects` (body `.name` values) is resolved to actual body REFERENCES and passed to
- * World.rayIntersect's own `ignore` parameter, so those bodies are excluded from candidates BEFORE
- * the query finds its nearest hit - not filtered after the fact. This matters here specifically: a
- * ground probe casts from just above the character's own body, which is almost always the nearest
- * thing directly below the ray origin. Filtering after the query (checking the single reported
- * body's name against the ignore list, returning null on a match) would report "no hit" on every
- * such probe instead of finding the real ground behind/below the character's own shape - this was
- * a real, verified bug (a dropped controller found the ground once, then immediately lost it again
- * the very next tick with zero movement in between, because its own body was the "nearest hit" the
- * post-hoc filter then discarded).
+ * Cast a ray from start to end in the physics world, returning the nearest hit not among
+ * `ignoreObjects`, or null. Adapts World.rayIntersect's result shape to the {object, point, normal, t}
+ * shape callers expect. `ignoreObjects` (body `.name` values) is resolved to body references and
+ * passed to the query's own `ignore` param, so those bodies are excluded BEFORE the nearest-hit
+ * search runs.
  *
  * @method _raycast
  * @private
@@ -11271,25 +11138,15 @@ FPSCharacterController._raycast = function(world, start, end, ignoreObjects) {
 
 
 // ==== src/character/fps/Body.js ====
-// Character body lifecycle: creates/recreates the kinematic box collider the character controller
-// drives (see _buildBody), and the shared material-application helper used by both the character
-// body and its ghost (see Ghost.js).
+// Body lifecycle: (re)builds the kinematic box collider the controller drives, and the shared
+// material-application helper used by both the character body and its ghost (Ghost.js).
 var proto = FPSCharacterController.prototype;
 
 /**
- * Apply this controller's material/behavior defaults + explicit overrides to a freshly created body.
- * Shared by the character's own body (Body.js) and its ghost (Ghost.js).
- *
- * @method _applyMaterial
- * @private
+ * Apply material/behavior defaults + overrides to a body. Shared by the body and its ghost.
  * @static
  * @param {RigidBody} body
- * @param {Object} [opts]
- * @param {Number} [opts.friction=3.0]
- * @param {Number} [opts.restitution=0.33]
- * @param {Number} [opts.linearDamping=0.1]
- * @param {Number} [opts.angularDamping=0.9]
- * @param {Vector3} [opts.gravity] - if set, overrides the body's gravity via setGravity.
+ * @param {Object} [opts] - friction/restitution/linearDamping/angularDamping/gravity overrides.
  */
 FPSCharacterController._applyMaterial = function(body, opts) {
     opts = opts || {};
@@ -11300,12 +11157,7 @@ FPSCharacterController._applyMaterial = function(body, opts) {
     if (opts.gravity) { body.setGravity(opts.gravity.x, opts.gravity.y, opts.gravity.z); }
 };
 
-/**
- * (Re)create the box body at a position, preserving look + velocity where possible.
- * @method _buildBody
- * @private
- * @param {Vector3} position
- */
+/** (Re)create the box body at a position, preserving velocity where possible. */
 proto._buildBody = function(position) {
     var carriedVel = null;
     if (this.body) {
@@ -11319,15 +11171,11 @@ proto._buildBody = function(position) {
     this.body = new RigidBody(shape, this.mass);
     FPSCharacterController._applyMaterial(this.body, {});
     this.body.position.copy(position);
-    this.body.updateDerived();	// `object` is the lightweight cosmetic handle a consumer (renderer) can use to decide whether/how
-	// to draw the collider. This controller never renders anything itself.
-	this.object = { body: this.body, isVisible: this._visible };
-	// Stamp the controller's color (red by default) on the body. The bench's renderer turns any body
-	// with NO `_color` into blue, so an un-tinted body (a freshly rebuilt crouch box, or a run that
-	// steps without the harness's per-tick tint) reads as blue instead of the character red. The
-	// harness tint may override this to green/orange while sliding/slipping, so we only guarantee the
-	// base here.
-	this.body._color = this._color;
+    this.body.updateDerived();
+    // `object` is the cosmetic handle a consumer (renderer) can use; this controller never renders.
+    this.object = { body: this.body, isVisible: this._visible };
+    // Color tag consumed by the test harness's renderer, not by the engine itself.
+    this.body._color = this._color;
 
     // Never tip; resting/slopes/walls handled by the solver (gravity + friction).
     this.body.angular_factor.set(0, 0, 0);
@@ -11336,22 +11184,15 @@ proto._buildBody = function(position) {
     this.body.linear_damping = 0;
     this.body.angular_damping = 0;
 
-    // Tag our physics body so raycasts can ignore ourselves. Also ignore the ghost's name so the
-    // kinematic body's own probing raycasts never treat its own trailing ghost as a wall.
+    // Tag our physics body so raycasts ignore ourselves, plus the ghost's name so our own probing
+    // rays never treat the trailing ghost as a wall.
     this.body.name = this._bodyName;
     this._ignoreSelf = [this._bodyName, this._bodyName + "_ghost"];
-    // Mark this as a kinematic character body so OTHER characters' receive-push pass skips it
-    // (character-vs-character is already handled by collide-and-slide treating each other as walls;
-    // the body-push coupling is only meant for free dynamic objects).
+    // Mark as a kinematic character body so other characters' receive-push pass skips it.
     this.body.isKinematicCharacter = true;
 
-    // Exclude the character from ALL solver contacts: a mask of 0 matches no group, regardless of
-    // this body's own collision_groups (RigidBody's default groups/mask is "collide with everything" -
-    // the inverse of the "collide with nothing until opted in" convention this exclusion pattern was
-    // originally written against, so the exclusion here is an explicit zero mask, not a specific
-    // unused group bit). The body still integrates and is still raycast-queryable. Collision is done
-    // entirely via raycasts (ground clamp + collide-and-slide), so the solver can never fight the
-    // control loop.
+    // Exclude the character from all solver contacts (zero mask): collision is done entirely via
+    // raycasts, so the solver can't fight the control loop. Still integrates and is raycast-queryable.
     this.body.collision_mask = 0;
 
     if (carriedVel) { this.body.linear_velocity.set(carriedVel.x, carriedVel.y, carriedVel.z); }
@@ -11362,28 +11203,21 @@ proto._buildBody = function(position) {
 
 
 // ==== src/character/fps/Ghost.js ====
-// Ghost body lifecycle: a solver-participating dynamic body that trails the kinematic character for
-// object-contact purposes. The character's own body is excluded from solver contacts (collision_mask
-// 1); the ghost is its stand-in for object contact. Control is one-way: character position -> ghost
-// target. The ghost's position never writes back to the character; only contact-derived knockback
-// flows back (_syncGhost / _readGhostKnockback), as a velocity nudge. See _syncGhost.
+// Ghost body lifecycle: a solver-participating dynamic body that trails the kinematic character to
+// give it object contact (the character's own body is excluded from the solver). Control is one-way:
+// character position -> ghost target. Only contact-derived knockback flows back, as a velocity nudge.
 var proto = FPSCharacterController.prototype;
 var FPSC = FPSCharacterController.FPSC;
 
 /**
- * GHOST: a solver-participating dynamic body that trails the kinematic character. The character's own
- * body is excluded from solver contacts (collision_mask 1); the ghost is its stand-in for object
- * contact. Control is one-way: character position -> ghost target. The ghost's position never writes
- * back to the character; only contact-derived knockback flows back (_syncGhost), as a velocity nudge.
- *
+ * Create the ghost body that trails the character for object contact.
  * @method _buildGhost
  * @private
  * @param {Vector3} position - the character body's current position.
  * @param {Object} [carriedVel] - {x,y,z} velocity to seed the ghost with (carried over a rebuild).
  */
 proto._buildGhost = function(position, carriedVel) {
-    // Ghost bottom is inset above the character's feet so it doesn't overlap a surface the character is
-    // standing on (that's _probeGround's job). Top is unchanged, so head-height contact is unaffected.
+    // Inset the ghost's bottom above the character's feet so it doesn't overlap standing ground.
     var groundInset = this.height * FPSC.GHOST_GROUND_INSET;
     var ghostHeight = this.height - groundInset;
     var ghostPos = new Vector3(position.x, position.y + groundInset / 2, position.z);
@@ -11403,9 +11237,8 @@ proto._buildGhost = function(position, carriedVel) {
     this._ghost.name = this._bodyName + "_ghost";
     this._ghost.angular_factor.set(0, 0, 0);
     this._ghost.isKinematicCharacter = true;
-    // Distinguishes this body from a real character body for OTHER controllers' sweeps: their own
-    // kinematic body is never a wall (it has no mass to yield against), but this ghost IS a real
-    // solver-participating mass and should block/get pushed like any other object.
+    // Distinguishes this ghost from a raw character body for other controllers' sweeps: a ghost is a
+    // real solver mass and should block/get pushed like any other object.
     this._ghost.isCharacterGhost = true;
     this._ghostGroundInset = groundInset;
     if (carriedVel) { this._ghost.linear_velocity.set(carriedVel.x, carriedVel.y, carriedVel.z); }
@@ -11438,11 +11271,8 @@ proto._syncGhost = function(dt) {
     var p = this.body.position;
     var cv = this.body.linear_velocity;
     var gp = this._ghost.position;
-    // Target where the character WILL BE at the end of this tick (p + v*dt), not where it is right
-    // now — closing "the gap as of the start of the tick" is already stale by the time it's applied,
-    // since the character moves by v*dt over that same tick. Without this the ghost permanently lags
-    // by ~one tick's worth of the character's own motion, growing with speed, even at constant
-    // velocity (no acceleration needed to produce it).
+    // Target the character's predicted end-of-tick position (p + v*dt), not its current one, so the
+    // ghost doesn't permanently lag by ~one tick of the character's own motion.
     var targetX = p.x + cv.x * dt;
     var targetY = p.y + cv.y * dt + (this._ghostGroundInset || 0) / 2;
     var targetZ = p.z + cv.z * dt;
@@ -11450,7 +11280,7 @@ proto._syncGhost = function(dt) {
     var gap = Math.sqrt(dx * dx + dy * dy + dz * dz);
     var gv = this._ghost.linear_velocity;
 
-    // A gap this large is a rebuild/respawn/teleport: beam the ghost to the character instead of chasing.
+    // A gap this large is a rebuild/respawn/teleport: beam the ghost instead of chasing.
     var teleportDist = Math.max(this.width, this.height) * 2;
     if (gap > teleportDist) {
         this._ghost.position.set(p.x, p.y + (this._ghostGroundInset || 0) / 2, p.z);
@@ -11459,16 +11289,11 @@ proto._syncGhost = function(dt) {
         return;
     }
 
-    // Knockback signal = (ghost's actual velocity) - (velocity the drive commanded last tick). This
-    // runs during resim too: an authority that never resims applies knockback in its own live step, so
-    // skipping it here while resimulating would reconcile the character's velocity to a value that
-    // permanently disagrees with authority by the knockback amount. It only needs to be deterministic
-    // run-to-run (it is — the read is a pure function of the current contact state).
+    // Knockback signal = (ghost's actual velocity) - (last tick's commanded velocity). Runs during
+    // resim too, so reconciliations stay consistent with an authority that applies knockback live.
     this._readGhostKnockback();
 
-    // Drive the ghost directly at the velocity that closes the (predicted) gap this tick. No cap:
-    // any cap below the gap-closing speed just reintroduces a residual gap on fast motion — the
-    // predicted-target math above already keeps this bounded and small under normal conditions.
+    // Drive at the velocity that closes the predicted gap this tick (no cap needed).
     gv.x = dx / dt; gv.y = dy / dt; gv.z = dz / dt;
 
     // Clip the ghost's horizontal velocity through the same swept collide-and-slide the character uses.
@@ -11485,12 +11310,11 @@ proto._syncGhost = function(dt) {
         this._ghost.position.set(gp.x + clip.depenX, gp.y, gp.z + clip.depenZ);
     }
 
-    this._ghostCommandedVel = { x: gv.x, y: gv.y, z: gv.z }; // baseline for next tick's (actual - commanded) knockback read
+    this._ghostCommandedVel = { x: gv.x, y: gv.y, z: gv.z }; // baseline for next tick's knockback read
 };
 
 /**
- * Knockback speed = mass ratio (objectMass/(objectMass+playerMass)) x the object's closing speed
- * onto the character, gated to only apply when the object is moving into the character above a small
+ * Knockback speed = the object's closing speed onto the character, gated to only apply above a small
  * momentum floor. Horizontal only; never moves position, only velocity.
  *
  * @method _readGhostKnockback
@@ -11518,34 +11342,21 @@ proto._readGhostKnockback = function() {
             var nz = this._ghost.position.z - other.position.z;
             var nlen = Math.sqrt(nx * nx + nz * nz);
             if (nlen > FPSC.EPS_LEN) { nx /= nlen; nz /= nlen; } else { nx = 0; nz = 0; }
-            // n points box->character. The knockback should trigger on how fast the BOX is coming at you
-            // (ov.n), NOT the relative closing speed (ov-pb).n. Using the relative speed folds in YOUR
-            // OWN approach velocity (-pb.n > 0 when you walk into the box), so pushing a box knocked you
-            // backward every tick — you push, it shoves you back, you re-approach: a limit cycle that
-            // renders as the box micro-oscillating toward/away from you at close range. Gating on the
-            // box's own inbound speed means a box only knocks you when IT carries momentum at you
-            // (someone else shoved it, an explosion) — your own push no longer bounces back. Opt-out via
-            // receiveSelfPush to restore the old relative-speed behavior.
+            // n points box->character. Gate on the BOX's own inbound speed (ov.n), not relative closing
+            // speed, so walking into a box doesn't push you back. Opt out via receiveSelfPush.
             var closing = this._receiveSelfPush ?
                 (ov.x - pb.x) * nx + (ov.z - pb.z) * nz :   // legacy: relative closing (self-push included)
                 ov.x * nx + ov.z * nz;                      // box's own inbound speed only
             if (closing > FPSC.KB_CLOSING_MIN) {
-                // `closing` is the object's velocity AFTER the solver already resolved its collision
-                // with the ghost — the mass exchange is already baked in. Scaling it again by the
-                // mass ratio below double-counted the mass penalty, cutting knockback to a fraction
-                // of what a free body of the character's mass actually keeps (~0.46 vs ~4 in K1).
+                // `closing` is already post-collision (mass exchange baked in), so it is NOT scaled by
+                // the mass ratio again (that double-counted the penalty).
                 // var massRatio = mB / (mB + mP);
                 // var kbv = massRatio * closing;
                 var kbv = closing;
                 if (kbv > this._receiveMaxSpeed) { kbv = this._receiveMaxSpeed; }
                 kbv *= this._receiveKnockbackFraction;
-                // Cap the RESULTING along-n speed, not just this tick's increment: clamping only kb
-                // bounds each tick's contribution but not the running total, so sustained contact (a
-                // heavy object pressed against the character for many ticks) adds another kb-worth of speed
-                // every tick and blows straight past receiveMaxSpeed. Clamp what the character's velocity
-                // ALONG n would become after this tick's push to receiveMaxSpeed instead — a fresh hit
-                // (little/no existing along-n speed) still gets up to the full kb, but once already at
-                // the cap from prior contact, further ticks add nothing more.
+                // Cap the RESULTING along-n speed, not this tick's increment, so sustained contact
+                // can't add another full kb every tick past receiveMaxSpeed.
                 var alongN = pb.x * nx + pb.z * nz;
                 var room = this._receiveMaxSpeed - alongN;
                 if (room > 0) { kbv = Math.min(kbv, room); } else { kbv = 0; }
@@ -11553,12 +11364,8 @@ proto._readGhostKnockback = function() {
                     pb.x += nx * kbv;
                     pb.z += nz * kbv;
                     this.grounded = false;
-                    // This runs mid-tick, inside beginStep's ghost sync — the movement-state dispatch
-                    // for THIS tick already ran (it's earlier in beginStep), so this can't retroactively
-                    // change what velocity model owned this tick's motion. It CAN and must fix what the
-                    // NEXT tick sees: without this, next tick's dispatch would read the stale grounded
-                    // sub-state (WALK) and immediately re-clamp the character back onto the ground via
-                    // WALK's kinematic model, killing the knockback before it ever got airborne.
+                    // Fix what NEXT tick sees: without this, the next dispatch would read the stale WALK
+                    // sub-state and re-clamp the character before knockback got airborne.
                     this._moveState = FPSC.MOVE_AIRBORNE;
                     if (this._groundSuppress < FPSC.GROUND_SUPPRESS_KB) { this._groundSuppress = FPSC.GROUND_SUPPRESS_KB; }
                 }
@@ -11570,29 +11377,21 @@ proto._readGhostKnockback = function() {
 
 
 // ==== src/character/fps/Collision.js ====
-// Kinematic wall/step collision: the character is excluded from the solver's own contact resolution
-// (collision_mask 1), so this file is what actually stops the character at walls, lets it climb steps,
-// and depenetrates it out of geometry it sank into. Shared by both the character body and its ghost
-// via _sweptCollideAndSlide.
+// Kinematic wall/step collision: the character is excluded from the solver, so this file stops it at
+// walls, lets it climb steps, and depenetrates it. Shared by the body and its ghost.
 var proto = FPSCharacterController.prototype;
 var FPSC = FPSCharacterController.FPSC;
 
 /**
- * Kinematic collide-and-slide. The character is excluded from the solver, so we stop
- * ourselves at walls and slide along them here. For the current horizontal velocity
- * we cast a fan of rays (across the footprint width, at a few heights) in the move
- * direction; if a vertical wall is within the box's reach this step we remove the
- * into-wall velocity component and re-test, so corners stop on both walls. Floors and
- * ramps (normal.y >= 0.5) are ignored — those are handled by the ground clamp.
+ * Kinematic collide-and-slide for the character body. Floors and ramps are ignored here (the ground
+ * clamp handles those); only vertical walls clip velocity.
  *
  * @method _collideAndSlide
  * @private
  * @param {Number} vx - incoming horizontal velocity, x.
  * @param {Number} vz - incoming horizontal velocity, z.
  * @param {Number} dt
- * @return {Object} result
- * @return {Number} result.x - clipped horizontal velocity, x.
- * @return {Number} result.z - clipped horizontal velocity, z.
+ * @return {Object} result - { x, z } clipped horizontal velocity.
  */
 proto._collideAndSlide = function(vx, vz, dt) {
     var res = this._sweptCollideAndSlide({
@@ -11600,14 +11399,8 @@ proto._collideAndSlide = function(vx, vz, dt) {
         width: this.width, depth: this.depth, height: this.height,
         skin: this._skin, mass: this.mass, stepHeight: this.stepHeight,
         selfBody: this.body, otherSelfBody: this._ghost || null,
-        // A SLIDE is exempt from the too-steep-can't-move-up block (the slide IS the climb — momentum,
-        // not input, is what carries it up). This must hold while AIRBORNE-sliding too: an airborne
-        // slide sweeping into a steep face otherwise wall-clips to zero speed mid-air, which kills the
-        // slide before it ever lands on the surface. _climbableSlopeAhead inside still tells real
-        // slopes from vertical walls, so walls keep stopping a slide. this._moveState is already
-        // MOVE_SLIDE on the true first-contact tick too — endStep decides movement state (including
-        // slide entry) BEFORE this function runs later in the same beginStep, so there's no
-        // "one tick behind" gap here to patch around.
+        // A slide is exempt from the too-steep-can't-move-up block (momentum, not input, carries it
+        // up), including while airborne-sliding.
         climbSteepSlopes: this.climbSteepSlopes || this._moveState === FPSC.MOVE_SLIDE,
         vx: vx, vz: vz, dt: dt,
     });
@@ -11621,33 +11414,23 @@ proto._collideAndSlide = function(vx, vz, dt) {
 };
 
 /**
- * Sweeps an inset box along a horizontal velocity and clips it against blocking contacts,
- * sub-stepped so long sweeps can't return a wrong-axis normal. Shared by the character body
- * and its ghost so both get identical wall/mass-yield behavior from one implementation.
+ * Sweeps an inset box along a horizontal velocity and clips it against blocking contacts, sub-stepped
+ * so long sweeps can't return a wrong-axis normal. Shared by the character body and its ghost.
  *
  * @method _sweptCollideAndSlide
  * @private
  * @param {Object} opts
  * @param {Vector3} opts.position - Sweep origin (box center).
- * @param {Number} opts.width - Box width (x), pre-inset.
- * @param {Number} opts.depth - Box depth (z), pre-inset.
- * @param {Number} opts.height - Box height (y), pre-inset.
+ * @param {Number} opts.width, opts.depth, opts.height - Box extents, pre-inset.
  * @param {Number} opts.skin - Contact/sweep tolerance subtracted from each half-extent.
- * @param {Number} opts.mass - Sweeping body's mass, used for the push mass-yield ratio.
- * @param {Number} [opts.stepHeight=0] - Step-up height; 0 disables step-up entirely.
+ * @param {Number} opts.mass - Sweeping body's mass, for the push mass-yield ratio.
+ * @param {Number} [opts.stepHeight=0] - Step-up height; 0 disables step-up.
  * @param {RigidBody} opts.selfBody - Body to exclude from its own sweep hits.
- * @param {RigidBody} [opts.otherSelfBody] - A second body to exclude (e.g. the character
- *   excludes its ghost, and vice versa).
- * @param {Boolean} [opts.climbSteepSlopes=false] - Exempt too-steep floor-like faces that have a
- *   climbable slope ahead from the wall-block rule.
- * @param {Number} opts.vx - Incoming horizontal velocity, x.
- * @param {Number} opts.vz - Incoming horizontal velocity, z.
+ * @param {RigidBody} [opts.otherSelfBody] - A second body to exclude (e.g. body excludes its ghost).
+ * @param {Boolean} [opts.climbSteepSlopes=false] - Exempt climbable too-steep faces from the wall rule.
+ * @param {Number} opts.vx, opts.vz - Incoming horizontal velocity.
  * @param {Number} opts.dt - Tick duration in seconds.
- * @return {Object} result
- * @return {Number} result.x - Clipped horizontal velocity, x.
- * @return {Number} result.z - Clipped horizontal velocity, z.
- * @return {Number} result.depenX - Position correction out of a penetrated wall, x (0 if none).
- * @return {Number} result.depenZ - Position correction out of a penetrated wall, z (0 if none).
+ * @return {Object} result - { x, z, depenX, depenZ }: clipped velocity + penetration correction.
  */
 proto._sweptCollideAndSlide = function(opts) {
     var vx = opts.vx, vz = opts.vz;
@@ -11658,8 +11441,7 @@ proto._sweptCollideAndSlide = function(opts) {
     var world = this.world;
     if (!world || typeof world.shapeIntersect !== "function") { return { x: vx, z: vz, depenX: 0, depenZ: 0 }; }
 
-    // Original move heading, before any clipping this tick — used by the climb-slope-ahead probe
-    // so a mid-loop velocity clip doesn't collapse the probe direction.
+    // Original move heading, before any clipping this tick — used by the climb-slope-ahead probe.
     var moveLen0 = Math.sqrt(vx * vx + vz * vz);
     var mdx0 = moveLen0 > FPSC.EPS_DIR ? vx / moveLen0 : 0;
     var mdz0 = moveLen0 > FPSC.EPS_DIR ? vz / moveLen0 : 0;
@@ -11669,9 +11451,8 @@ proto._sweptCollideAndSlide = function(opts) {
     var p = position;
     var halfW = width / 2 - skin;
     var halfD = depth / 2 - skin;
-    // Lift the swept box a small amount off the feet so it doesn't graze the floor slab's top
-    // edge (which returns a degenerate near-vertical normal and fakes a wall), while staying low
-    // enough to still catch a steep ramp's toe.
+    // Lift the swept box off the feet so it doesn't graze the floor slab's top edge (which returns a
+    // degenerate near-vertical normal that fakes a wall), while still catching a steep ramp's toe.
     var lift = skin * 2;
     var halfH = Math.max(0.05, height / 2 - lift / 2);
     var yOffset = lift / 2;
@@ -11684,41 +11465,20 @@ proto._sweptCollideAndSlide = function(opts) {
     var boxShape = this[cacheKey];
     var minStandableNy = this._minStandableNormalY;
 
-    // Sub-step so each swept chunk stays well under the smallest half-extent (a long sweep can
-    // return a wrong-axis normal from EPA).
+    // Sub-step so each swept chunk stays well under the smallest half-extent (a long sweep can return
+    // a wrong-axis normal from EPA).
     var chunkLen = Math.min(halfW, halfD) * FPSC.SUBSTEP_FRAC;
     var full = Math.sqrt(vx * vx + vz * vz) * dt;
     var nSub = Math.max(1, Math.ceil(full / Math.max(chunkLen, FPSC.EPS_LEN)));
     var sdt = dt / nSub;
 
-    // shapeIntersect's contact normal points FROM the HIT SURFACE TOWARD THE SWEEPING MOVER (the
-    // reversed travel direction on a miss-then-touch sweep - see Queries._advance's own
-    // lastGoodNx/_finishHit(-ux,-uy,-uz)), not from the mover toward the object. Everything below
-    // (findBlock's `into` test, the vertical-wall clip direction, the depenetration back-probe) is
-    // written assuming the OPPOSITE convention ("points into the wall") — negating here, once, at
-    // the single place the raw query result enters this file, keeps that downstream math correct
-    // without hunting down every sign use individually. This was a REAL, confirmed bug: with the
-    // un-negated normal, `into = vx*n.x + vz*n.z` computed NEGATIVE while genuinely moving into a
-    // wall (an approaching mover's velocity and the surface-outward normal point opposite ways by
-    // definition), so `into <= 0` rejected every real block outright — two characters walked
-    // straight through each other for 100+ units with the block silently never firing, at ANY
-    // gap, not just the ghost-shadowing case fixed above. "Heading into this face" is v.n > 0
-    // (post-negation); pushing out of penetration moves along -n (also post-negation).
+    // shapeIntersect's contact normal points FROM the surface TOWARD the sweeping mover (the reversed
+    // travel direction). Everything below assumes the opposite convention ("points into the wall"), so
+    // the raw result is negated once, here, where it enters.
     //
-    // World.shapeIntersect reports only the SINGLE nearest body, unlike the source's multi-hit
-    // query. A raw kinematic character body is never itself a wall (no mass to yield against — its
-    // ghost is the real solver stand-in for it, see Body.js), so it must be excluded from candidates
-    // at the QUERY level via `ignore`, not filtered after the fact: another controller's raw body
-    // sits at nearly the same place as its own ghost, so it is almost always the geometrically
-    // NEAREST hit and would permanently shadow the ghost behind it if only checked post-hoc - this
-    // was a real, confirmed bug (two characters walked straight through each other for 100+ units;
-    // the sweep found the other's raw kinematic body every time, discarded it as "not a wall," and
-    // never found the ghost sitting right behind it, since World.shapeIntersect only ever reports
-    // the SINGLE nearest hit). Every other kinematic-character body in the world (this body/ghost
-    // are already excluded via selfBody/otherSelfBody) is ignored at the query itself, so the
-    // nearest REAL hit - a wall, a pushable object, or another character's GHOST - is found
-    // directly.
-    //
+    // This query reports only the SINGLE nearest body, so raw kinematic character bodies (never walls —
+    // a ghost is the real stand-in) must be excluded at the QUERY level via `ignore`, not filtered
+    // after the fact: another controller's raw body sits nearly on top of its ghost and would shadow it.
     // Nearest valid blocking contact for a sweep, or null. { n, pen, keep }.
     var self_ = this;
     var worldBodies = world.bodies;
@@ -11738,32 +11498,24 @@ proto._sweptCollideAndSlide = function(opts) {
             if (!hn || !isFinite(hn.x) || !isFinite(hn.y) || !isFinite(hn.z)) { return null; }
             var nlen = Math.sqrt(hn.x * hn.x + hn.y * hn.y + hn.z * hn.z);
             if (nlen < FPSC.N_DEGENERATE) { return null; }
-            // Negate: see this function's own header comment for why the raw query result is flipped
-            // here, once, before any of the "points into the wall" math below reads it.
+            // Negate to the "points into the wall" convention (see above).
             var n = { x: -hn.x, y: -hn.y, z: -hn.z };
             if (Math.abs(n.y) >= minStandableNy) { localIgnore.push(h.body); continue; }
             // Vertical wall: normal horizontal, points character->object; heading in is v.n > 0.
-            // Too-steep floor-like face (0.1 < n.y < cutoff): normal tilts up-and-back, so heading
-            // in is v.(n.x,n.z) < 0 — sign flipped below.
+            // Too-steep floor-like face (0.1 < n.y < cutoff): heading in is v.(n.x,n.z) < 0.
             var floorLike = n.y > FPSC.NY_FLOORLIKE;
-            // A floor-like too-steep face is only a legitimate "slope ahead" block near the feet
-            // (walking into a ramp's toe). The same face type contacted up near head height is an
-            // OVERHANG (ramp underside above a wedged character), not a slope to stop forward
-            // progress on — treating it as a wall-slide clip can zero velocity in every direction,
-            // including retreat, trapping the character. Overhead clearance is the headroom gate's
-            // job; skip it here so a sideways/backward escape isn't blocked by the same contact.
+            // A floor-like too-steep face only blocks as a "slope ahead" near the feet; the same face up
+            // near head height is an overhang (headroom gate's job), so skip it to avoid trapping.
             if (floorLike && h.point && (h.point.y - (p.y - height / 2)) > height * FPSC.TOE_BAND_FRAC) { localIgnore.push(h.body); continue; }
             if (climbSteepSlopes && self_._climbableSlopeAhead(start, mdx0, mdz0)) { localIgnore.push(h.body); continue; }
             var overlapped = h.fraction === 0 && h.distance === 0;
-            // vyDet included for the vertical-wall case only (detection): falling/rising past a
-            // near-vertical face counts as heading into it. Floor-like faces keep the horizontal-only
-            // test — their block is "slope ahead", owned by the clamp/steep path, not this.
+            // vyDet is for detection only: falling/rising past a near-vertical face counts as heading
+            // into it. Floor-like faces keep the horizontal-only test.
             var into = floorLike ? -(vx * n.x + vz * n.z) : (vx * n.x + vz * n.z + vyDet * n.y);
             if (into <= 0 && !overlapped) { return null; }
             var keep = 0;
             var b = h.body;
-            // Platforms never yield like a pushable object — they're scripted geometry. Another
-            // player's ghost is a full body-block too — a player is a wall, not a pushable box.
+            // Platforms never yield (scripted geometry); another player's ghost is a full body-block too.
             if (b && !b.isPlatform && !b.isCharacterGhost && b.bodyType === RigidBody.DYNAMIC && b._mass > 0 &&
                 b._mass <= self_._pushMassLimit) {
                 keep = mass / (mass + b._mass);
@@ -11773,8 +11525,7 @@ proto._sweptCollideAndSlide = function(opts) {
         return null;
     }
 
-    // Contact test with no directional gate (unlike findBlock). Used by the recovery back-probe,
-    // since after velocity is clipped the body is no longer "moving into" the wall.
+    // Contact test with no directional gate (unlike findBlock), used by the recovery back-probe.
     function contactAt(x, y, z) {
         var pt = new Vector3(x, y, z);
         var localIgnore = queryIgnore.slice();
@@ -11792,16 +11543,12 @@ proto._sweptCollideAndSlide = function(opts) {
 
     var sy = p.y + yOffset;
 
-    // CLIP velocity against walls the move would hit this tick, and DEPENETRATE out of any wall
-    // sunk into (push along -n by overlap+skin so it rests just clear — the swept cast is
-    // penetration-based, so without this a fast move ends up inside and sticks). Velocity-only for
-    // the move; position correction only for depenetration. Sub-stepped for reliable normals.
+    // Clip velocity against walls the move would hit, and depenetrate out of any wall sunk into (push
+    // along -n so it rests just clear). Sub-stepped for reliable normals.
     var cx = p.x, cz = p.z;
     var depenX = 0, depenZ = 0;
-    // Vertical component of the move, for DETECTION ONLY — so the swept box sees a wall it's about to
-    // bury into by falling/rising past it (e.g. dropping straight down a near-vertical ramp face).
-    // vy never clips velocity or writes position here; the ground clamp still owns y. It only lets
-    // findBlock's `into` test fire so the existing horizontal back-probe can push the box out.
+    // vyDet is DETECTION ONLY — it lets the sweep see a wall the body is falling/rising past, but never
+    // clips velocity or writes position (the ground clamp owns y).
     var vyDet = selfBody ? selfBody.linear_velocity.y : 0;
     for (var s = 0; s < nSub; s++) {
         for (var iter = 0; iter < 4; iter++) {
@@ -11811,16 +11558,15 @@ proto._sweptCollideAndSlide = function(opts) {
             var end = new Vector3(cx + vx * sdt, sy + vyDet * sdt, cz + vz * sdt);
             var blk = findBlock(start, end);
             if (!blk) { break; }
-            // Step-up: before walling a near-vertical, non-yielding face, test if it's clear when
-            // swept raised by stepHeight — if so it's steppable, let the move through.
+            // Step-up: before walling a near-vertical, non-yielding face, test if it's clear when swept
+            // raised by stepHeight — if so it's steppable, let the move through.
             if (blk.keep < FPSC.KEEP_BLOCKED && Math.abs(blk.n.y) < FPSC.NY_NEAR_VERTICAL && stepHeight > 0) {
                 var upStart = new Vector3(cx, sy + stepHeight, cz);
                 var upEnd = new Vector3(cx + vx * sdt, sy + stepHeight, cz + vz * sdt);
                 if (!findBlock(upStart, upEnd)) { break; }
             }
             var n = blk.n, keep = blk.keep;
-            // Clip the into-face velocity using the horizontal blocking direction (never inject
-            // vertical; the ground clamp owns y).
+            // Clip the into-face velocity using the horizontal blocking direction (never inject vertical).
             var floorLike = n.y > FPSC.NY_FLOORLIKE;
             var bx = floorLike ? -n.x : n.x, bz = floorLike ? -n.z : n.z;
             var blen = Math.sqrt(bx * bx + bz * bz);
@@ -11831,12 +11577,8 @@ proto._sweptCollideAndSlide = function(opts) {
                 vx -= dot * bx * (1 - keep);
                 vz -= dot * bz * (1 - keep);
             }
-            // Depenetration is recovery-only: detect BURIED vs GRAZING with a back-probe (sweep one
-            // fixed small step along -n; if still in contact there, nudge out by that step), rather
-            // than trusting a reported penetration depth directly (this query never reports one -
-            // see findBlock's own comment; contactAt below is the real, load-bearing check, not an
-            // early-out guard). Vertical walls only; a floor-like too-steep toe is owned by the
-            // clamp / steep-slope path.
+            // Depenetration is recovery-only: back-probe one small step along -n to tell BURIED from
+            // GRAZING, then nudge out. Vertical walls only.
             if (!floorLike && keep < FPSC.KEEP_BLOCKED && (blk.overlapped || dot > 0)) {
                 var step = Math.min(width, depth) * FPSC.BACKPROBE_WIDTH_FRAC;
                 if (contactAt(cx - n.x * step, sy, cz - n.z * step)) {
@@ -11854,20 +11596,15 @@ proto._sweptCollideAndSlide = function(opts) {
 
 
 // ==== src/character/fps/Probes.js ====
-// Ground/ceiling/ladder raycast probes: the hand-written spatial queries beginStep/endStep read each
-// tick to decide grounding, standable-slope classification, headroom, and ladder mounting. No probe
-// here writes any sim state itself — each one just reports what's in the world.
+// Ground/ceiling/ladder raycast probes: the spatial queries beginStep/endStep read each tick to
+// decide grounding, slope classification, headroom and ladder mounting. None writes sim state.
 var proto = FPSCharacterController.prototype;
 var FPSC = FPSCharacterController.FPSC;
 var raycast = FPSCharacterController._raycast;
 
 /**
  * Multi-point ground probe (center + four edge midpoints). Returns ALL floor-like hits, highest
- * first — NOT collapsed to a single "best" here, because the caller needs to fall back to a
- * lower (but valid) hit when the highest one is rejected as too tall to step onto (e.g. one edge
- * ray grazing a box pushed against the footprint, while the other four rays are still squarely
- * over real floor). Collapsing to one hit here would throw the floor away before the caller ever
- * gets a chance to prefer it.
+ * first, so the caller can fall back to a lower valid hit when the highest is too tall to step onto.
  * @method _probeGroundCandidates
  * @private
  * @param {Number} maxSnap - max downward reach (below the feet) to probe, before scale/skin margins.
@@ -11876,8 +11613,8 @@ var raycast = FPSCharacterController._raycast;
 proto._probeGroundCandidates = function(maxSnap) {
     var half = this.height / 2;
     var p = this.body.position;
-    // Cast from the higher of this tick's start position and the current position, so a fast
-    // descent that penetrated the floor this tick doesn't miss it.
+    // Cast from the higher of this tick's start position and the current position, so a fast descent
+    // that penetrated the floor this tick doesn't miss it.
     var topY = Math.max(this._prevY !== undefined ? this._prevY : p.y, p.y) + this._skin;
     var bottomY = p.y - (half + maxSnap + this._skin);
     var ix = this.width / 2 - this._skin;
@@ -11892,8 +11629,7 @@ proto._probeGroundCandidates = function(maxSnap) {
         var end = new Vector3(p.x + ox, bottomY, p.z + oz);
         var hit = raycast(this.world, start, end, this._ignoreSelf);
         if (!hit || hit.normal.y < FPSC.NY_FLOORLIKE) { continue; }
-        // Exclude a pushable object as ground only when walking INTO its side (pushing it), not
-        // when it's roughly under our own center (standing on it).
+        // Exclude a pushable object as ground only when walking INTO its side, not when standing on it.
         var gBody = hit.object;
         var gm = gBody && gBody._mass;
         var isPushable = gBody && gBody.bodyType === RigidBody.DYNAMIC && gm > 0 && gm <= this._pushMassLimit;
@@ -11913,9 +11649,8 @@ proto._probeGroundCandidates = function(maxSnap) {
 };
 
 /**
- * Multi-ray UP probe across the footprint. Returns the LOWEST ceiling (down-facing
- * surface) within `reachAboveFeet` of the feet, or null. Mirror of _probeGround; covers
- * sloped overhead geometry (e.g. a ramp underside) that forward rays can't see.
+ * Multi-ray UP probe across the footprint. Returns the LOWEST ceiling (down-facing surface) within
+ * `reachAboveFeet` of the feet, or null. Covers sloped overhead geometry forward rays can't see.
  *
  * @method _probeCeiling
  * @private
@@ -11945,25 +11680,9 @@ proto._probeCeiling = function(reachAboveFeet) {
 };
 
 /**
- * Same contract as the private _raycast helper (excludes this body + its ghost, returns the
- * nearest remaining hit), but ALSO skips a hit body tagged isPlatform. A scripted moving platform is
- * deliberately excluded from the solver's own contact resolution (see _baseVelocity's constructor
- * comment / platform()'s collision_mask) so a rider is carried via scripted base-velocity, never a
- * real physical shove — but a raw raycast doesn't consult collision_mask at all, so without this a
- * fast-rising platform that catches back up to a character mid-jump gets misread as a solid ceiling
- * overhead by _ceilingSlide, capping the jump's vertical velocity and killing it a few ticks after
- * liftoff, even though no real contact manifold ever forms between the two bodies (the phantom
- * ceiling is a pure raycast/collision_mask mismatch, not a real collision). Used ONLY by
- * _probeCeiling — _probeGround intentionally still sees platforms (that's how riding one works at
- * all), and ordinary walls/ramps/props aren't tagged isPlatform so they're unaffected.
- *
- * Self+ghost exclusion goes through World.rayIntersect's own `ignore` parameter (bodies excluded
- * from candidates BEFORE the nearest-hit search runs), not post-hoc name filtering on the single
- * reported hit — a probe cast from the character's own body would otherwise almost always find
- * itself as the "nearest hit" and get discarded, reporting no ceiling even when a real one is
- * there. Platform exclusion still can't do the same (World.rayIntersect reports only the single
- * nearest body, so a platform hit is reported as "no ceiling" rather than passed over to a real
- * ceiling behind it) — narrower, left as a known gap.
+ * Like _raycast (excludes this body + ghost), but also skips a hit body tagged isPlatform. A raw
+ * raycast doesn't consult collision_mask, so without this a platform catching back up to a character
+ * mid-jump reads as a solid ceiling over _ceilingSlide. Used only by _probeCeiling.
  *
  * @method _raycastSkipPlatforms
  * @private
@@ -11993,10 +11712,9 @@ proto._canStand = function() {
 };
 
 /**
- * Single ray probe for a ladder ahead, along `dir` (horizontal, need not be unit length). Placed
- * halfway between the feet and stepHeight above them rather than the body center. Returns the raw
- * hit `{object, point, normal, t}` with the normal flipped to point OUT of the face (toward the
- * caller), or null.
+ * Single ray probe for a ladder ahead, along `dir`. Placed halfway between the feet and stepHeight
+ * above them rather than at the body center. Returns the raw hit with the normal flipped to point OUT
+ * of the face (toward the caller), or null.
  *
  * @method _findLadderAhead
  * @private
@@ -12020,9 +11738,8 @@ proto._findLadderAhead = function(dir) {
 };
 
 /**
- * Is there a too-steep-but-climbable slope surface rising just ahead of the move? Used only when
- * climbSteepSlopes is on. Casts down-rays a short distance ahead and looks for an upward-tilted,
- * too-steep-to-stand hit that is still a real slope (not flat floor, not a vertical wall).
+ * Is there a too-steep-but-climbable slope surface rising just ahead of the move? Only used when
+ * climbSteepSlopes is on.
  * @method _climbableSlopeAhead
  * @private
  * @param {Vector3} start
@@ -12058,8 +11775,7 @@ proto._climbableSlopeAhead = function(start, dx, dz) {
  * @return {Number} clearance in units above feetY, or Infinity.
  */
 proto._ceilingClearanceAt = function(cx, cz, feetY) {
-    // Start above step-up height so a steppable obstacle (stair/low box) doesn't register as a
-    // low ceiling; anything below feet+stepHeight is the ground clamp's job, not the gate's.
+    // Start above step-up height so a steppable obstacle (stair/low box) doesn't register as a ceiling.
     var startY = feetY + this.stepHeight + this._skin;
     var endY = feetY + this.standHeight + this._skin;
     var ix = this.width / 2 - this._skin;
@@ -12074,20 +11790,12 @@ proto._ceilingClearanceAt = function(cx, cz, feetY) {
             new Vector3(cx + ox, endY, cz + oz),
             this._ignoreSelf);
         if (!hit || hit.normal.y > FPSC.NY_CEILING) { continue; } // not a ceiling (must face downward)
-        // A dynamic/pushable object is never a "ceiling" — it's something the swept mover + push handle,
-        // not the headroom gate. Without this, an object being actively shoved forward can wobble a few
-        // degrees off-axis from contact torque, and its top face intermittently pokes above the
-        // stepHeight cutoff below on some ticks but not others, flickering the character's forward
-        // velocity to zero and back as the box jitters. Only STATIC geometry (mass===Infinity) counts
-        // as an overhang.
+        // Only STATIC geometry counts as an overhang — a shoved dynamic object can wobble its top face
+        // above the cutoff intermittently.
         if (hit.object && hit.object.bodyType === RigidBody.DYNAMIC) { continue; }
         var clr = hit.point.y - feetY;
-        // A "ceiling" clearance at or below step height is NOT an overhang — it's a low obstacle at
-        // shin/waist level that the swept mover + push handle, not the headroom gate. Without this, a
-        // low stepHeight drops the ray start (feetY+stepHeight) INTO a waist-high object ahead, and the
-        // ray reports a bogus ~stepHeight-clearance "ceiling", so the gate walls the character in open
-        // space in front of a pushable box (worse the lower stepHeight is). Only count genuine overhangs
-        // — clearance meaningfully above the step line — as ceilings.
+        // A clearance at or below step height is a low obstacle, not an overhang (the swept mover + push
+        // handle it), so it must not wall the character in.
         if (clr <= this.stepHeight + this._skin) { continue; }
         if (clr < lowest) { lowest = clr; }
     }
@@ -12096,7 +11804,7 @@ proto._ceilingClearanceAt = function(cx, cz, feetY) {
 
 /**
  * The "too steep to stand on" rule — a floor whose normal tilts below the standable limit gives no
- * footing (MOVE_SLIP). climbSteepSlopes opts out.
+ * footing. climbSteepSlopes opts out.
  * @method _isSlipSurface
  * @private
  * @param {Object} normal - a surface normal (uses .y)
@@ -12108,15 +11816,13 @@ proto._isSlipSurface = function(normal) {
 
 
 // ==== src/character/fps/View.js ====
-// View/aim/render-interpolation surface, plus the small read-only state accessors a caller polls
-// every frame (sliding, moveState, bodyId, raycastIgnore). None of this touches simulation state
-// except look()/setLook()/aim(), which are the caller's own facing/aim writes.
+// View/aim/render-interpolation surface plus small read-only accessors a caller polls every frame.
+// None touches simulation state except look()/setLook()/aim(), the caller's own facing writes.
 var proto = FPSCharacterController.prototype;
 var FPSC = FPSCharacterController.FPSC;
 
 /**
- * True while a slide is active this tick. Reads the single authoritative _moveState field that
- * endStep sets — see the "Movement state machine" comment above endStep (Movement/Step.js).
+ * True while a slide is active this tick (reads the authoritative _moveState).
  * @property sliding
  * @type {Boolean}
  * @readOnly
@@ -12125,9 +11831,7 @@ Object.defineProperty(proto, 'sliding', { get: function() { return this._moveSta
 
 /**
  * This tick's movement state: one of FPSC.MOVE_LADDER / MOVE_AIRBORNE / MOVE_WALK / MOVE_SLIP /
- * MOVE_SLIDE. Set exactly once per tick, by endStep, from a fresh ground probe — beginStep (which
- * runs BEFORE endStep, on the state endStep decided last tick) only ever READS this, never
- * re-derives it. See the "Movement state machine" comment above endStep for the full design.
+ * MOVE_SLIDE. Set once per tick by endStep; beginStep only reads it.
  * @property moveState
  * @type {String}
  * @readOnly
@@ -12143,8 +11847,7 @@ Object.defineProperty(proto, 'moveState', { get: function() { return this._moveS
 Object.defineProperty(proto, 'bodyId', { get: function() { return this._bodyName; } });
 
 /**
- * The body-name list this controller's own probes ignore — pass to a game's own raycasts
- * (weapons, line-of-sight) so a shooter's cast doesn't hit itself.
+ * The body-name list this controller's own probes ignore — pass to a game's own raycasts.
  * @property raycastIgnore
  * @type {String[]}
  * @readOnly
@@ -12186,10 +11889,8 @@ proto.getLookDirection = function() {
 };
 
 /**
- * Set the LIVE, caller-owned aim — call once per render frame from your mouse-look. Render-only:
- * this NEVER enters the simulation (it doesn't touch yaw/pitch, the command, or movement), it just
- * keeps a viewmodel/camera glued to the present view instead of the 60Hz sim yaw — fixing the
- * between-tick "dangle" in every mode.
+ * Set the LIVE, caller-owned aim — call once per render frame from mouse-look. Render-only: never
+ * enters the simulation, just keeps a viewmodel/camera glued to the present view.
  *
  * @method aim
  * @param {Number} yaw
@@ -12224,8 +11925,7 @@ proto.getForwardHorizontal = function(yaw) {
 };
 
 /**
- * Horizontal right for a given yaw (defaults to current facing). Negated to match a
- * left-handed view convention so DirRight strafes to the character's visual right.
+ * Horizontal right for a given yaw (defaults to current facing).
  * @method getRightHorizontal
  * @param {Number} [yaw]
  * @return {Vector3}
@@ -12246,9 +11946,8 @@ proto.getEyePosition = function() {
 };
 
 /**
- * Return the artificial vertical eye displacement accumulated since the last call (step/landing
- * snaps + crouch/scale swaps) and reset it. A camera folds this into a decaying offset so it
- * eases over those discontinuities. Call once per render frame. Render-only — does not affect sim.
+ * Return the artificial vertical eye displacement accumulated since the last call and reset it. A
+ * camera folds this into a decaying offset. Call once per render frame. Render-only.
  * @method consumeViewDisplacementY
  * @return {Number}
  */
@@ -12259,10 +11958,8 @@ proto.consumeViewDisplacementY = function() {
 };
 
 /**
- * Peek at the pending vertical eye displacement WITHOUT consuming it. A render-side smoother
- * consumes (consumeViewDisplacementY); a caller that only wants to DETECT a discontinuity this
- * frame (e.g. to snap interpolation instead of sliding the eye) reads this and leaves the value
- * for the smoother. Read-only — never mutates sim or render state.
+ * Peek at the pending vertical eye displacement WITHOUT consuming it (for detecting a discontinuity
+ * while leaving the value for the smoother). Read-only.
  * @method peekViewDisplacementY
  * @return {Number}
  */
@@ -12271,10 +11968,8 @@ proto.peekViewDisplacementY = function() {
 };
 
 /**
- * Stash this fixed tick's eye for sub-tick render interpolation. Call ONCE per REAL fixed step,
- * right after the step settles. A teleport-sized jump (respawn / kill-plane / hard resync) or an
- * artificial step/crouch eye snap snaps the interpolation — prev := curr — so the eye doesn't
- * smear across the discontinuity.
+ * Stash this fixed tick's eye for sub-tick render interpolation. Call once per REAL fixed step, right
+ * after the step settles. A teleport or an artificial step/crouch eye snap resets prev := curr.
  *
  * @method captureRenderState
  */
@@ -12291,9 +11986,8 @@ proto.captureRenderState = function() {
 };
 
 /**
- * The render-only eye position: the last two captured fixed-tick eyes lerped by the sub-tick factor
- * `alpha` (0..1, the fraction into the current fixed step the renderer hands the draw call). Falls
- * back to the live physics eye until two ticks have been captured.
+ * The render-only eye position: the last two captured fixed-tick eyes lerped by `alpha` (0..1, the
+ * fraction into the current fixed step). Falls back to the live physics eye until two ticks captured.
  *
  * @method renderEye
  * @param {Number} alpha
@@ -12310,18 +12004,15 @@ proto.renderEye = function(alpha) {
 
 
 // ==== src/character/fps/Netcode.js ====
-// Entity interface (authoritative snapshots / reconciliation). beginStep/endStep (Movement/Step.js)
-// are the sim; getState/setState complete the duck-typed entity contract
-// {beginStep, endStep, getState, setState} an external framework can drive, and
-// beginResim/endResim bracket a rollback-and-resim of already-run commands.
+// Entity interface: getState/setState complete the duck-typed contract
+// {beginStep, endStep, getState, setState} an external framework drives, and beginResim/endResim
+// bracket a rollback-and-resim of already-run commands.
 var proto = FPSCharacterController.prototype;
 var FPSC = FPSCharacterController.FPSC;
 
 /**
- * Reconciliation hooks (opt-in, called by the caller around a ROLLBACK-AND-RESIM of already-run
- * commands — distinct from a game "replay"). During resim the controller re-derives already-
- * perceived state, so its step/crouch snaps must NOT feed a render smoother (that double-counts
- * every step until the resim catches back up). Live ticks are unaffected.
+ * Reconciliation hooks (opt-in), called around a rollback-and-resim. During resim the controller
+ * re-derives already-perceived state, so its step/crouch snaps must not feed a render smoother.
  * @method beginResim
  */
 proto.beginResim = function() { this._resimulating = true; };
@@ -12331,41 +12022,11 @@ proto.beginResim = function() { this._resimulating = true; };
 proto.endResim = function() { this._resimulating = false; };
 
 /**
- * Snapshot this controller's authoritative state for the network.
+ * Snapshot this controller's authoritative state for the network: position, velocity, facing,
+ * grounded, collider size, moveState and the various timers/normals resim must re-adopt exactly.
+ * The ghost is deliberately NOT serialized (setState re-derives it locally).
  * @method getState
  * @return {Object} state
- * @return {Number} state.x - body position x.
- * @return {Number} state.y - body position y.
- * @return {Number} state.z - body position z.
- * @return {Number} state.vx - body linear velocity x.
- * @return {Number} state.vy - body linear velocity y.
- * @return {Number} state.vz - body linear velocity z.
- * @return {Number} state.yaw - commanded facing yaw.
- * @return {Number} state.pitch - commanded facing pitch.
- * @return {Boolean} state.grounded
- * @return {Number} state.w - collider width.
- * @return {Number} state.h - collider height (reflects crouch).
- * @return {String} state.moveState - one of FPSC.MOVE_LADDER/MOVE_AIRBORNE/MOVE_WALK/MOVE_SLIP/MOVE_SLIDE;
- *   see the "Movement state machine" comment above endStep — serialized so resim re-adopts the exact
- *   state live prediction was in, not a re-derived guess.
- * @return {Boolean} state.sliding - plain boolean convenience view of moveState === MOVE_SLIDE, for
- *   snapshot consumers that only care about this one bit (e.g. a body model tilting while sliding).
- * @return {Number} state.gs - ground-suppress tick counter (see endStep's `suppressed`).
- * @return {Number} state.ct - coyote-time timer remaining.
- * @return {Number} state.jb - jump-buffer timer remaining.
- * @return {Number} state.gnx - ground normal x.
- * @return {Number} state.gny - ground normal y.
- * @return {Number} state.gnz - ground normal z.
- * @return {Boolean} state.climb - steep-slope walk allowance (can be granted/refused by an authority
- *   outside this controller; serialized so prediction + resim read the authoritative value).
- * @return {Boolean} state.onLadder - ladder mount state.
- * @return {Number} state.lnx - ladder face normal x (points OUT of the ladder face).
- * @return {Number} state.lnz - ladder face normal z.
- * @return {*} state.userData - opaque consumer payload, passed through unexamined.
- *
- * NB: the ghost (the body that pushes objects) is deliberately NOT serialized. It's a local
- * follow-the-character construct; setState re-derives it locally by snapping it to the
- * authoritative character. Serializing it added bandwidth for identical results.
  */
 proto.getState = function() {
     var p = this.body.position;
@@ -12399,32 +12060,10 @@ proto.getState = function() {
  * touch yaw/pitch. Used for reconciliation before replaying already-run commands.
  * @method setState
  * @param {Object} s - a snapshot as produced by getState.
- * @param {Number} s.x
- * @param {Number} s.y
- * @param {Number} s.z
- * @param {Number} s.vx
- * @param {Number} s.vy
- * @param {Number} s.vz
- * @param {Boolean} [s.grounded]
- * @param {Number} [s.h] - collider height; a mismatch vs the current height rebuilds the collider
- *   (and re-derives crouching) before position is adopted.
- * @param {String} [s.moveState]
- * @param {Number} [s.gs]
- * @param {Number} [s.ct]
- * @param {Number} [s.jb]
- * @param {Number} [s.gnx]
- * @param {Number} [s.gny]
- * @param {Number} [s.gnz]
- * @param {Boolean} [s.climb]
- * @param {Boolean} [s.onLadder]
- * @param {Number} [s.lnx]
- * @param {Number} [s.lnz]
- * @param {*} [s.userData]
  */
 proto.setState = function(s) {
-    // Rebuild the collider at the authoritative center/height before adopting position, so the
-    // geometry matches the snapshot's before replay (a height mismatch would re-plant crouch from
-    // the wrong baseline every snapshot).
+    // Rebuild the collider at the authoritative center/height first, so the geometry matches before
+    // replay (a height mismatch would re-plant crouch from the wrong baseline every snapshot).
     if (s.h !== undefined && Math.abs(s.h - this.height) > FPSC.EPS_SPEED_MARGIN) {
         this.crouching = s.h < this.standHeight - FPSC.EPS_SPEED_MARGIN;
         this.height = s.h;
@@ -12438,21 +12077,17 @@ proto.setState = function(s) {
     v.y = s.vy;
     v.z = s.vz;
     this.velocityY = s.vy;
-    // _ownVelocityX/Z aren't snapshot fields — re-derive them from gb so they don't go stale (see
-    // constructor comment).
+    // _ownVelocityX/Z aren't snapshot fields — re-derive them from gb so they don't go stale.
     this._ownVelocityX = v.x - this._baseVelocity.x;
     this._ownVelocityZ = v.z - this._baseVelocity.z;
     if (s.grounded !== undefined) { this.grounded = s.grounded; }
-    // Adopt the authoritative movement state directly — resim then starts from exactly the state
-    // live prediction was in (WALK/SLIP/SLIDE/AIRBORNE/LADDER), not a locally re-derived guess.
+    // Adopt the authoritative movement state directly so resim starts where live prediction was.
     if (s.moveState !== undefined) { this._moveState = s.moveState; }
     if (s.gs !== undefined) { this._groundSuppress = s.gs; }
     if (s.ct !== undefined) { this._coyoteTimer = s.ct; }
     if (s.jb !== undefined) { this._jumpBufferTimer = s.jb; }
     if (s.gnx !== undefined) { this.groundNormal.set(s.gnx, s.gny, s.gnz); }
-    // Adopt the authoritative steep-slope allowance. This is the ONLY place the live flag is written
-    // from outside — a command only sets INTENT, an authority grants/refuses it, and the truth comes
-    // back here. Read live each tick by the mover/grounding, so no rebuild is needed.
+    // The authoritative steep-slope allowance: a command only sets INTENT, an authority grants/refuses.
     if (s.climb !== undefined) { this.climbSteepSlopes = s.climb; }
     if (s.onLadder !== undefined) { this._onLadder = s.onLadder; }
     if (s.lnx !== undefined) { this._ladderNormal.set(s.lnx, 0, s.lnz); }
@@ -12463,13 +12098,10 @@ proto.setState = function(s) {
     }
     if (s.mantleTopY !== undefined) { this._mantleTopBodyY = s.mantleTopY; }
     if (s.mantleLX !== undefined) { this._mantleLandX = s.mantleLX; this._mantleLandZ = s.mantleLZ; }
-    // Restore gravity if mantling — _updateMantle zeroes it on entry but setState re-adopts the
-    // arc mid-flight without re-running the entry code.
+    // Restore gravity if mantling — _updateMantle zeroes it on entry but setState re-adopts mid-flight.
     if (this._mantleActive) { this.body.setGravity(0, 0, 0); }
     else { this.body.setGravity(this._gravityVec.x, this._gravityVec.y, this._gravityVec.z); }
-    // Re-baseline the ghost LOCALLY (not from the snapshot — the ghost isn't serialized). Snap it onto
-    // the just-adopted authoritative character, moving at the character's velocity, so every resim starts
-    // from the same consistent ghost state and re-pushes objects identically each time.
+    // Re-baseline the ghost LOCALLY (not from the snapshot) so every resim starts from the same state.
     // Opt-out (hardsnapGhostOnReconcile=false): leave the ghost drifted.
     if (this._ghost && this._hardsnapGhostOnReconcile) {
         var bp = this.body.position, pv = this.body.linear_velocity;
@@ -12484,18 +12116,14 @@ proto.setState = function(s) {
 
 // ==== src/character/fps/Movement/Airborne.js ====
 // Airborne assists: deflecting velocity off a ceiling on the way up (_ceilingSlide), and gating
-// horizontal advance into an overhang too low to fit under (_headroomGate). Neither owns a movement
-// state by itself — both act as filters on whatever velocity the active state produced this tick.
+// horizontal advance into an overhang too low to fit under (_headroomGate). Both are filters on the
+// velocity the active movement state produced this tick.
 var proto = FPSCharacterController.prototype;
 var FPSC = FPSCharacterController.FPSC;
 
 /**
- * Deflect velocity along an overhead surface we're about to contact, instead of capping the
- * rise to zero — a hard cap leaves no velocity to escape and glues us to ceilings, flat AND
- * sloped. Projects out the into-surface component using the ceiling's own normal: v -= (v.n) n.
- * A flat underside (n straight down) zeroes only the vertical, so horizontal motion survives; a
- * sloped underside redirects the upward motion down-and-along the slope, sliding us out. Only
- * acts when actually rising toward a ceiling within this tick's reach.
+ * Deflect velocity along an overhead surface instead of capping the rise to zero (a hard cap glues us
+ * to ceilings). Projects out the into-surface component using the ceiling's normal: v -= (v.n)n.
  *
  * @method _ceilingSlide
  * @private
@@ -12503,10 +12131,7 @@ var FPSC = FPSCharacterController.FPSC;
  * @param {Number} vy
  * @param {Number} vz
  * @param {Number} dt
- * @return {Object} result
- * @return {Number} result.vx
- * @return {Number} result.vy
- * @return {Number} result.vz
+ * @return {Object} result - { vx, vy, vz }
  */
 proto._ceilingSlide = function(vx, vy, vz, dt) {
     if (vy <= 0) { return { vx: vx, vy: vy, vz: vz }; } // not rising -> nothing overhead to resolve
@@ -12527,17 +12152,14 @@ proto._ceilingSlide = function(vx, vy, vz, dt) {
 };
 
 /**
- * Treat insufficient headroom as a virtual wall: gate on ceiling clearance ahead (rather than
- * surface normal, which a near-horizontal ramp underside can't provide) and slide along the
- * horizontal gradient of increasing clearance.
+ * Treat insufficient headroom as a virtual wall: gate on ceiling clearance ahead (a near-horizontal
+ * ramp underside provides no usable surface normal) and slide along the horizontal clearance gradient.
  * @method _headroomGate
  * @private
  * @param {Number} vx
  * @param {Number} vz
  * @param {Number} dt
- * @return {Object} result
- * @return {Number} result.x - gated horizontal velocity, x.
- * @return {Number} result.z - gated horizontal velocity, z.
+ * @return {Object} result - { x, z }
  */
 proto._headroomGate = function(vx, vz, dt) {
     var speed = Math.sqrt(vx * vx + vz * vz);
@@ -12552,10 +12174,8 @@ proto._headroomGate = function(vx, vz, dt) {
     var need = this.height + this._skin;
     var halfDiag = Math.sqrt((this.width / 2) * (this.width / 2) + (this.depth / 2) * (this.depth / 2));
 
-    // Check clearance centered at the CURRENT position, not a forward-projected point — _ceilingClearanceAt
-    // already samples +-(width/2-skin) / +-(depth/2-skin) around its center argument, which is the box's own
-    // full footprint including its leading edge. Projecting a "reach" forward on top of that double-counts.
-    // The footprint offsets ARE the reach.
+    // Check clearance at the CURRENT position: _ceilingClearanceAt already samples the full footprint
+    // including the leading edge, so projecting a "reach" forward would double-count.
     if (this._ceilingClearanceAt(p.x, p.z, feetY) >= need) { return { x: vx, z: vz }; }
 
     var eps = halfDiag + this._skin;
@@ -12587,9 +12207,7 @@ proto._headroomGate = function(vx, vz, dt) {
 
 // ==== src/character/fps/Movement/Vertical.js ====
 // Vertical motion: jump + gravity/landing hook. Gravity/landing itself is left to the solver; only
-// jump/jetpack thrust writes vertical velocity directly (see _updateVertical). Also the overridable
-// gait-speed hook (_getMoveSpeed), kept here since jump/speed are the two "kit" hooks a subclass
-// typically overrides together.
+// jump/jetpack thrust writes vertical velocity directly. Also the overridable gait-speed hook.
 var proto = FPSCharacterController.prototype;
 var FPSC = FPSCharacterController.FPSC;
 
@@ -12610,9 +12228,8 @@ proto._getMoveSpeed = function(cmd) {
 };
 
 /**
- * Vertical hook. Base = grounded jump only (gravity/landing handled by the solver). A jump adds
- * platform base velocity's Y component additively, not an overwrite — jumping off a rising
- * platform flings the character higher than jumpSpeed alone would.
+ * Vertical hook. Base = grounded jump only (gravity/landing handled by the solver). A jump adds the
+ * platform's vertical base velocity additively, not as an overwrite.
  * @method _updateVertical
  * @protected
  * @param {Object} cmd
@@ -12622,33 +12239,16 @@ proto._updateVertical = function(cmd, dt) {
     var canJump = this.grounded || this._coyoteTimer > 0;
     var wantJump = cmd.jumpPressed || this._jumpBufferTimer > 0;
     if (canJump && wantJump) {
-        // VERTICAL: additive, not a bare overwrite — jumping off a platform that's currently rising
-        // carries its vertical base velocity into the jump (a "fling"), on top of whatever base
-        // velocity the character already had that tick. Gated by _jumpKeepsVerticalBaseVelocity
-        // (default true — the established, expected platforming feel; PL3 depends on it).
+        // Additive (not an overwrite): jumping off a rising platform carries its vertical base velocity
+        // into the jump (see _jumpKeepsVerticalBaseVelocity).
         var vBase = this._jumpKeepsVerticalBaseVelocity ? this._baseVelocity.y : 0;
-        // The player's jump is a WISH to leave the surface — that wish should only ever be helped by
-        // the platform's current motion, never fought. A platform still RISING adds free height (the
-        // fling above, working as intended); a platform DESCENDING must not subtract from the jump —
-        // ignore negative vBase at the moment of jumping (default on; a project that wants a
-        // descending platform to actively suppress a jump can opt out). This is deliberately scoped to
-        // the JUMP MOMENT only, not standing/riding in general — normal ground-follow on a descending
-        // platform (not jumping) is unaffected and still correctly rides it down; only the instant the
-        // player presses jump does their intent take priority over the platform's own motion.
+        // A descending platform must not subtract from the jump — ignore negative vBase at jump time.
+        // Scoped to the jump moment only; normal riding on a descending platform is unaffected.
         if (this._jumpIgnoresDescendingBaseVelocity && vBase < 0) { vBase = 0; }
         this.body.linear_velocity.y = this.jumpSpeed + vBase;
-        // HORIZONTAL: gated by _jumpKeepsHorizontalBaseVelocity (default FALSE — opposite default from
-        // vertical). Applies to ANY platform's horizontal base velocity, linear or rotating alike —
-        // left alone, a jump off a fast-moving/spinning platform launches the rider sideways at
-        // whatever speed the platform was imparting, since nothing decays it once airborne. Needs BOTH
-        // zeroed when opted out, not just one:
-        //   - this.body.linear_velocity.x/z (= gb, a live alias set up earlier in beginStep): the
-        //     AIRBORNE movement-state dispatch that runs right after this call reads gb.x/z DIRECTLY as
-        //     its base velocity (`var cur = gb`) when there's no move input — zeroing only
-        //     _baseVelocity below does nothing for that path, gb itself must be clean.
-        //   - this._baseVelocity.x/z: also read a few lines later in the SAME beginStep call (the
-        //     dispatch's own bvx/bvz, added into the swept move regardless of movement state) — leaving
-        //     it non-zero re-adds the platform's speed right back even after gb is cleared above.
+        // Horizontal carry defaults OFF. When opted out, BOTH gb.x/z and _baseVelocity.x/z must be
+        // zeroed to their own-velocity values: the AIRBORNE dispatch reads gb directly, and the base
+        // velocity is added into the swept move a few lines later.
         if (!this._jumpKeepsHorizontalBaseVelocity) {
             this.body.linear_velocity.x = this._ownVelocityX;
             this.body.linear_velocity.z = this._ownVelocityZ;
@@ -12656,21 +12256,11 @@ proto._updateVertical = function(cmd, dt) {
             this._baseVelocity.z = 0;
         }
         this.grounded = false;
-        // beginStep's movement-state dispatch runs right after this call, on the SAME tick — must
-        // see AIRBORNE now, not whatever grounded sub-state was true a moment ago.
+        // The movement-state dispatch right after this call must see AIRBORNE now.
         this._moveState = FPSC.MOVE_AIRBORNE;
         this._groundSuppress = FPSC.GROUND_SUPPRESS_JUMP;
-        // See endStep's `suppressed` — a FIXED tick count alone isn't enough here: it doesn't know
-        // how far the character actually needs to climb to clear the surface they jumped off. A
-        // still-rising surface underfoot (a platform still climbing, or a ramp whose OWN surface
-        // keeps rising ahead of a character sprinting up it) can have gb.y still healthily positive
-        // well past GROUND_SUPPRESS_JUMP's fixed window, and would otherwise get back in ground-clamp
-        // snap range the instant the countdown lapses, re-catching the jump before it ever really
-        // left. This flag extends suppression for as long as gb.y stays genuinely positive (checked
-        // in endStep), on top of (not instead of) the fixed countdown — so a jump still can't
-        // suppress forever if something keeps gb.y positive indefinitely (a runaway edge case), but a
-        // normal jump's natural gravity decay is what ends it, not an arbitrary tick count picked for
-        // a flat floor.
+        // Extends ground-suppression past the fixed countdown for as long as gb.y stays positive (a
+        // still-rising surface underfoot). Cleared in endStep once ordinary gravity decay ends it.
         this._jumpRising = true;
         this._coyoteTimer = 0;
         this._jumpBufferTimer = 0;
@@ -12682,24 +12272,19 @@ proto._updateVertical = function(cmd, dt) {
 
 // ==== src/character/fps/Movement/Step.js ====
 // Movement state machine core: beginStep (pre-physics velocity + assists) and endStep (post-physics
-// grounding + state decision) bracket a single physics world step. See the class doc on
-// FPSCharacterController.js for the beginStep/world.step/endStep contract, and the "MOVEMENT STATE
-// DECISION" comment inside endStep below for the full state-machine design.
+// grounding + state decision) bracket a single physics world step.
 var proto = FPSCharacterController.prototype;
 var FPSC = FPSCharacterController.FPSC;
 
 /**
  * PRE-physics: set this tick's horizontal velocity (slope/wall projected) + assists.
  *
- * Aim/sim separation: the movement basis comes from the COMMAND's yaw (`cmd.yaw`) — a per-tick
- * input — not from any persistent "live aim". The live aim belongs to the caller (a camera reads
- * it, never the sim), so replaying commands during reconciliation can't drag the view backward.
- * We record the commanded yaw/pitch as this entity's facing (for getState/avatars) only when the
- * command carries them; a caller that never sets yaw keeps driving facing via look() instead.
+ * The movement basis comes from the COMMAND's yaw (cmd.yaw), not any persistent "live aim", so
+ * replaying commands during reconciliation can't drag the view backward. Commanded yaw/pitch are
+ * recorded as this entity's facing only when the command carries them.
  *
- * Also applies platform base velocity into the horizontal move (see the constructor's
- * _baseVelocity comment) immediately before collide-and-slide, so a rider is carried through real
- * swept motion rather than a position teleport.
+ * Platform base velocity is added immediately before collide-and-slide, so a rider is carried through
+ * real swept motion rather than a position teleport.
  *
  * @method beginStep
  * @param {Object} command - pure-data input command struct; any field may be absent
@@ -12711,9 +12296,7 @@ proto.beginStep = function(command, dt) {
     if (this._jumpBufferTimer > 0) { this._jumpBufferTimer = Math.max(0, this._jumpBufferTimer - dt); }
 
     if (cmd.scale !== undefined && Math.abs(cmd.scale - this.scale) > FPSC.EPS_LEN) { this.setScale(cmd.scale); }
-    // Steep-slope walk intent from the command. Applying it immediately lets local prediction climb
-    // right away; if an authority later overrules it, setState corrects the flag from the snapshot.
-    // Read live per-tick, so a plain assignment is enough.
+    // Steep-slope walk intent from the command; an authority can overrule it later via setState.
     if (cmd.climb !== undefined) { this.climbSteepSlopes = !!cmd.climb; }
     var wantCrouch = !!cmd.crouch || (this.crouching && !this._canStand());
     if (wantCrouch !== this.crouching) { this._setCrouch(wantCrouch); }
@@ -12742,23 +12325,21 @@ proto.beginStep = function(command, dt) {
     var wishX = 0;
     var wishZ = 0;
     if (hasInput) {
-        // Clamp to unit length, not normalize: a full digital diagonal (dirLen ~= 1.41)
-        // still caps at gait speed, but a partial analog stick keeps its magnitude for a
-        // proportional walk.
+        // Clamp to unit length, not normalize: a digital diagonal still caps at gait speed, but a
+        // partial analog stick keeps its magnitude for a proportional walk.
         var norm = dirLen > 1 ? 1 / dirLen : 1;
         wishX = dirX * norm * speed;
         wishZ = dirZ * norm * speed;
     }
 
-    // Stashed for endStep (this same tick, after world.step) to use when it decides this tick's
-    // movement state from the fresh ground probe — see the "MOVEMENT STATE DECISION" block there.
+    // Stashed for endStep (after world.step) to use when deciding this tick's movement state.
     this._wantCrouch = wantCrouch;
     this._hasMoveInput = hasInput;
 
     var onMantleThisTick = this._updateMantle(cmd, moveYaw, dt);
 
-    // _updateLadder mounts/dismounts and, while mounted, owns velocity fully — checked first since
-    // it can override every other state this tick (a ladder grab works even mid-air or mid-slide).
+    // _updateLadder mounts/dismounts and, while mounted, owns velocity fully — checked first since it
+    // can override every other state this tick.
     var onLadderThisTick = !onMantleThisTick && this._updateLadder(cmd, moveYaw, movePitch, dt);
 
     var vx, vz;
@@ -12767,35 +12348,23 @@ proto.beginStep = function(command, dt) {
         vx = gb.x;
         vz = gb.z;
     } else {
-        // A jump flips grounded→airborne HERE, before the dispatch below reads this._moveState —
-        // _updateVertical updates this._moveState directly on a jump so the same-tick dispatch
-        // correctly takes the AIRBORNE branch instead of the stale GROUNDED one.
+        // A jump flips grounded→airborne HERE, before the dispatch below reads this._moveState.
         this._updateVertical(cmd, dt);
 
         // ================================================================================
         // MOVEMENT STATE DISPATCH — reads this._moveState, set authoritatively by LAST tick's
-        // endStep (or by _updateVertical just above, on a jump this tick). Never re-derives the
-        // state from other flags; each branch below is a fully self-contained velocity model for
-        // that one state, duplicated rather than shared, so there is exactly one thing to read
-        // (this._moveState) to know which branch is live and exactly one place per state that
-        // decides its velocity. See the "Movement state machine" comment above endStep.
+        // endStep (or by _updateVertical just above on a jump). Each branch is a self-contained
+        // velocity model for one state.
         // ================================================================================
         if (this._moveState === FPSC.MOVE_SLIDE && this.grounded) {
-            // SLIDE, GROUNDED: crouch-at-speed, owns velocity via _updateSlide's surface-tracking
-            // model. _updateSlide is a pure per-tick evolver here — it does NOT decide entry/exit
-            // anymore (endStep already decided this tick IS a slide); it only advances the
-            // slide's velocity one tick (slope accel, friction, steering) from gb, which endStep
-            // already set to the correct tangential speed for this tick.
+            // SLIDE, GROUNDED: _updateSlide is a pure per-tick evolver (endStep already decided this
+            // tick IS a slide); it advances the slide's velocity one tick from gb.
             var slideResult = this._updateSlide(cmd, wishX, wishZ, dt);
             vx = slideResult.vx;
             vz = slideResult.vz;
             gb.y = slideResult.vy;
         } else if (this._moveState === FPSC.MOVE_SLIDE && !this.grounded) {
-            // SLIDE, AIRBORNE: a slide that left the ground (ramp lip, drop-off) — see endStep's
-            // "genuinely airborne" branch for the condition that keeps this state through the
-            // launch. Carried ballistically (gravity, no air-control degradation, no slope model —
-            // there's no surface under the character to track) until it lands or slows below
-            // slideEndSpeed, at which point endStep drops it to AIRBORNE.
+            // SLIDE, AIRBORNE: carried ballistically until it lands or slows below slideEndSpeed.
             this.body.setGravity(this._gravityVec.x, this._gravityVec.y, this._gravityVec.z);
             if (gb.y < -this._maxFall) { gb.y = -this._maxFall; }
             vx = gb.x;
@@ -12809,13 +12378,8 @@ proto.beginStep = function(command, dt) {
             var dzu = slopeMag > FPSC.EPS_LEN ? n.z / slopeMag : 0;
             var g = -this._gravityVec.y;
             // Project the incoming 3D velocity onto the plane ONLY on the tick contact is new
-            // (endStep left gb.y raw, non-zero, from the fall/toss, on that one tick — see the
-            // "MOVEMENT STATE DECISION" comment in endStep). On every later slip tick, endStep
-            // zeroes gb.y (the kinematic model owns vertical here, not the solver), so gb.x/gb.z
-            // are ALREADY the correctly-accumulated tangential speed from the previous tick's
-            // formula below — re-projecting again would read that zeroed gb.y as "no vertical
-            // motion yet" and subtract a spurious correction, fighting the accumulation into a
-            // false plateau instead of letting speed build tick over tick.
+            // (_slipJustEntered). Every later slip tick has gb.y already zeroed, so gb.x/gb.z are the
+            // correctly-accumulated tangential speed — re-projecting would fight that accumulation.
             var gbx = gb.x, gbz = gb.z;
             if (this._slipJustEntered) {
                 var dot0 = gb.x * n.x + gb.y * n.y + gb.z * n.z;
@@ -12837,19 +12401,14 @@ proto.beginStep = function(command, dt) {
             var alongOut = vx * dxu + vz * dzu;
             gb.y = -alongOut * slopeMag / Math.max(n.y, 0.1);
         } else if (this._moveState === FPSC.MOVE_WALK) {
-            // WALK: ordinary input-driven ground movement, projected tangent to groundNormal.
-            // KINEMATIC GROUND: gravity off; endStep clamps the feet to the surface. Fully
-            // deterministic, doesn't rely on the solver to hold us on a slope (which jittered).
+            // WALK: input-driven ground movement, projected tangent to groundNormal. Gravity off;
+            // endStep clamps the feet to the surface (deterministic, no solver jitter on slopes).
             this.body.setGravity(0, 0, 0);
             var n2 = this.groundNormal;
             var mx, mz;
             if (hasInput) {
-                // When slowing while still moving, bleed excess speed at sprintDecay instead of
-                // snapping to the lower target speed. _ownVelocityX/Z, not gb.x/z — gb may
-                // already carry a platform's base velocity baked in (see the constructor
-                // comment); reading it here would re-seed "current speed" with the platform's
-                // own speed already added, which then gets base velocity added AGAIN below
-                // every tick instead of decaying.
+                // While slowing but still moving, bleed excess speed at sprintDecay. Read _ownVelocityX/Z
+                // (not gb) so the platform's baked-in base velocity isn't re-seeded here.
                 var cvx = this._ownVelocityX;
                 var cvz = this._ownVelocityZ;
                 var curSp = Math.sqrt(cvx * cvx + cvz * cvz);
@@ -12864,8 +12423,7 @@ proto.beginStep = function(command, dt) {
                     mz = wishZ;
                 }
             } else {
-                // Carry current ground velocity; endStep's groundStopDecel is the sole stop
-                // authority. _ownVelocityX/Z, NOT gb.x/z — same reasoning as above.
+                // Carry current ground velocity; endStep's groundStopDecel is the sole stop authority.
                 mx = this._ownVelocityX;
                 mz = this._ownVelocityZ;
             }
@@ -12906,23 +12464,17 @@ proto.beginStep = function(command, dt) {
         gb.y = cs.vy;
     }
 
-    // Headroom gate: stop us advancing into an overhang too low to fit under (a ramp
-    // underside closing onto the floor). A near-horizontal overhang has almost no
-    // horizontal surface normal, so collide-and-slide can't see it — we gate on
-    // ceiling CLEARANCE instead. Runs before collide-and-slide so walls act on the
-    // already-gated velocity.
+    // Headroom gate: stop advancing into an overhang too low to fit under. Runs before
+    // collide-and-slide so walls act on the already-gated velocity.
     var gated = this._headroomGate(vx, vz, dt);
 
-    // Platform base velocity: added in immediately before the swept move so a rider is carried
-    // through the SAME collide-and-slide every other velocity goes through (real swept motion, not
-    // a position teleport). Stays in gb.x/z afterward — see the constructor's comment for why.
+    // Platform base velocity added immediately before the swept move, so a rider is carried through the
+    // SAME collide-and-slide every other velocity goes through. Stays in gb.x/z afterward.
     var bvx = (onLadderThisTick || onMantleThisTick) ? 0 : this._baseVelocity.x;
     var bvz = (onLadderThisTick || onMantleThisTick) ? 0 : this._baseVelocity.z;
 
-    // Step-up/step-down are emergent: collide-and-slide ignores anything shorter than
-    // stepHeight, and the ground clamp in endStep raises/lowers us onto it. _collideAndSlide reads
-    // this._moveState itself (see its own comment) to exempt an active slide from the too-steep
-    // wall rule.
+    // Step-up/step-down are emergent: collide-and-slide ignores anything shorter than stepHeight, and
+    // the ground clamp in endStep raises/lowers us onto it.
     var slid = this._collideAndSlide(gated.x + bvx, gated.z + bvz, dt);
     gb.x = slid.x;
     gb.z = slid.z;
@@ -12933,17 +12485,15 @@ proto.beginStep = function(command, dt) {
 };
 
 /**
- * POST-physics: decide grounded and clamp the feet to the ground surface. Also acquires this
- * tick's platform base velocity (see the constructor's _baseVelocity comment) from whatever
- * isPlatform-tagged body the ground probe lands on, read fresh every tick.
+ * POST-physics: decide grounded and clamp the feet to the ground surface. Also acquires this tick's
+ * platform base velocity from whatever isPlatform-tagged body the ground probe lands on.
  * @method endStep
  * @param {Number} dt
  */
 proto.endStep = function(dt) {
     var gb = this.body.linear_velocity;
 
-    // While mounted on a ladder or mid-mantle arc, skip the ground clamp — it would otherwise
-    // re-snap the character onto the floor every tick while being carried upward.
+    // While mounted on a ladder or mid-mantle arc, skip the ground clamp (it would re-snap us down).
     if (this._onLadder || this._mantleActive) {
         this.velocityY = gb.y;
         if (!this._resimulating || this._driveGhostDuringResim) { this._syncGhost(dt); }
@@ -12951,35 +12501,21 @@ proto.endStep = function(dt) {
     }
 
     if (this._groundSuppress > 0) { this._groundSuppress--; }
-    // Only suppress grounding while rising (just jumped/thrust); while falling the ground
-    // catch must stay live or the body tunnels through the floor. _jumpRising extends this past the
-    // fixed countdown for as long as the character is STILL genuinely ascending — see its own
-    // comment at the jump site for why a flat tick count alone isn't enough (a still-rising surface
-    // underfoot, platform or ramp, can re-enter snap range before the countdown's fixed window would
-    // ever expect it to). Cleared the moment gb.y decays past the threshold, so this can't suppress
-    // indefinitely — ordinary gravity decay is what ends it.
+    // Only suppress grounding while rising (just jumped/thrust). _jumpRising extends this past the fixed
+    // countdown while the character is STILL genuinely ascending; it clears once gb.y decays, so it can't
+    // suppress indefinitely.
     if (this._jumpRising && gb.y <= 1) { this._jumpRising = false; }
     var suppressed = this._groundSuppress > 0 && gb.y > 1;
 
     var half = this.height / 2;
     var maxStick = this.grounded ? this.stepDownDist + this._skin : this._groundTol;
 
-    // Walk candidates highest-first and take the first that ISN'T too tall to step onto (relative
-    // to current feet, only while already grounded — see tooHighToStep below). Falling through to
-    // a lower, valid candidate keeps grounding honest when a taller obstacle (e.g. a box shoved
-    // against the footprint) is also in reach.
+    // Walk candidates highest-first and take the first that ISN'T too tall to step onto, so a lower valid
+    // candidate still grounds us when a taller obstacle is in reach.
     var candidates = this._probeGroundCandidates(this.stepDownDist);
-    // Slide launch off a ramp apex — only while SLIDING and rising (walking off the same edge just
-    // follows the ground down). ANGLE-BLIND: a slide treats every slope identically regardless of
-    // steepness, so this gate never asks "is this too steep" — only "is this still the surface I'm
-    // riding." Two ways the true edge shows up in the probe, both handled here:
-    //   1. The highest surface RECEDES: the ramp face we were climbing runs out ahead, so the highest
-    //      remaining ramp hit drops vs last tick. Clamping to it would hug us down a one-tick dip.
-    //   2. A MISMATCHED face (e.g. the ramp's own end-cap) becomes the highest candidate: taller than
-    //      the ramp face but not the surface we're riding (normal meaningfully off groundNormal). It can
-    //      mask signal #1 by sitting on top, so we test it independently — riding a ramp, the candidate
-    //      still ON that same face keeps matching every tick and never trips this; only a genuinely
-    //      different face (the real edge) does.
+    // Slide launch off a ramp apex, only while SLIDING and rising. Two ways the true edge shows up:
+    //   1. the highest surface RECEDES (the ramp face runs out ahead), or
+    //   2. a MISMATCHED face (e.g. a ramp end-cap) becomes the highest candidate and masks signal 1.
     var topCandidate = candidates.length > 0 ? candidates[0] : null;
     var topCandidateY = topCandidate ? topCandidate.point.y : null;
     var wasSliding = this._moveState === FPSC.MOVE_SLIDE;
@@ -12991,14 +12527,8 @@ proto.endStep = function(dt) {
         var mismatched = normalDot < this._minStandableNormalY;
         if (receded || mismatched) { candidates = []; this._slideLaunched = true; }
     }
-    // A slide apex launch is latched, not a one-tick decision: the tick it fires, grounded flips false
-    // immediately, so the gate above (which requires it true) can never re-arm to catch a second graze
-    // later in the same arc. Without this latch, a low/shallow launch that skims just above the ramp's
-    // tail gets ground-clamped straight back down the very next tick the probe happens to reach it — a
-    // one-tick "dip" mid-arc. Sliding off an apex must NEVER re-hug the geometry, full stop, so once
-    // latched we force every candidate away regardless of what the probe finds, for as long as the arc
-    // is still rising. The latch clears once gb.y stops climbing (the arc has peaked and started to
-    // fall) — from that point a real landing is legitimate and ground detection must resume normally.
+    // A slide apex launch is latched: once it fires, force every candidate away while the arc is still
+    // rising, so a shallow launch can't be ground-clamped back down. Clears once gb.y stops climbing.
     if (this._slideLaunched) {
         if (gb.y > FPSC.EPS_LEN) { candidates = []; }
         else { this._slideLaunched = false; }
@@ -13025,36 +12555,17 @@ proto.endStep = function(dt) {
         this.body.position.set(p.x, clampedY, p.z);
         this.body.updateDerived();
 
-        // Save the OUTGOING base velocity before overwriting it below — gb (about to be split into
-        // own-vs-base components further down) was built by LAST tick's beginStep using THIS old
-        // value, not the new one we're about to acquire. Splitting gb against the NEW value instead
-        // manufactures a one-tick phantom "own velocity" spike whenever the platform's velocity
-        // changes abruptly between ticks (a reversing elevator/shuttle, or a rotating platform
-        // changing direction each tick): gb still reflects the old speed, so subtracting the new
-        // speed leaves a large bogus residual that then has to visibly bleed off via the idle
-        // ground-stop decay below. Using the OLD value here keeps the split correct for the
-        // tick gb was actually built on; the NEW value (acquired below) still lands in
-        // this._baseVelocity for beginStep to pick up fresh next tick, same as always.
+        // Save the OUTGOING base velocity before overwriting it below: gb was built by LAST tick's
+        // beginStep using THIS old value. Splitting gb against the new value would manufacture a
+        // one-tick phantom "own velocity" spike when the platform's velocity changes abruptly.
         var outgoingBaseVelocityX = this._baseVelocity.x, outgoingBaseVelocityZ = this._baseVelocity.z;
         var standingOn = probe.object;
         if (standingOn && standingOn.isPlatform) {
             var pv = standingOn.linear_velocity;
             var bvx = pv.x, bvy = pv.y, bvz = pv.z;
-            // Rotating platform: carry the character along the platform's own EXACT arc this tick,
-            // Y-axis spin only (the only axis a standable platform can usefully spin on). Recomputed
-            // fresh every tick from the CURRENT offset (not cached), so as the character walks
-            // toward/away from the pivot the imparted speed tracks the true radius, and so it decays
-            // to zero at the pivot itself.
-            //
-            // NOT a naive omega x r tangential velocity: that's only the arc's INSTANTANEOUS tangent,
-            // and applying it as a straight line for a full tick always overshoots the true curve —
-            // every tick's move ends up very slightly outside the circle, and next tick's tangent is
-            // computed from that already-drifted position, so the error compounds tick over tick into
-            // an outward spiral (visible at high spin rates as being "flung off the platform"). Fix:
-            // compute the CHORD velocity instead — the constant velocity that carries the rider from
-            // its current offset to the offset EXACTLY rotated by theta=omegaY*dt, i.e.
-            // (rotated - current) / dt. This reproduces the platform's real circular motion exactly
-            // regardless of angular speed, instead of approximating it.
+            // Rotating platform: carry the character along the platform's own exact arc this tick, Y-axis
+            // spin only. Use the CHORD velocity (offset exactly rotated by omega*dt, minus current)/dt,
+            // not the instantaneous tangent — applying a tangent straight for a tick spirals outward.
             if (standingOn.isRotatingPlatform && standingOn.angular_velocity) {
                 var omegaY = standingOn.angular_velocity.y;
                 if (omegaY && dt > 0) {
@@ -13063,10 +12574,8 @@ proto.endStep = function(dt) {
                     var rz = this.body.position.z - center.z;
                     var theta = omegaY * dt;
                     var cosT = Scalar.cos(theta), sinT = Scalar.sin(theta);
-                    // Matches the engine's own rotation convention (verified against RigidBody's quaternion
-                    // integration directly, not assumed): for omegaY > 0, the rotated offset is
-                    // (rx*cos+rz*sin, rz*cos-rx*sin) — the same sense that produced the correct
-                    // (omegaY*rz, -omegaY*rx) instantaneous tangent this replaces.
+                    // Matches the engine's own rotation convention: for omegaY > 0, the rotated offset is
+                    // (rx*cos+rz*sin, rz*cos-rx*sin).
                     var rxRot = rx * cosT + rz * sinT;
                     var rzRot = rz * cosT - rx * sinT;
                     bvx += (rxRot - rx) / dt;
@@ -13080,28 +12589,20 @@ proto.endStep = function(dt) {
 
         // ================================================================================
         // MOVEMENT STATE DECISION — the ONE place per tick this is decided, from the ONE real
-        // ground probe this tick has. beginStep (next tick) only ever reads this._moveState; it
-        // never re-derives sliding/slipping/walking from other flags.
+        // ground probe this tick has.
         // ================================================================================
         var pn = probe.normal;
         var probeSlope = Math.sqrt(pn.x * pn.x + pn.z * pn.z);
 
-        // Project the incoming 3D velocity onto the surface plane ONCE, here, on every grounding
-        // tick — not just the first-contact tick. (v -= (v·n)n): removes the into-surface
-        // component, keeps the along-surface (tangential) component. On a tick where the body was
-        // already resting on this same surface last tick too, this is a no-op (gb is already
-        // tangent), so it's safe to always run — no separate "first contact only" special case.
+        // Project the incoming 3D velocity onto the surface plane (v -= (v·n)n), always — a no-op when
+        // gb is already tangent to this same surface.
         var vdotn = gb.x * pn.x + gb.y * pn.y + gb.z * pn.z;
         var tangentX = gb.x - vdotn * pn.x;
         var tangentZ = gb.z - vdotn * pn.z;
         var horizTangentSpeed = Math.sqrt(tangentX * tangentX + tangentZ * tangentZ);
 
-        // TRUE along-the-ground speed, for the slide entry/sustain SPEED test only (tangentX/Z above,
-        // which DOES include platform velocity, is what actually gets written to gb). Platform
-        // velocity is excluded from this speed reading — otherwise a fast rotating platform's own
-        // tangential speed alone can exceed moveSpeed with zero player effort, launching an unwanted
-        // slide on crouch while just riding. Reconstructs true 3D along-surface speed the same way a
-        // slope converts fall speed to horizontal (divide the along-slope component by ny).
+        // TRUE along-ground speed for the slide entry/sustain SPEED test only (platform velocity excluded,
+        // so riding a fast platform can't launch an unwanted slide).
         var vdotnOwn = (gb.x - outgoingBaseVelocityX) * pn.x + gb.y * pn.y + (gb.z - outgoingBaseVelocityZ) * pn.z;
         var tangentOwnX = (gb.x - outgoingBaseVelocityX) - vdotnOwn * pn.x;
         var tangentOwnZ = (gb.z - outgoingBaseVelocityZ) - vdotnOwn * pn.z;
@@ -13122,12 +12623,9 @@ proto.endStep = function(dt) {
         var tangentSpeed = groundSp;
 
         var isSlipSurface = this._isSlipSurface(pn);
-        // Slide ENTRY/SUSTAIN uses the SAME rule regardless of whether this is the first contact
-        // tick or the 500th tick of an already-active slide: crouch held, and (on a slope, ride
-        // until crouch releases; on flat, need speed above slideEndSpeed to keep going / above
-        // moveSpeed to start). This mirrors _updateSlide's old entry/sustain split, but evaluated
-        // ONCE, with this tick's own fresh probe normal and true tangential speed — not the
-        // previous tick's groundNormal, not a landing-only special case.
+        // Slide ENTRY/SUSTAIN uses the SAME rule on every tick (not just first contact): crouch held, and
+        // on a slope ride until crouch releases; on flat, need speed above slideEndSpeed (sustain) or
+        // moveSpeed (entry).
         var slopeSlideEligible = probeSlope >= this.slideSlopeMin;
         var hasMoveInputThisTick = this._hasMoveInput;
         var slideInputOk = !this.slideRequiresMoveInput || hasMoveInputThisTick ||
@@ -13139,11 +12637,8 @@ proto.endStep = function(dt) {
         if (wantsSlide) {
             this._moveState = FPSC.MOVE_SLIDE;
             var enteringSlide = !wasSliding;
-            // slideBoost applied HERE, on the exact entry tick, directly to the velocity endStep is
-            // about to commit — not inside _updateSlide (which only runs the FOLLOWING tick, in
-            // beginStep). Applying it there would show the boost one tick later than the state
-            // transition itself, which is observably wrong (a caller reading "just started
-            // sliding" this tick would see un-boosted speed).
+            // slideBoost applied HERE, on the exact entry tick, to the velocity endStep commits — not in
+            // _updateSlide (which runs next tick), or the boost would show one tick late.
             var boostedX = tangentX, boostedZ = tangentZ;
             if (enteringSlide && this.slideBoost !== 1) {
                 boostedX *= this.slideBoost;
@@ -13151,26 +12646,16 @@ proto.endStep = function(dt) {
             }
             gb.x = boostedX;
             gb.z = boostedZ;
-            // gb.y is left for _updateSlide's onSlope solve to derive from the tangential speed
-            // above — writing a raw projected vertical here overshoots the surface-follow value
-            // and skips the character off the ramp for a tick (a bounce).
+            // gb.y is left for _updateSlide's onSlope solve to derive.
             gb.y = 0;
         } else if (isSlipSurface) {
-            // Entry edge: this tick starts a NEW slip iff last tick wasn't already one. beginStep's
-            // SLIP branch only re-projects gb onto
-            // groundNormal on that one entry tick (see its own comment) — every later tick, gb.y
-            // is already 0 (set below) and gb.x/gb.z already hold the correctly-accumulated
-            // tangential speed from beginStep's own per-tick formula, so re-projecting again would
-            // corrupt that accumulation into a false plateau.
+            // Entry edge: this tick starts a NEW slip iff last tick wasn't already one. beginStep's SLIP
+            // branch re-projects gb onto groundNormal only on that one entry tick.
             var enteringSlip = this._moveState !== FPSC.MOVE_SLIP;
             this._slipJustEntered = enteringSlip;
             this._moveState = FPSC.MOVE_SLIP;
-            // Keep the RAW incoming gb.x/gb.z/gb.y (NOT the tangential projection) on the entry
-            // tick — beginStep's SLIP branch does its own plane projection from this.groundNormal
-            // next tick, gated to _slipJustEntered, and needs gb.y to still be the real incoming
-            // fall speed to project. From the SECOND slip tick on, gb.y is zeroed here as usual —
-            // beginStep's per-tick formula derives its own vy from there on, and leaving a stale
-            // gb.y would double-count it.
+            // Keep the RAW incoming velocity on the entry tick (beginStep's SLIP branch projects from
+            // it); from the second slip tick on, gb.y is zeroed here.
             if (!enteringSlip) { gb.y = 0; }
         } else {
             this._moveState = FPSC.MOVE_WALK;
@@ -13178,16 +12663,12 @@ proto.endStep = function(dt) {
             gb.z = tangentZ;
             gb.y = 0;
         }
-        // Split against the OUTGOING (pre-acquire) base velocity, not the freshly-acquired one — see
-        // the comment above outgoingBaseVelocityX/Z's declaration for why.
+        // Split against the OUTGOING (pre-acquire) base velocity.
         this._ownVelocityX = gb.x - outgoingBaseVelocityX;
         this._ownVelocityZ = gb.z - outgoingBaseVelocityZ;
 
-        // Idle ground-stop: WALK only. Bleeds horizontal speed toward zero at groundStopDecel.
-        // Reads/writes _ownVelocityX/Z (the character's OWN component), NOT gb.x/z directly — gb
-        // may already carry a platform's base velocity baked in, and decaying THAT would fight
-        // the ride. The decayed own-component is added back onto base velocity so gb ends up
-        // carrying: decayed own motion + full undecayed platform motion.
+        // Idle ground-stop: WALK only. Bleeds the character's OWN component so it doesn't fight the ride,
+        // then adds base velocity back.
         if (this._cmdIdle && this._moveState === FPSC.MOVE_WALK) {
             var cvx = this._ownVelocityX || 0;
             var cvz = this._ownVelocityZ || 0;
@@ -13203,23 +12684,13 @@ proto.endStep = function(dt) {
         this.grounded = true;
         this.groundNormal.set(probe.normal.x, probe.normal.y, probe.normal.z);
     } else if (tooHighToStep) {
-        // Refusing to climb something too tall (e.g. a box shoved into the footprint) must NOT be
-        // treated as leaving the ground: the feet haven't moved, there's no gap, no fall — the
-        // character is exactly where it was a moment ago, still resting on whatever it was resting
-        // on. Staying grounded on rejection keeps the height-limit check
-        // (this.grounded && rise > stepHeight) honest on the next tick too.
+        // Refusing to climb something too tall must NOT count as leaving the ground: no gap, no fall.
         gb.y = 0;
-        // Movement state is UNCHANGED here on purpose: the character is exactly where it was,
-        // still resting on whatever it was resting on, so whatever state that was is still true.
+        // Movement state is UNCHANGED here on purpose — the character is still resting as before.
     } else {
         this.grounded = false;
-        // A slide that leaves the ground (ramp lip, drop-off) stays MOVE_SLIDE through the airborne
-        // arc — carried mostly ballistically rather than air-controlled — as long as horizontal
-        // speed is still above slideEndSpeed (the same floor flat sliding itself uses to decide
-        // "still going") and crouch is still held. beginStep's SLIDE branch has its own airborne vs.
-        // grounded sub-cases for exactly this reason. Landing re-enters the ordinary MOVEMENT STATE
-        // DECISION above on the fresh probe normal, so it naturally continues sliding (onto a ramp)
-        // or drops to WALK/SLIP there — no separate landing special-case needed here.
+        // A slide that leaves the ground stays MOVE_SLIDE through the airborne arc while horizontal speed
+        // is still above slideEndSpeed and crouch is still held. Landing re-enters the decision above.
         var wasSlideBeforeLoss = this._moveState === FPSC.MOVE_SLIDE;
         var stillFastEnough = Math.sqrt(gb.x * gb.x + gb.z * gb.z) >= this.slideEndSpeed;
         if (wasSlideBeforeLoss && this._wantCrouch && stillFastEnough) {
@@ -13228,8 +12699,7 @@ proto.endStep = function(dt) {
             this._moveState = FPSC.MOVE_AIRBORNE;
         }
         // Genuinely airborne — no ground entity to inherit velocity from. A jump already captured
-        // baseVelocity.y additively the tick it fired (_updateVertical); clearing here only stops
-        // FUTURE ticks from reading a stale platform velocity while falling free.
+        // baseVelocity.y the tick it fired; clearing here stops future ticks reading a stale platform velocity.
         this._baseVelocity.set(0, 0, 0);
     }
 
@@ -13239,35 +12709,23 @@ proto.endStep = function(dt) {
 
     this.velocityY = gb.y;
 
-    // Drive the ghost every tick, INCLUDING during resim: the ghost is how the character pushes objects,
-    // and object pushes must be reproduced when already-run commands get rolled back and resimulated
-    // (otherwise a pushed object is predicted live but snaps back every snapshot — rubber-banding). The
-    // ghost drive is deterministic given the character's state. What must NOT run during resim is the
-    // knockback READBACK from the ghost into the character (see _syncGhost / _readGhostKnockback): feeding
-    // a solver body's contact velocity back into the character mid-rollback is what injects non-determinism
-    // into the reconciled character path. That readback is gated inside _syncGhost.
-    // Opt-out (driveGhostDuringResim=false): freeze the ghost during resim (older behavior).
+    // Drive the ghost every tick, INCLUDING during resim, so object pushes are reproduced on rollback.
+    // The knockback READBACK is gated separately inside _syncGhost. Opt-out: freeze the ghost during resim.
     if (!this._resimulating || this._driveGhostDuringResim) { this._syncGhost(dt); }
 };
 
 
 // ==== src/character/fps/Movement/Slide.js ====
 // Crouch-at-speed slide: the per-tick velocity evolver for an active slide (slope acceleration,
-// friction, steering). Entry/exit decisions themselves live in endStep's "MOVEMENT STATE DECISION"
-// block (Movement/Step.js) — this file only advances an already-active slide by one tick.
+// friction, steering). Entry/exit decisions live in endStep's movement-state decision (Step.js).
 var proto = FPSCharacterController.prototype;
 var FPSC = FPSCharacterController.FPSC;
 
 /**
- * Slide velocity EVOLVER — advances one tick of the slide's surface-tracking model (slope accel,
- * friction, steering). Pure: only called from beginStep's MOVE_SLIDE branch, which is only reached
- * when endStep has ALREADY decided this tick is a slide (see the "MOVEMENT STATE DECISION" block
- * in endStep) and has already written the correct starting tangential velocity into gb — including
- * the one-time entry boost (slideBoost), applied there rather than here so it lands on the exact
- * tick the state transition itself is observable, not one tick later. This function does not
- * decide whether to slide — it has no entry gate, no exit gate, no stored flag. It reads gb (this
- * tick's starting velocity, already tangent to groundNormal), advances it one tick, and returns
- * the result.
+ * Slide velocity EVOLVER — advances one tick of the slide's surface-tracking model. Pure: only called
+ * from beginStep's MOVE_SLIDE branch, which is only reached when endStep has ALREADY decided this tick
+ * is a slide and written the starting tangential velocity (including the entry boost) into gb. It reads
+ * gb, advances it one tick, and returns the result.
  *
  * @method _updateSlide
  * @private
@@ -13275,17 +12733,11 @@ var FPSC = FPSCharacterController.FPSC;
  * @param {Number} wishX - desired horizontal velocity x from input (unsteered).
  * @param {Number} wishZ - desired horizontal velocity z from input (unsteered).
  * @param {Number} dt
- * @return {Object} result
- * @return {Number} result.vx - this tick's slide velocity, x.
- * @return {Number} result.vy - this tick's slide velocity, y (surface-follow component).
- * @return {Number} result.vz - this tick's slide velocity, z.
+ * @return {Object} result - { vx, vy, vz }
  */
 proto._updateSlide = function(cmd, wishX, wishZ, dt) {
-    // _ownVelocityX/Z, NOT gb.x/z — gb carries the platform's base velocity baked in (see the
-    // constructor's _baseVelocity comment). Evolving the raw gb value would re-seed the slide's own
-    // momentum with the platform's speed already added, which then compounds every tick instead of
-    // properly decaying (the platform reads as if its own speed were the character's own build-up —
-    // a "boost pad" while sliding on a moving platform).
+    // _ownVelocityX/Z, NOT gb.x/z — gb carries the platform's base velocity baked in, and evolving it
+    // would re-seed the slide's momentum with the platform's speed every tick (a boost pad).
     var vx = this._ownVelocityX;
     var vz = this._ownVelocityZ;
     var sp = Math.sqrt(vx * vx + vz * vz);
@@ -13294,22 +12746,18 @@ proto._updateSlide = function(cmd, wishX, wishZ, dt) {
     var slopeMag = Math.sqrt(n.x * n.x + n.z * n.z);
     var gy = this._gravityVec.y;
     var onSlope = slopeMag >= this.slideSlopeMin;
-    // Downhill fall-line unit vector, used both by the slope-accel step below and by the reversal
-    // brake's uphill test further down. Only meaningful when onSlope; 0 otherwise (unused there).
+    // Downhill fall-line unit vector, used by the slope-accel step and the reversal brake's uphill test.
     var dx = onSlope ? n.x / slopeMag : 0;
     var dz = onSlope ? n.z / slopeMag : 0;
 
     if (onSlope) {
-        // Gravity accelerates the fall-line (downhill) component; the cross-slope (sideways)
-        // part bleeds lightly. Returned as full 3D so the grounded branch doesn't re-project it.
+        // Gravity accelerates the fall-line component; the cross-slope part bleeds lightly. Returned as
+        // full 3D so the grounded branch doesn't re-project it.
         var along = vx * dx + vz * dz;
         var crossX = vx - along * dx;
         var crossZ = vz - along * dz;
-        // Along-slope gravitational accel is g*sin(theta) — slopeMag alone (sin of the tilt from
-        // horizontal). An extra n.y (cos theta) factor here would be wrong: sin(theta)*cos(theta)
-        // PEAKS at 45° and falls back off toward vertical, so a 55°+ face would decelerate barely
-        // harder than a 20° one, and a near-vertical wall almost not at all — backwards from real
-        // physics, where steeper always means more deceleration, up to g at 90°.
+        // Along-slope gravitational accel is g*sin(theta) — slopeMag alone. An extra cos(theta) factor
+        // would peak at 45° and fall off toward vertical, which is backwards from real physics.
         along += -gy * slopeMag * this.slideSlopeAccel * dt;
         var cs = Math.sqrt(crossX * crossX + crossZ * crossZ);
         var cn = Math.max(0, cs - this.slideSlopeFriction * dt);
@@ -13331,25 +12779,16 @@ proto._updateSlide = function(cmd, wishX, wishZ, dt) {
     var wl = Math.sqrt(wishX * wishX + wishZ * wishZ);
     if (this.slideControl > 0 && wl > FPSC.EPS_DIR && sp > FPSC.EPS_DIR) {
         var wnx = wishX / wl, wnz = wishZ / wl;
-        // Wish opposing current motion (e.g. holding backward mid-slide) is a deliberate reversal,
-        // not a carve — the ordinary partial blend below would slowly rotate the heading through an
-        // arc instead of braking straight back. Detect that case (wish nearly opposite current
-        // velocity) and brake toward zero along the CURRENT heading instead of blending toward
-        // wish; once speed has bled down, the same blend below is what picks the (now-reversed)
-        // heading back up, so the reversal itself still ends up sliding in the wish direction — it
-        // just brakes-then-goes instead of curving through it. Applies on flat ground too: without
-        // this, flat sliding's own friction decay would bleed speed down to the slideEndSpeed exit
-        // threshold WHILE the un-braked blend was arcing the heading toward wish, so a backward
-        // hold curved through a U-turn on its way out instead of braking straight.
+        // A wish opposing current motion is a deliberate reversal, not a carve: brake along the current
+        // heading instead of blending toward wish (which would arc through a U-turn). The same blend then
+        // picks the reversed heading back up once speed has bled. Applies on flat ground too.
         var brakeRate = onSlope ? this.slideSlopeFriction * this.slideReversalBrakeMult
             : this.slideFriction * this.slideReversalBrakeMult;
         var vnx = vx / sp, vnz = vz / sp;
         var facing = wnx * vnx + wnz * vnz; // 1 = same direction, -1 = dead opposite
-        // ANGLE-BLIND: on ANY slope, gravity always wins the fall-line — you can't carve a slide uphill
-        // against it, only brake. A wish with any uphill component (against the downhill fall-line
-        // dx/dz) must BRAKE toward a stop, not carve; otherwise the carve below redirects the blocked
-        // uphill momentum into a cross-slope skid off the side. On flat there's no fall-line to fight,
-        // so only a near-opposite wish counts as a reversal there (unchanged).
+        // On ANY slope, gravity wins the fall-line — any uphill wish must brake, not carve (otherwise the
+        // carve redirects blocked uphill momentum into a cross-slope skid). On flat, only a near-opposite
+        // wish is a reversal.
         var uphillOnSlope = onSlope && (wnx * dx + wnz * dz) < 0;
         if (uphillOnSlope || facing < FPSC.SLIDE_REVERSAL_DOT) {
             var braked = Math.max(0, sp - brakeRate * dt);
@@ -13370,40 +12809,34 @@ proto._updateSlide = function(cmd, wishX, wishZ, dt) {
         var inv2 = 1 / slopeMag;
         var alongOut = vx * (n.x * inv2) + vz * (n.z * inv2);
         vy = -alongOut * slopeMag / Math.max(n.y, 0.1);
-        // The velocity returned here is already tangent to the surface — including on a TOO-STEEP slope.
-        // The too-steep-can't-move-up rules don't re-clip it: an active slide is exempt everywhere they
-        // apply (see _collideAndSlide's climbSteepSlopes opt) — the slide IS the climb.
+        // The returned velocity is already tangent to the surface, including on a too-steep slope: an
+        // active slide is exempt from the too-steep-can't-move-up rules (see _collideAndSlide).
     }
-    // Flat ground (!onSlope): groundNormal.y is ~1, so gb.y should stay ~0 — the caller (beginStep's
-    // ground clamp path, same as WALK) doesn't need a nonzero vy to track a surface that's already
-    // level. vy=0 here is that "no vertical correction needed" case, not a special flat-only shape.
+    // Flat ground: groundNormal.y is ~1, so vy=0 is the "no vertical correction needed" case.
     return { vx: vx, vy: vy, vz: vz };
 };
 
 
 // ==== src/character/fps/Movement/Ladder.js ====
 // Ladder climbing: a fourth movement state alongside grounded/slip/airborne/slide, resolved once per
-// beginStep before the main movement dispatch runs (see _updateLadder's call site in Step.js).
+// beginStep before the main movement dispatch runs (see Step.js).
 var proto = FPSCharacterController.prototype;
 var FPSC = FPSCharacterController.FPSC;
 
 /**
- * Ladder state transitions + climb velocity. A fourth movement state alongside grounded /
- * noTraction / airborne, resolved once per beginStep before that branch runs. The ladder body is
- * never excluded from collision — _collideAndSlide still runs afterward on whatever velocity this
- * writes, so ordinary contact resolution is what holds the character against the face tick over tick.
+ * Ladder state transitions + climb velocity. The ladder body is never excluded from collision —
+ * _collideAndSlide still runs afterward, holding the character against the face tick over tick.
  *
- * Mount requires movement intent toward the ladder (wishdir), not mere proximity — probing along
- * the current input direction rather than scanning all directions means jumping away from a ladder
- * and holding the opposite key back toward it, or passing a ladder mid-air, can't remount it a
- * frame later while disconnected from it.
+ * Mount requires movement intent toward the ladder (probes along the current input direction), so
+ * jumping away and holding the opposite key back can't remount it a frame later.
  *
- * Forward/back and strafe contributions to climb velocity are summed independently, without
- * normalizing the combined wish vector — holding both diagonally into the face climbs strictly
- * faster than either alone. Look pitch steers climb direction: the forward axis is the full
- * pitched look direction, not flattened, so holding forward while looking down descends.
+ * Forward/back and strafe contributions are summed WITHOUT normalizing the combined wish vector
+ * (unlike ground movement, which clamps the wish to unit length). Holding inputs diagonally therefore
+ * climbs strictly faster than either axis alone, and can exceed the clamped x/z gait speed — this is
+ * intentional. Look pitch steers climb direction (the forward axis is the full pitched look direction,
+ * so looking down and holding forward descends).
  *
- * Jump dismounts with a purely horizontal shove away from the face — no vertical component.
+ * Jump dismounts with a purely horizontal shove away from the face.
  *
  * @method _updateLadder
  * @private
@@ -13437,14 +12870,9 @@ proto._updateLadder = function(cmd, moveYaw, movePitch, dt) {
         gb.z = n0.z * this.ladderDismountPushSpeed;
         gb.y = 0;
         this._onLadder = false;
-        // While mounted the character's own box is genuinely embedded roughly width/2 INTO the
-        // ladder, by design - see this file's header: "the ladder body is never excluded from
-        // collision". The dismount shove sweeps out of that volume on its own; Queries._advance
-        // returns a real geometric normal for an overlapping start, so no depenetration nudge is
-        // needed here.
-        // The push flings the character off the ladder into the air — next tick's beginStep
-        // dispatch (before endStep gets a chance to re-probe) must see AIRBORNE, not whatever
-        // ground state was true before this ladder mount.
+        // The dismount shove sweeps out of the ladder volume on its own; the query returns a real
+        // geometric normal for an overlapping start, so no depenetration nudge is needed.
+        // Next tick's dispatch must see AIRBORNE, not the pre-mount ground state.
         this._moveState = FPSC.MOVE_AIRBORNE;
         this.body.setGravity(this._gravityVec.x, this._gravityVec.y, this._gravityVec.z);
         return true;
@@ -13461,9 +12889,8 @@ proto._updateLadder = function(cmd, moveYaw, movePitch, dt) {
 
     this._onLadder = true;
     this.grounded = false;
-    // Mounting owns movement now — any grounded state carried in from the tick before must not read
-    // as still active while climbing (or linger stale after a later dismount): beginStep's dispatch
-    // only reads this._moveState when NOT on a ladder, so nothing else would ever clear this.
+    // Mounting owns movement now. beginStep's dispatch only reads this._moveState when NOT on a ladder,
+    // so nothing else would clear a stale grounded state.
     this._moveState = FPSC.MOVE_LADDER;
     this._ladderNormal.set(hit.normal.x, 0, hit.normal.z);
     var nl = Math.sqrt(this._ladderNormal.x * this._ladderNormal.x + this._ladderNormal.z * this._ladderNormal.z);
@@ -13478,6 +12905,7 @@ proto._updateLadder = function(cmd, moveYaw, movePitch, dt) {
     var cmdF = cmd.forward || 0;
     var cmdR = cmd.right || 0;
 
+    // Additive, not normalized: diagonal input climbs faster (intentional — see the header).
     var velX = fwd.x * cmdF * this.ladderClimbSpeed + rgt.x * cmdR * this.ladderStrafeSpeed;
     var velY = fwd.y * cmdF * this.ladderClimbSpeed;
     var velZ = fwd.z * cmdF * this.ladderClimbSpeed + rgt.z * cmdR * this.ladderStrafeSpeed;
@@ -13488,19 +12916,10 @@ proto._updateLadder = function(cmd, moveYaw, movePitch, dt) {
     gb.z = velZ - out * n.z;
     gb.y = velY - out;
 
-    // Descent is blocked against solid ground here (rather than in endStep's ground clamp, which is
-    // skipped while mounted so it doesn't re-snap the character onto the floor near the ladder's base
-    // even while climbing up). Uses the same _probeGroundCandidates primitive endStep itself uses.
-    //
-    // The ladder body itself is excluded from candidates. While mounted, the character's own collider
-    // sits embedded in (or flush against) the ladder volume it's climbing - a downward probe cast
-    // from inside that volume can report the ladder's OWN top-facing surface as "ground" directly
-    // below (GJK/EPA's exact-touch/embedded case has no unique normal - see GJK.js's "EXACT-TOUCHING
-    // IS UNDECIDABLE" - and can report an arbitrary near point at the probe's own height). This was
-    // a REAL, confirmed bug: looking down while climbing made the character "step up" onto its own
-    // current position on the ladder every descent tick instead of climbing down, because the probe
-    // found the ladder itself a few centimeters below and clamped onto it as if it were a floor -
-    // climbing the ladder like stairs, straight off the top, regardless of look direction.
+    // Descent is blocked against solid ground here (endStep's ground clamp is skipped while mounted).
+    // The ladder body itself is excluded from candidates: while mounted, the character's collider sits
+    // embedded in the ladder volume, so a downward probe can report the ladder's own top-facing surface
+    // as ground just below and clamp onto it (climbing the ladder like stairs).
     if (gb.y < 0) {
         var half = this.height / 2;
         var reach2 = -gb.y * dt + this._skin;
@@ -13518,9 +12937,7 @@ proto._updateLadder = function(cmd, moveYaw, movePitch, dt) {
                 this.body.updateDerived();
                 gb.y = 0;
                 this.grounded = true;
-                // Still LADDER for as long as _onLadder stays true this tick (movement is fully
-                // owned above) — this only matters for the tick AFTER dismounting, so beginStep's
-                // dispatch sees WALK rather than a stale pre-mount state.
+                // Still LADDER while _onLadder stays true; this only matters for the tick after dismounting.
                 this._moveState = FPSC.MOVE_WALK;
                 this.groundNormal.set(ground.normal.x, ground.normal.y, ground.normal.z);
             }
@@ -13574,14 +12991,9 @@ proto._probeLedgeAhead = function(dx, dz) {
         var scanBot = feetY + this.stepHeight + this._skin;
         if (scanTop <= scanBot) { continue; }
 
-        // World.rayIntersect reports only the single NEAREST body along the down-probe. Walk past any
-        // surface that doesn't belong to the grabbed face's own object (e.g. a ceiling or disconnected
-        // surface above it) by adding each mismatched hit to the query's own `ignore` list and
-        // re-querying, restoring the "skip past it, find the real one" behavior a single-hit query
-        // can't give for free. This was a REAL, confirmed bug: a ledge with a low ceiling directly
-        // above it (a common "duck under this, mantle that" layout) made the down-probe find the
-        // ceiling's OWN surface first, discard it as a mismatch, and give up outright — reporting no
-        // ledge top at all instead of the real one just below, indistinguishable from "no ledge here."
+        // The down-probe reports only the NEAREST body, so walk past surfaces that don't belong to the
+        // grabbed face's own object (e.g. a low ceiling above the ledge) by ignoring each mismatch and
+        // re-querying, until the real ledge top is found.
         var downIgnore = this._ghost ? [this.body, this._ghost] : [this.body];
         var downHit = null;
         for (var dtries = 0; dtries < 4; dtries++) {
@@ -13611,8 +13023,8 @@ proto._probeLedgeAhead = function(dx, dz) {
 };
 
 /**
- * Mantle state machine, mirrors _updateLadder's contract. Called once per beginStep before the
- * main dispatch; returns true while the arc owns the tick.
+ * Mantle state machine, mirrors _updateLadder's contract. Called once per beginStep before the main
+ * dispatch; returns true while the arc owns the tick.
  * @method _updateMantle
  * @private
  * @param {Object} cmd
@@ -13624,8 +13036,8 @@ proto._updateMantle = function(cmd, moveYaw, dt) {
     var gb = this.body.linear_velocity;
     var p = this.body.position;
 
-    // Active arc: drives position directly (bypasses _collideAndSlide, which would otherwise
-    // treat the grabbed face as a blocking wall).
+    // Active arc: drives position directly (bypasses _collideAndSlide, which would treat the grabbed
+    // face as a blocking wall).
     if (this._mantleActive) {
         this._mantleTimer += dt;
         var total = this.mantleDuration;
@@ -13678,9 +13090,8 @@ proto._updateMantle = function(cmd, moveYaw, dt) {
     var chestHeight = this.standHeight * FPSC.MANTLE_CHEST_HEIGHT_FRAC;
     if (rise > chestHeight && this.grounded) { return false; }
 
-    // Landing point: advance from the grab point past the face by the character's own depth,
-    // stepping back toward the face if that overshoots a shallow ledge, until solid standable
-    // ground is found.
+    // Landing point: advance from the grab point past the face by the character's own depth, stepping
+    // back toward the face if that overshoots a shallow ledge, until solid standable ground is found.
     var dx = ledge.probeDx, dz = ledge.probeDz;
     var topBodyY = ledge.topPoint.y + this.height / 2;
     var desiredAdvance = this.depth;
@@ -13704,8 +13115,7 @@ proto._updateMantle = function(cmd, moveYaw, dt) {
     }
     if (!landFound) { return false; }
 
-    // The arc drives position directly, so nothing else checks headroom along the way — verify
-    // both the grab point and the landing point can stand up.
+    // The arc drives position directly, so verify both the grab point and the landing point can stand up.
     var clearanceAtGrab = this._ceilingClearanceAt(p.x, p.z, ledge.topPoint.y);
     if (clearanceAtGrab < this.standHeight - this._skin) { return false; }
     var clearanceAtLand = this._ceilingClearanceAt(landX, landZ, ledge.topPoint.y);
