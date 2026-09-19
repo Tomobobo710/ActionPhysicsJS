@@ -2,11 +2,11 @@
 // applied after positions are solved, plus the velocity-space helpers they share.
 var proto = Solver.prototype;
 
-// Solving restitution + friction point-by-point over a flat face patch fabricates lateral drift on
-// a symmetric drop: each point's off-center impulse spins the body a hair, the next reads the spun
-// state, and the impulses no longer cancel. For a genuine face patch (a BoxBox face manifold, or a
-// mesh face manifold whose points all come from TriTri) resolve it once at the centroid instead.
-// Everything else keeps the per-point solve.
+// Solving restitution + friction point-by-point over a flat face patch fabricates lateral drift on a
+// symmetric drop: each point's off-center impulse spins the body a hair, the next reads the spun state,
+// and the impulses no longer cancel. A genuine face patch (a BoxBox face manifold, or a mesh face
+// manifold whose points all come from TriTri) is resolved once at the centroid instead; everything
+// else keeps the per-point solve.
 proto.COPLANAR_NORMAL_DOT = 0.9999;
 
 proto._boxFacePatchVelocity = function (manifold, bodyA, bodyB, gravity, h) {
@@ -25,9 +25,8 @@ proto._boxFacePatchVelocity = function (manifold, bodyA, bodyB, gravity, h) {
     // A mesh face patch is one face by construction, so use all its points for the centroid - not
     // just the ones the position sweep left engaged this substep. A BoxBox patch uses engaged-only.
     const useAll = allMeshFace;
-    // How the anchor is chosen (below) depends on whether the patch is a polygon of a flat-faced
-    // body. A curved body's points sample the shape's own surface instead, and a shape with mixed
-    // children (a compound with a cylinder in it) counts as curved.
+    // How the anchor is chosen below depends on whether the patch is a polygon of a flat-faced body. A
+    // curved body's points sample the shape's own surface instead, so mixed children count as curved.
     const dyn = bodyA.bodyType === RigidBody.DYNAMIC ? bodyA : bodyB;
     let nx = 0, ny = 0, nz = 0, cnt = 0, engaged = 0, maxPre = 0, totLam = 0;
     let curved = !isFlatFaced(dyn.shape);
@@ -49,21 +48,12 @@ proto._boxFacePatchVelocity = function (manifold, bodyA, bodyB, gravity, h) {
     if (nl < 1e-9) return false;
     nx /= nl; ny /= nl; nz /= nl;
 
-    // The anchor is the centre of the contact REGION, and these points are only a SAMPLE of it - four
-    // at most, chosen by a spread-maximizing reduction, plus whatever vertices a mesh triangle's clip
-    // adds. Their arithmetic mean is therefore not the region's centre: on a slab resting flat across
-    // a tile seam this manifold holds three of the face's four corners plus the point where the seam
-    // crosses one edge, and that mean lands half a metre off the body - so restitution was applied a
-    // half-metre to one side and spun a slab that had been dropped dead flat (measured 0 -> 3.9 rad/s
-    // in a single substep, against exactly 0 on the same square drawn as one box face). The centre of
-    // the sample's EXTENT along the patch plane does not depend on WHICH interior points the reduction
-    // kept, so it stays on the region; for any patch whose points are a fair sample the two agree.
+    // The anchor is the centre of the contact REGION, and these points are only a SAMPLE of it: the
+    // reduction keeps four, so their mean is not the region's centre, while the centre of their EXTENT
+    // along the patch plane does not depend on WHICH points were kept.
     //
-    // A CURVED body is the exception, and keeps the mean: its points sample the SHAPE's surface
-    // across the contact band rather than outlining a polygon, so the extreme samples sit out on the
-    // shape's shoulders and the midpoint of those extremes is not the centre of the band. Measured:
-    // taking a lying cylinder's seam contact from the mean to the extent midpoint stops it rolling
-    // (the coin-pusher roller manages 0.63 turns where it needs 3) and drops it through the floor.
+    // A CURVED body keeps the mean: its points sample the SHAPE's surface, so the extremes sit out on its
+    // shoulders and their midpoint is not the centre of the band.
     let minAx = Infinity, maxAx = -Infinity, minAy = Infinity, maxAy = -Infinity, minAz = Infinity, maxAz = -Infinity;
     let minBx = Infinity, maxBx = -Infinity, minBy = Infinity, maxBy = -Infinity, minBz = Infinity, maxBz = -Infinity;
     let sumAx = 0, sumAy = 0, sumAz = 0, sumBx = 0, sumBy = 0, sumBz = 0;
@@ -153,12 +143,11 @@ proto._boxFacePatchVelocity = function (manifold, bodyA, bodyB, gravity, h) {
     return true;
 };
 
-// One velocity solve for a whole coplanar contact set (see Solver._coplanarPatchGroups): restitution
-// and friction applied ONCE at the set's shared centroid, so a body resting on four butting mesh
-// tiles sees exactly the impulse it would see on one mesh of the same shape. The dynamic body is
-// treated as A and every grouped surface as the static B, so the only impulse applied is the one to
-// the body. Returns false when the set is not solvable as one (points on two planes, nothing
-// engaged), in which case the caller falls back to the per-point solves.
+// One velocity solve for a whole coplanar contact set (see Solver._coplanarPatchGroups): restitution and
+// friction applied ONCE at the set's shared centroid, so a body resting on four butting mesh tiles sees
+// the impulse it would see on one mesh of the same shape. The dynamic body is treated as A and every
+// grouped surface as the static B. Returns false when the set is not solvable as one, and the caller
+// falls back to the per-point solves.
 proto._solvePatchGroup = function (group, gravity, h) {
     const dyn = group.dyn, other = group.other;
     const anchor = this._tmpDispA;

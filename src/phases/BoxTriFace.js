@@ -16,12 +16,10 @@ BoxTriFace.SEPARATION_LIMIT = 0.5;
 BoxTriFace.PENETRATION_LIMIT = 1.0;
 BoxTriFace.MAX_PENETRATION_FRACTION = 0.25;
 
-// A hint normal is only allowed to orient this triangle when it is genuinely this face's normal.
-// The hint is carried over from whichever face of the mesh was already in contact (see
-// NarrowPhase._ctHintNormal), so on a corner/edge of a tile it can belong to a PERPENDICULAR face.
-// A tangential hint carries no orientation information, and obeying it left refN pointing the wrong
-// way - which measures the box's whole thickness (2*halfExtent) as penetration instead of its real
-// overlap, shoving the box sideways off the tile.
+// A hint normal may only orient this triangle when it is genuinely this face's normal. The hint is
+// carried over from whichever mesh face was already in contact, so on a tile corner it can belong to a
+// PERPENDICULAR face; obeying a tangential one left refN pointing the wrong way, which measures the
+// box's whole thickness as penetration instead of its real overlap and shoves it off the tile.
 BoxTriFace.HINT_ALIGN_LIMIT = 0.9;
 
 BoxTriFace.EDGE_SLACK = 0.02;
@@ -112,27 +110,21 @@ BoxTriFace.lastBestDot = 0;
     const triVerts = BoxTriFace._triVerts;
     triVerts[0] = t0; triVerts[1] = t1; triVerts[2] = t2;
 
-    // The two features here are a triangle and one flat face of a box, and which of them is the
-    // smaller one decides which way round to clip: normally the box's face is the smaller feature and
-    // it gets clipped against the triangle's edges (below). But the reverse is just as common - a
-    // SMALL mesh triangle lying on a LARGE box face, which is every small mesh prop resting on a big
-    // floor, and every triangle of one mesh box dropped onto a bigger one. There is no face contact
-    // to be had from the triangle's side of that pair (its area is a fraction of the reference face's),
-    // so those pairs used to fall all the way through to GJK/EPA - and a triangle coplanar with the
-    // face it rests on is the worst case for EPA, which returns whatever near-degenerate direction its
-    // final simplex happens to give. At the shared vertex of a mesh box's bottom face that is a
-    // normal tipped 2 degrees off vertical, which shoves the box sideways as it lands.
+    // Which of the two features here is smaller decides which way round to clip. Normally the box's face
+    // is, and it is clipped against the triangle's edges below; the reverse - a SMALL mesh triangle on a
+    // LARGE box face, which is every small mesh prop resting on a big floor - has no face contact to be had
+    // from the triangle's side, so it falls through to GJK/EPA, where a triangle coplanar with the face it
+    // rests on is the worst case: EPA returns a near-degenerate direction.
     if (!BoxTriFace._boxFaceIsSmaller(hx, bestAxis, t0, t1, t2)) {
         return BoxTriFace._smallTriangleOnFace(aIsTri, triPlaced, refN, t0, t1, t2,
             cx, cy, cz, u, v, eu, ev, out, nextContact);
     }
 
-    // A face whose region merely TOUCHES the triangle along a shared edge (a box parked at the very
-    // edge of a tile, its side face coplanar with the tile's side face) survives the slack clip as a
+    // A face whose region merely TOUCHES the triangle along a shared edge survives the slack clip as a
     // zero-width sliver, and a sliver still reports the full distance between the two planes as
-    // penetration. On a ledge that turns an overhanging prop's side face into a lateral shove that
-    // walks it back to flush with the edge. The overlap must be real: re-clip without the slack and
-    // require actual area before treating this as a face patch.
+    // penetration - on a ledge that turns an overhanging prop's side face into a lateral shove. The
+    // overlap must be real: re-clip without the slack and require actual area before treating this as a
+    // face patch.
     if (!BoxTriFace._clipToTriangle(face, 4, BoxTriFace._poly2, BoxTriFace._clip2, triVerts, refN, 0)) return null;
     const trueArea = BoxTriFace._polyArea(BoxTriFace._clipOut, BoxTriFace._clipOutN, refN);
     if (trueArea <= (4 * eu * ev) * BoxTriFace.MIN_OVERLAP_COVERAGE) return null;
@@ -186,13 +178,11 @@ BoxTriFace.lastBestDot = 0;
 };
 
 // The mirror of the face patch above: the triangle is the smaller feature, so the BOX's face is the
-// reference and the triangle is the incident polygon. The triangle's vertices are clipped to the
-// face's rectangle and measured against the face's plane, which gives the contact the face's own
-// normal exactly - no GJK/EPA witness direction to tip it - and the same per-point depths the box's
-// own face patch would give. Depth is positive when the triangle's plane has passed the face's plane
-// in the direction the box's interior lies, which is the opposite sense from _clipToTriangle's
-// measurement (that one measures the box's face against the triangle's plane, this one is measured
-// against the box's), so the sign is carried explicitly rather than negated.
+// reference and the triangle is the incident polygon. Clipping it to the face's rectangle and measuring
+// against the face's plane gives the contact the face's own normal exactly - no GJK/EPA witness direction
+// to tip it - and the same per-point depths the box's face patch would give. Depth is positive when the
+// triangle's plane has passed the face's plane the way the box's interior lies, the opposite sense from
+// _clipToTriangle, so the sign is carried explicitly rather than negated.
 BoxTriFace._smallTriangleOnFace = function (aIsTri, triPlaced, refN, t0, t1, t2,
     cx, cy, cz, u, v, eu, ev, out, nextContact) {
 

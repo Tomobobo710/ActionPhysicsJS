@@ -28,16 +28,13 @@ proto._solvePoint = function (point, bodyA, bodyB, h, capPenetration) {
     const deltaLambda = newLambda - oldLambda;
     point.normalLambda = newLambda;
 
-    // Only the share explainable by the body's own closing velocity becomes derived velocity; the
-    // rest is a pure position edit (biasDelta), subtracted back out in the velocity-derivation
-    // step. Lets a loaded resting body correct fully while a raw spawn overlap resolves gently.
+    // Only the share explainable by the body's own closing velocity becomes derived velocity; the rest is
+    // a pure position edit (biasDelta), subtracted back out in the velocity-derivation step, so a loaded
+    // resting body corrects fully while a raw spawn overlap resolves gently.
     //
-    // The allowance is per contact point per SUBSTEP, and it is spent, not refreshed: a deep overlap
-    // is deliberately corrected a little at a time (MAX_PENETRATION_PER_SUBSTEP), so this same point
-    // is solved several times in a substep, and crediting each of those passes separately turned a
-    // handful of 5 mm position edits into a 19 m/s launch. What the body's own motion explains is how
-    // far it closed this substep; correcting the same overlap again inside that substep is not more
-    // of its own motion, and must not be credited again.
+    // The allowance is per point per SUBSTEP and is spent, not refreshed: a deep overlap is corrected a
+    // little at a time (MAX_PENETRATION_PER_SUBSTEP), so this point is solved several times in a substep,
+    // and crediting each pass separately turned a handful of 5 mm edits into a 19 m/s launch.
     const liveRelVel = this._contactRelativeNormalVelocity(point, bodyA, bodyB);
     const alreadyCredited = point._credited || 0;
     let allowance = Math.max(liveRelVel, 0) * h * Solver.EXPLAINABLE_MARGIN - alreadyCredited;
@@ -48,13 +45,10 @@ proto._solvePoint = function (point, bodyA, bodyB, h, capPenetration) {
     const velocityDelta = -velocityC / wSum;
     const biasDelta = deltaLambda - velocityDelta;
     const priorSkipAngular = this._skipPositionAngular;
-    // A vertical contact is load-bearing, so its angular response is decided by the support test
-    // inside _suppressQuietVerticalLanding: a body whose centre of mass is over the support (or that
-    // a real patch holds up) is solved torque-free, while one that has passed the edge keeps its
-    // torque - and must, or a prop balanced on the corner of a mesh edge hangs there frozen instead
-    // of tipping off. A ConvexTri probe sample on a PERPENDICULAR side face reads the shape's own
-    // girth as penetration; correcting that angularly flings the body, so a non-vertical curved
-    // contact stays torque-free.
+    // A vertical contact is load-bearing, so its angular response is decided by the support test: a body
+    // whose centre of mass is over the support is solved torque-free, while one that has passed the edge
+    // keeps its torque - and must, or a prop balanced on a corner hangs there frozen instead of tipping
+    // off. A ConvexTri sample on a PERPENDICULAR side face reads the shape's girth as penetration.
     if ((point.fromCurvedTri && Math.abs(ny) < 0.98) ||
         this._suppressQuietVerticalLanding(bodyA, bodyB, point, nx, ny, nz)) this._skipPositionAngular = true;
 
@@ -70,10 +64,10 @@ proto._suppressQuietVerticalLanding = function (bodyA, bodyB, point, nx, ny, nz)
     let body = bodyA.bodyType === RigidBody.DYNAMIC ? bodyA :
         (bodyB.bodyType === RigidBody.DYNAMIC ? bodyB : null);
     if (!body) return false;
-    // Only a patch the body is actually sitting ON may be solved torque-free. Once the centre of mass
-    // has passed the patch's horizontal extent the contact is one-sided - its normal response cannot
-    // hold the body up without rotating it - so a body parked on the edge of a ledge keeps its
-    // angular response and tips, instead of standing in a false equilibrium.
+    // Only a patch the body is actually sitting ON may be solved torque-free. Past the patch's
+    // horizontal extent the contact is one-sided - it cannot hold the body up without rotating it - so
+    // a body parked on the edge of a ledge keeps its angular response and tips instead of standing in
+    // a false equilibrium.
     if (this._checkSupport) {
         const tol = this._supportCentreTol;
         if (body.position.x < this._supMinX - tol || body.position.x > this._supMaxX + tol) return false;
@@ -81,14 +75,11 @@ proto._suppressQuietVerticalLanding = function (bodyA, bodyB, point, nx, ny, nz)
     }
     const av = body.angular_velocity, lv = body.linear_velocity;
     if (lv.x * lv.x + lv.z * lv.z > 0.05 * 0.05) return false;
-    // A shape with FLAT faces (a box, a hull) tips from face to face, and the rotation that carries
-    // it there comes from these very corrections - so it may only be solved torque-free once it has
-    // genuinely stopped turning. A CURVED shape has nothing to tip onto: its contact against a
-    // vertical surface is a point or a line, and the rotation an off-centre push generates about it
-    // is not something the shape's own motion accounts for. Requiring "already still" there is
-    // circular - that spurious rock IS the rotation, so the gate it would need to open never opens,
-    // and a settled capsule rocks against the mesh at a fifth of a radian per second forever while
-    // its reported velocity reads zero.
+    // A shape with FLAT faces (a box, a hull) tips from face to face, and the rotation that carries it
+    // there comes from these very corrections, so it may only be solved torque-free once it has
+    // genuinely stopped turning. A CURVED shape has nothing to tip onto, and requiring "already still"
+    // there is circular - that spurious rock IS the rotation, so the gate never opens and a settled
+    // capsule rocks against the mesh forever while its reported velocity reads zero.
     if (isFlatFaced(body.shape)) {
         if (av.x * av.x + av.y * av.y + av.z * av.z > 0.01 * 0.01) return false;
         const q = body.rotation;
@@ -153,11 +144,10 @@ proto._applyPositionalCorrection = function (bodyA, bodyB, rA, rB, nx, ny, nz, d
 };
 
 // Small-angle PBD angular update from a linear positional impulse p at offset r: I^-1*(r x p)*0.5.
-// When `bias`, the rotation is also recorded as a bias rotation: like the linear bias displacement, a
-// penetration-pop's rotation is a pure position edit, not something the body's own motion did, and
-// _deriveVelocities subtracts it back out. Without this, resolving a deep overlap spun the body up in
-// one substep (a 0.19 rad correction becomes ~45 rad/s at h=1/240) - the angular half of the same
-// energy-injection bug the linear bias already guards against.
+// When `bias`, the rotation is also recorded as a bias rotation - a penetration-pop's rotation is a
+// pure position edit, not something the body's own motion did - and _deriveVelocities subtracts it back
+// out. Without this, resolving a deep overlap spun the body up in one substep (a 0.19 rad correction
+// becomes ~45 rad/s at h=1/240).
 proto._applyAngularCorrection = function (body, r, px, py, pz, bias) {
     if (this._skipPositionAngular) return;
     const torqueX = r.y * pz - r.z * py, torqueY = r.z * px - r.x * pz, torqueZ = r.x * py - r.y * px;

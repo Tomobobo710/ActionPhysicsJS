@@ -17,10 +17,8 @@ ConvexTri.PENETRATION_LIMIT = 1.0;
 
 // A support probe this far behind the triangle plane (as a share of the convex's smallest half-extent)
 // is only a face contact if the deep point actually lies OVER the triangle. A shape resting beside a
-// perpendicular side face pokes its girth past that face's plane while its deepest point projects
-// onto the face's EDGE - reading the whole girth as penetration and flinging the body sideways. A
-// prop genuinely wedged on a tile step (the perf heightfield) still has its deep point inside the
-// triangle, so it keeps its face contact.
+// perpendicular side face pokes its girth past that face's plane while its deepest point projects onto
+// the face's EDGE, which would read the whole girth as penetration and fling the body sideways.
 ConvexTri.MAX_PENETRATION_FRACTION = 1.0;
 ConvexTri.DEEP_PENETRATION_FRACTION = 0.25;
 ConvexTri.EDGE_INSIDE_MARGIN = 0.01;
@@ -32,10 +30,9 @@ ConvexTri._minHalfExtent = function (shape) {
 };
 ConvexTri.MIN_CULL_LIMIT = 0.05;
 
-// See BoxTriFace.HINT_ALIGN_LIMIT: the hint normal is inherited from whichever mesh face was already
-// in contact, so on a tile corner it can be PERPENDICULAR to the triangle being tested. Obeying a
-// tangential hint ends up with refN (and therefore the support probe direction and the emitted
-// normal) pointing the wrong way.
+// As BoxTriFace.HINT_ALIGN_LIMIT: the hint is inherited from whichever mesh face was already in contact,
+// so on a tile corner it can be PERPENDICULAR to the triangle being tested, leaving refN - and with it
+// the probe direction and emitted normal - pointing the wrong way.
 ConvexTri.HINT_ALIGN_LIMIT = 0.9;
 ConvexTri.EDGE_SLACK = 0.06;
 ConvexTri.AREA_EPSILON = 1e-12;
@@ -220,15 +217,10 @@ ConvexTri.test = function (placedA, placedB, out, nextContact, hintNormalBToA, m
         const outside = ConvexTri.lastDeepestOutsideDist;
         const along = gap > 0 ? gap : 0;
         // A sphere is sampled at ONE point - its support point along -refN - so the distance from that
-        // point out to the triangle is not a distance from the SPHERE to the triangle. A sphere perched
-        // on a mesh VERTEX has that support point projecting up-slope past the apex, a radius outside
-        // the triangle it is touching, so measuring the point alone declares every triangle at a vertex
-        // 'separated' - and a 'separated' verdict skips the GJK/EPA fallback too, so the pair reports no
-        // contact at all while the sphere is touching. The next tick then finds it a whole tick's fall
-        // into the mesh and pops it out (a sphere dropped on an apex left at 13.8 m/s from a 3.5 m/s
-        // arrival). Subtracting the sphere's own radius back off is a real lower bound on the true
-        // shape-to-triangle distance, so a sphere near a vertex is measured honestly and handed to
-        // GJK/EPA, while a triangle genuinely far away is still culled.
+        // point to the triangle is not a distance from the SPHERE to it: on a mesh VERTEX the support point
+        // projects up-slope past the apex, a radius outside the triangle it touches, which would declare
+        // the pair 'separated' and skip the GJK/EPA fallback too. Subtracting the sphere's own radius is a
+        // real lower bound on the true shape-to-triangle distance.
         const reach = (cvxPlaced.shape instanceof SphereShape) ? cvxPlaced.shape.radius : 0;
         if (isFinite(outside) && Math.sqrt(along * along + outside * outside) - reach > cullLimit) {
             ConvexTri.lastVerdict = 'separated';
@@ -256,12 +248,11 @@ ConvexTri.lastVerdict = 'maybe';
 
 ConvexTri.REFRESH_DRIFT_TOLERANCE = 0.35;
 
-// Closed-form contact for a cylinder/cone CAP resting on a mesh triangle. ConvexTri's probe cloud is
-// fine for a curved line (a cylinder on its side) but is the wrong shape for a flat cap: its points
-// are probe samples of the rim, not the real cap-overlap polygon, so the solver cannot tell a
-// supported cap from an overhanging one. When the cap normal genuinely faces the triangle, clip the
-// cap polygon to the triangle instead - the same true patch BoxTriFace gives a box - and the
-// solver's support test (which keys off a real patch extent) can tip an overhang.
+// Closed-form contact for a cylinder/cone CAP resting on a mesh triangle. ConvexTri's probe cloud suits a
+// curved line - a cylinder on its side - but not a flat cap: its points sample the rim rather than the
+// real cap-overlap polygon, so the solver cannot tell a supported cap from an overhanging one. When the
+// cap normal genuinely faces the triangle, clip the cap polygon to it instead - the same true patch
+// BoxTriFace gives a box - and the solver's support test can tip an overhang.
 const CapTriFace = {};
 
 CapTriFace.applies = function (placedA, placedB) {

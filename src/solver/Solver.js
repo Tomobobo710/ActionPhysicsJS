@@ -1,6 +1,6 @@
 // XPBD solver (Muller et al. 2020). Velocity is derived from position (v = (x - x_prev) / h).
 // Per substep: integrate -> refresh contact geometry -> reset lambdas -> solve positions ->
-// derive velocity -> solve contact velocity. See Integrate/PositionSolve/VelocitySolve.
+// derive velocity -> solve contact velocity.
 class Solver {
     constructor(opts) {
         opts = opts || {};
@@ -20,13 +20,12 @@ class Solver {
         this._biasAng = new Map();
         this._restRing = new Map(); // per-body ring buffer of recent transforms for rest-velocity reconciliation
 
-        // Horizontal extent of the manifold being solved, filled by _supportBounds when the manifold is
-        // a closed-form box-box patch (see _solveManifold).
+        // Horizontal extent of the manifold being solved; filled by _supportBounds for a closed-form
+        // box-box patch.
         this._supMinX = 0; this._supMaxX = 0; this._supMinZ = 0; this._supMaxZ = 0;
         this._checkSupport = false;
         this._supportCentreTol = SUPPORT_CENTRE_TOL;
-        // Per-substep union of every upward patch each body stands on, keyed by body id. See
-        // _collectSupportBounds.
+        // Per-substep union of every upward patch each body stands on, keyed by body id.
         this._supportBoundsByBody = new Map();
         this._supportGen = 0;
 
@@ -44,64 +43,34 @@ class Solver {
         this._probeInvRot = new Quaternion();
     }
 
-    // Widens a body's support entry with the body's OWN contact region, for contact points that
-    // carry no patch geometry of their own - a bare GJK/EPA witness.
-    //
-    // The support under a body is where its contact REGION is, and one witness is a single sample of
-    // that region, not the region. Treating it as the region is wrong in both directions, and both
-    // are measurable. A cone lying on its side rests on one point of its base rim with its centre of
-    // mass half a metre out to the side, and reading that one point as its whole support is what left
-    // the cone balanced there - tip 0.400 m in the air, the base radius exactly, |v| and |w| both
-    // 0.000 - for a hundred ticks until the test's scripted shove knocked it over. Conversely a cone
-    // standing on its base has its witness somewhere on the base disc, so reading the witness alone as
-    // the support says the centre of mass hangs past its edge and tips the cone over (rest height
-    // 0.07085 where the base radius puts it at 0.22).
-    //
-    // Asking the SHAPE settles both: probe its support in a ring of directions around the contact and
-    // keep the samples that come back at the contact depth. On a flat face they spread across it; on a
-    // rounded contact they have already climbed clear of the contact plane and are dropped, collapsing
-    // the region to the contact itself. Same ring ConvexTri uses to describe a curved contact against a
-    // mesh (see ConvexTri.PROBE_TILT).
+    // Widens a body's support entry with the body's OWN contact region, for contact points that carry no
+    // patch geometry of their own - a bare GJK/EPA witness. One witness is a single sample of the region,
+    // not the region: read alone it leaves a shape balanced on a rim, or tips one whose witness sits
+    // off-centre. Asking the SHAPE settles both, by probing its support in a ring around the contact and
+    // keeping the samples that come back at contact depth.
     _widenSupportWithProbe(body, isA, nx, ny, nz, px, py, pz, sd, e) {
         const shape = body.shape;
-        // A sphere's contact region is a point whatever it rests on, so its witness already IS the
-        // region. A compound has no support function of its own (it dispatches per child) and a mesh
-        // is not convex, so neither can be asked.
+        // A sphere's witness already IS its contact region. A compound dispatches per child and a mesh
+        // is not convex, so neither has a support function to ask.
         if (shape instanceof SphereShape || shape instanceof CompoundShape || shape instanceof MeshShape) return;
         if (typeof shape.supportInto !== 'function') return;
 
         // The direction from this body INTO the contact. The normal is stored B-relative, pointing B->A.
         const dx = isA ? -nx : nx, dy = isA ? -ny : ny, dz = isA ? -nz : nz;
         this._probeNormal.set(dx, dy, dz);
-        // The ring's tangent basis decides WHICH points of the contact region get sampled, and an
-        // arbitrary perpendicular pair misses the one direction that matters for a barrel: a capsule
-        // or cylinder resting on its side touches along a LINE, and the samples that lie on that line
-        // are the ones out at the barrel's ends. Probing towards the shape's own axis returns exactly
-        // those - the support in a direction tilted towards the axis lands on the cap end AT CONTACT
-        // DEPTH, rise zero, because a barrel is straight - so the line's full length is recovered while
-        // the curved shoulder samples, which climb clear by a share of the radius, stay rejected. With
-        // an arbitrary basis those axial samples are never taken, the region collapses to the single
-        // witness, and a barrel whose witness is not under its centre of mass reads as overhanging
-        // (measured: the coin-pusher's cylinder rolls 1.76 turns where it needs 3, and leaves the ramp
-        // early). An upright barrel has no perpendicular axis component, so it keeps the usual basis,
-        // and its flat cap - whose samples are coplanar - widens on its own.
+        // The tangent basis decides WHICH points of the region get sampled, and an arbitrary
+        // perpendicular pair misses the barrel case: a cylinder on its side touches along a LINE, and
+        // only sampling towards the shape's own axis reaches that line's ends, because the support in
+        // an axially tilted direction lands on the cap end at contact depth, rise zero. An upright
+        // barrel keeps the usual basis, and its flat cap - whose samples are coplanar - widens on its own.
         Solver._tangentBasis(this._probeNormal, this._probeT1, this._probeT2);
         const t1 = this._probeT1, t2 = this._probeT2, dir = this._probeDir, out = this._probeOut;
         const inv = this._probeInvRot.copy(body.rotation).invert();
 
-        // How far off the contact plane a sample may sit and still count as part of the body's
-        // contact region. This has to be a CONTACT tolerance, not a share of the body: a sample this
-        // far off the plane is not touching the surface, whatever the body's size. Scaling it to the
-        // body (the old PROBE_DEPTH_BAND_FRACTION * smallest-extent) let a large-radius curved shape
-        // admit samples centimetres clear of the plane - a 300 mm-radius capsule's shoulder samples
-        // rise 37 mm at this probe tilt - and so fabricate a contact region wide enough to swallow a
-        // centre of mass that is genuinely off the contact. That is a false equilibrium: measured, a
-        // capsule dropped at 15 degrees onto a flat floor sat at its starting tilt and slept instead
-        // of toppling, because its one real contact point had been replaced by a 270 mm-wide
-        // "patch" it was never touching. A flat face still widens correctly at any band - its
-        // samples are coplanar to floating point - and a barrel's LINE is recovered by probing along
-        // the shape's own axis, so an absolute contact tolerance now separates the two real contact
-        // shapes from curvature noise instead of admitting all three.
+        // How far off the contact plane a sample may sit and still count as part of the body's contact
+        // region. An absolute CONTACT tolerance, not a share of the body: scaled to the body it admits
+        // samples well clear of the plane and fabricates a support region wide enough to swallow a
+        // centre of mass that is genuinely off the contact - a false equilibrium.
         const band = Solver.PROBE_DEPTH_BAND;
 
         for (let i = 0; i < Solver.PROBE_COUNT; i++) {
@@ -110,19 +79,11 @@ class Solver {
             const len = Math.sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z) || 1;
             dir.scaleInPlace(1 / len);
             MinkowskiSupport.supportOfInto(out, body, inv, dir, this._probeLocal);
-            // Measure the sample's height above the CONTACT PLANE, not above the witness. The witness
-            // is reported at the penetration depth, so on a settled barrel it sits up to ~20 mm inside
-            // the floor while the barrel's own support line - which IS at contact depth - lies that
-            // far above it. Judged against the witness, a barrel's samples are rejected for exactly
-            // the same reason, and by the same R*(1-cos) amount, as a tilted cap's shoulder samples,
-            // so NO band can admit the one and reject the other: measured, a barrelled cylinder of
-            // R=0.28 needs the band above 0.030 while a 15-degree capsule of R=0.30 needs it below
-            // 0.032 - a 2 mm window that exists only because the radii happen to differ, and the
-            // engine has to be right for both. Adding the contact's own signedDistance moves the
-            // reference onto the surface the two bodies actually meet at, and then the barrel's
-            // samples read ~3 mm off it while the cap's read ~32 mm: a single absolute contact
-            // tolerance separates them at ANY radius, which is what makes the tipover possible to fix
-            // without re-breaking the barrels.
+            // Height above the CONTACT PLANE, not above the witness: the witness is reported at the
+            // penetration depth, so judging against it rejects a barrel's own support line for exactly
+            // the reason, and by the same R*(1-cos) amount, as a tilted cap's shoulder. Adding the
+            // contact's signedDistance moves the reference onto the surface the two bodies actually
+            // meet at, which separates them at any radius.
             const proj = (out.x - px) * dx + (out.y - py) * dy + (out.z - pz) * dz + sd;
             if (proj < -band) continue;
             if (out.x < e.minX) e.minX = out.x;
@@ -132,19 +93,14 @@ class Solver {
         }
     }
 
-    // Records the horizontal extent of `manifold`'s contact patch into _supMinX/_supMaxX/_supMinZ/
-    // _supMaxZ, so _suppressQuietVerticalLanding can tell a patch the body is sitting ON from one it
-    // hangs off: a centre of mass inside this extent is supported from below, while a centre that has
-    // passed it is an overhang whose normal response cannot hold the body up without rotating it.
+    // Records the horizontal extent of `manifold`'s contact patch so the support test can tell a patch
+    // the body is sitting ON from one it hangs off: a centre of mass inside the extent is supported
+    // from below, while a centre that has passed it is an overhang.
     _supportBounds(bodyA, bodyB, manifold, n) {
         // The support under a body is the UNION of every upward patch it stands on this substep, not
-        // the patch of whichever manifold happens to be solved. A cone dropped on the seam of a tiled
-        // floor has a patch on each side of the seam and its centre of mass outside either one alone;
-        // judged manifold by manifold each patch reads as an overhang, both hand out torque, and the
-        // body is toppled off a surface it is in fact resting flat on. Unioned, the centre of mass
-        // sits inside the support and the contact is solved torque-free - which is what the same
-        // floor drawn as one mesh would do. Only multi-manifold bodies differ from the old behaviour:
-        // for a body standing on one patch the union is that patch.
+        // whichever manifold happens to be solved: a cone dropped on a tile seam has a patch either side
+        // of it and its centre of mass outside either alone, so judged manifold by manifold both read as
+        // overhangs and topple it off a surface it is resting flat on.
         const union = this._supportBoundsForBody(bodyA, bodyB);
         if (union) {
             this._supMinX = union.minX; this._supMaxX = union.maxX;
@@ -172,13 +128,10 @@ class Solver {
         this._supportCentreTol = curved ? CURVED_SUPPORT_CENTRE_TOL : SUPPORT_CENTRE_TOL;
     }
 
-    // Builds the per-body support union for one substep, keyed by body id. Only upward contacts
-    // count (a patch the body is standing on), and only ones that are actually touching - a
-    // speculative contact has no load to carry yet. Every point of a patch counts, including the
-    // separated probe samples a curved cloud spreads over the shape it stands on - those are what
-    // describe the width of its contact region, and dropping them narrows the support to noise.
-    // `gen` retires last substep's entries without
-    // reallocating: the map keeps one small record per body for the life of the solver.
+    // Builds the per-body support union for one substep, keyed by body id. Only upward contacts that
+    // actually touch count - a speculative contact carries no load yet - but every point of a patch
+    // does, including the separated probe samples that describe a curved region's width. `gen` retires
+    // last substep's entries without reallocating.
     _collectSupportBounds(manifolds) {
         const gen = ++this._supportGen;
         const byBody = this._supportBoundsByBody;
@@ -189,12 +142,10 @@ class Solver {
             if (!aFree && !bFree) continue;
             for (let i = 0; i < m.points.length; i++) {
                 const p = m.points[i];
-                // A point of a real patch (box-box, BoxTriFace/CapTriFace, PolyClip) that is still
-                // separated carries no load and does not widen the support. A ConvexTri probe sample
-                // is different: it samples the SHAPE, so around a curved contact its depth swings by
-                // the shape's own radius, and its separated samples are precisely what describe how
-                // wide the contact region is. Dropping them narrows a capsule's support to noise and
-                // lets a settled one be judged overhanging; keeping them is what the width means.
+                // A separated point of a real patch carries no load and does not widen the support. A
+                // ConvexTri probe sample is different: it samples the SHAPE, so its separated samples
+                // are exactly what describe how wide a curved contact region is. Dropping them narrows
+                // a capsule's support to noise and lets a settled one be judged overhanging.
                 if (p.signedDistance < -REST_TOUCH_BAND && !p.fromCurvedTri) continue;
                 const ny = p.normal.y;
                 if (ny > -0.98 && ny < 0.98) continue;
@@ -254,26 +205,20 @@ class Solver {
         this._reconcileRestVelocity(bodies, dt);
     }
 
-    // Zeroes the velocity of a body whose sustained motion over the last REST_WINDOW ticks is below
-    // the rest thresholds, from a per-body ring buffer of recent transforms. Once a body has stayed
-    // that quiet for REST_PIN_STREAK consecutive ticks it is also transform-pinned: each tick's
-    // residual drift is reverted to the previous sampled pose. The per-point Gauss-Seidel contact
-    // solve leaks a little tangential drift every substep for non-box shapes (box patches are already
-    // centroid-solved, see VelocitySolve.js), so a "settled" cylinder/cone/sphere slowly walks across
-    // its support with its reported velocity reading zero. The streak gate keeps this off any body
-    // that is only briefly quiet - a rider settling onto a carrier, a shape between bounces - so only
-    // a genuinely parked body gets pinned, and a sleeping body then matches a never-slept one exactly.
-    // See NOTES.md.
+    // Zeroes the velocity of a body whose sustained motion over the last REST_WINDOW ticks is below the
+    // rest thresholds. Past REST_PIN_STREAK quiet ticks it is also transform-pinned, reverting each tick's
+    // residual drift: the per-point Gauss-Seidel solve leaks tangential drift for non-box shapes, so a
+    // "settled" cylinder or cone would otherwise walk across its own support with its reported velocity
+    // reading zero.
     _reconcileRestVelocity(bodies, dt) {
         const win = REST_WINDOW;
         for (let i = 0; i < bodies.length; i++) {
             const b = bodies[i];
             if (b.bodyType !== RigidBody.DYNAMIC || !b.isAwake) continue;
 
-            // A body woken by a world change still looks quiet to the ring (it holds the pose it
-            // slept in), so the ring would zero its fresh gravity and snap it back every tick.
-            // Drop it; it rebuilds from scratch and can't re-pin until still for a full window.
-            // Routine wakes (impulse, contact, island restless) don't set the flag.
+            // A body woken by a world change still looks quiet to the ring (it holds the pose it slept
+            // in), which would zero its fresh gravity and snap it back every tick. Drop it; it rebuilds
+            // and can't re-pin until still for a full window.
             if (b._restRingStale) {
                 b._restRingStale = false;
                 this._restRing.delete(b.id);
@@ -371,14 +316,11 @@ class Solver {
     }
 
     // Collects the manifolds that describe ONE physical contact set: a dynamic body touching several
-    // non-dynamic surfaces whose patches are coplanar - four mesh tiles butting together, a body
-    // straddling a tile seam, a box lying across two ground pieces. The per-manifold centroid solve
-    // is right for a single face patch (see VelocitySolve._boxFacePatchVelocity) but applies one
-    // restitution+friction impulse PER SURFACE when there are several: each impulse is offset from
-    // the centre of mass, the first one's torque changes the state the next one measures, the torques
-    // stop cancelling, and the body is handed a lateral kick and spin it was never given. Solving the
-    // coplanar set as one contact set at one centroid makes the tiled ground behave exactly like the
-    // single mesh it represents. Only runs of two or more are grouped; everything else is untouched.
+    // coplanar non-dynamic surfaces - four mesh tiles butting together, a box lying across two ground
+    // pieces. The per-manifold centroid solve is right for a single face patch, but applies one
+    // restitution+friction impulse PER SURFACE when there are several: each is offset from the centre
+    // of mass, the torques stop cancelling, and the body is handed a lateral kick and spin it was never
+    // given. Only runs of two or more are grouped.
     _coplanarPatchGroups(manifolds) {
         const groups = this._patchGroups;
         const byBody = this._patchGroupsByBody;
@@ -470,31 +412,21 @@ class Solver {
         // manifold's points, which are somewhere else entirely.
         this._checkSupport = false;
         const n = manifold.points.length;
-        // A body teetering on a ledge or a table edge has its patch clipped down to a single point
-        // (or one line of two), and that one point is the whole support region: the centre of mass
-        // can sit past it, and then the contact cannot hold the body up without rotating it. The
-        // extent test must therefore run for a real patch BEFORE the single-point early return -
-        // otherwise a quiet body parked past the edge is solved torque-free and hangs there frozen
-        // (see _suppressQuietVerticalLanding).
-        // The extent test runs for EVERY contact, including a bare GJK/EPA witness. A lone contact
-        // point is a pivot: the centre of mass either sits over it - in which case the contact can
-        // carry the weight without turning the body - or it does not, and then the contact MUST
-        // rotate the body, so suppressing its angular response is what leaves a cone balanced
-        // upright on its base rim with its tip a whole radius in the air, perfectly still, forever.
-        // The witness being one sample of a rounded contact region rather than its centre is what the
-        // tolerance in _supportBounds absorbs - a resting sphere's witness is under its centre of
-        // mass, so it is inside the tolerance, while this cone's is half a metre outside.
+        // A body teetering on a ledge has its patch clipped to a single point, and that point IS the whole
+        // support region: the centre of mass can sit past it, and then the contact cannot hold the body up
+        // without rotating it, so the extent test must run BEFORE the single-point early return. A lone
+        // contact point is a pivot, and suppressing its angular response is what leaves a body balanced
+        // upright on its rim, perfectly still, forever.
         this._checkSupport = true;
         this._supportBounds(bodyA, bodyB, manifold, n);
         if (n <= 1) {
             if (n === 1) this._solvePoint(manifold.points[0], bodyA, bodyB, h);
             return;
         }
-        // The support-extent test below is only meaningful for the closed-form box-box patch, which is
-        // generated complete in one go: it is clipped to the supported part of the box's face, but every
-        // point of it belongs to a patch that exists right now, so the extent describes this contact.
-        // Mesh and single-witness contacts have no such guarantee (their set grows and re-clips through
-        // a landing), and testing them against it costs far more than it buys.
+        // The extent test below only means anything for the closed-form box-box patch, generated
+        // complete in one go and clipped to the supported part of the box's face. Mesh and
+        // single-witness sets grow and re-clip through a landing, so testing them against it costs more
+        // than it buys.
         let boxBoxPatch = true;
         for (let i = 0; i < n; i++) {
             if (!manifold.points[i].fromBoxBox) { boxBoxPatch = false; break; }
@@ -520,9 +452,9 @@ class Solver {
         }
         if (suppressPatchTorque) this._skipPositionAngular = true;
         for (let i = 0; i < n; i++) {
-            // Closed-form box patches already provide a complete face manifold; do not
-            // artificially cap their penetration correction, which can leave a tumbling box
-            // sunk below a flat support while its angular contact corrections keep injecting work.
+            // Closed-form box patches provide a complete face manifold; capping their penetration
+            // correction can leave a tumbling box sunk below a flat support while its angular contact
+            // corrections keep injecting work.
             this._solvePoint(manifold.points[i], bodyA, bodyB, h, !manifold.points[i].fromBoxBox && !manifold.points[i].fromMeshFace);
         }
         if (suppressPatchTorque) this._skipPositionAngular = false;
@@ -566,35 +498,24 @@ Solver.RESTITUTION_SLOP_FACTOR = 8;
 Solver.MAX_PENETRATION_PER_SUBSTEP = 0.005;
 
 // Half-width of the support extent a body's centre may sit outside of and still count as resting ON
-// the patch rather than overhanging it. The dead zone also has to cover a curved shape's probe cloud
-// (see _supportBounds), which samples the contact region rather than outlining it: a resting capsule
-// or cylinder reads a few millimetres of apparent overhang that is sampling noise, not a real
+// the patch rather than overhanging it. The dead zone must also cover a curved shape's probe cloud,
+// whose samples read a few millimetres of apparent overhang that is sampling noise, not a real
 // overhang, and reactivating its torque there makes it buzz instead of rest.
 var SUPPORT_CENTRE_TOL = 0.005;
 var CURVED_SUPPORT_CENTRE_TOL = 0.02;
 
-// Ring of directions the contact-region probe samples a body's support in (see
-// _widenSupportWithProbe) - the same ring, tilt and count ConvexTri uses on its curved contacts.
-// PROBE_DEPTH_BAND is how far off the contact plane a sample may sit and still count as part of the
-// body's region: on a flat face the samples are coplanar to floating-point, while on a rounded
-// contact they have climbed clear of it by a share of the shape's own radius. It is an absolute
-// contact tolerance deliberately - see _widenSupportWithProbe for what scaling it to the body broke.
+// Ring of directions the contact-region probe samples a body's support in - the same ring, tilt and
+// count ConvexTri uses on its curved contacts.
 Solver.PROBE_COUNT = 4;
-// How far off the contact normal the ring samples, and this must be SMALL. At 0.5 rad a probe lands
-// on a curved surface's SHOULDER - R*(1-cos 0.5) = 0.106*R off the contact plane - which is not part
-// of the contact at all, so a barrel's samples came back exactly as "climbed" as a tilted cap's and
-// no depth band could separate them. Sampling near the normal lands on the contact FEATURE instead:
-// the support along a barrel's own axis sits at the barrel's end ON the contact line, rise zero, so
-// the line's full length is recovered, while a tilted cap's samples stay within R*sin(tilt) of its one
-// true contact point - too narrow to cover a centre of mass that is genuinely off the contact. A flat
-// face is unaffected at any tilt: the support in a tilted direction is still a corner of that face.
-// Swept against the suite's conflicting fixtures, 0.5 rad fails both barrels and the coin-pusher, 0.2
-// and 0.15 fail the tipover on its sleep budget, and 0.05-0.10 passes every one of them.
+// How far off the contact normal the ring samples, and this must be SMALL. At 0.5 rad a probe lands on a
+// curved surface's SHOULDER - R*(1-cos 0.5) = 0.106*R off the contact plane - which is not part of the
+// contact, so a barrel comes back as "climbed" as a tilted cap and no depth band separates them. Near the
+// normal it lands on the contact FEATURE instead, whose rise along the shape's own axis is zero, while a
+// tilted cap's samples stay within R*sin(tilt) of its one true contact point.
 Solver.PROBE_TILT = 0.07;
 // How far off the CONTACT PLANE a probe sample may sit and still count as part of the body's contact
-// region (see _widenSupportWithProbe, which measures against the plane rather than the witness, and
-// why that distinction is what makes this band work). An absolute contact tolerance: admitting a
-// sample further off than this would fabricate a contact region the body is not touching.
+// region. Measured against the plane rather than the witness, and an absolute contact tolerance:
+// admitting a sample further off than this would fabricate a region the body is not touching.
 Solver.PROBE_DEPTH_BAND = 0.01;
 Solver._PROBE_U = [Solver.PROBE_TILT, -Solver.PROBE_TILT, 0, 0];
 Solver._PROBE_V = [0, 0, Solver.PROBE_TILT, -Solver.PROBE_TILT];
@@ -606,12 +527,9 @@ var REST_PIN_STREAK = 12;
 var REST_TOUCH_BAND = 0.005;
 
 // Does this shape have flat faces a body can tip from face to face onto? A box or a hull does; a
-// sphere, capsule, cylinder or cone does not (nothing to tip onto - its contact is a point or a
-// line, and the rotation an off-centre push generates about it is real). Compounds count as flat
-// only when every child does. Used by the position solve (a flat-faced body may only be solved
-// torque-free once it has genuinely stopped turning) and by the velocity solve (a flat-faced
-// body's patch is a polygon, whose extent gives a trustworthy anchor - see
-// VelocitySolve._boxFacePatchVelocity).
+// sphere, capsule, cylinder or cone does not - nothing to tip onto, and the rotation an off-centre
+// push generates about its point or line contact is real. Compounds count as flat only when every
+// child does.
 function isFlatFaced(shape) {
     if (shape instanceof BoxShape || shape instanceof ConvexShape) return true;
     if (shape instanceof CompoundShape) {

@@ -14,20 +14,18 @@ PolyClip.facesOf = function (placed) {
     const shape = placed.shape;
     if (shape instanceof BoxShape) return PolyClip._boxFaces(placed);
     if (shape instanceof ConvexShape) return PolyClip._hullFaces(placed);
-    // A curved shape's flat cap as a real polygon. A cylinder resting on its flat end, or a cone on
-    // its base, gets a genuine clipped patch instead of GJK/EPA's single wandering witness point -
-    // which is what lets the solver's support test tell a supported cap from an overhanging one.
+    // A curved shape's flat cap as a real polygon, so a cylinder resting on its flat end or a cone on
+    // its base gets a genuine clipped patch instead of GJK/EPA's single wandering witness point.
     if (shape instanceof ConeShape) return PolyClip._capFaces(placed, shape.radius, shape.halfHeight, false);
     if (shape instanceof CylinderShape) return PolyClip._capFaces(placed, shape.radius, shape.halfHeight, true);
     return null;
 };
 
-// A cylinder's two flat caps (and a cone's single base cap) as regular polygons in the local XZ
-// plane, so a curved shape resting on its flat end gets a REAL clipped patch instead of GJK/EPA's
-// single wandering witness point. That patch is what lets the solver's support test tell a
-// supported cylinder/cone (centre of mass over the patch) from an overhanging one it must tip.
-// The curved side is not represented - a cylinder on its side finds no aligned face and keeps the
-// GJK/EPA path (which is correct there: the contact is a line, not a face).
+// A cylinder's two flat caps (and a cone's single base cap) as regular polygons in the local XZ plane, so
+// a curved shape resting on its flat end gets a REAL clipped patch instead of GJK/EPA's single witness
+// point - which is what lets the solver's support test tell a supported cap from an overhanging one. The
+// curved side is not represented: a cylinder on its side keeps the GJK/EPA path, where the contact is a
+// line, not a face.
 PolyClip.CAP_SIDES = 12;
 PolyClip._capFaces = function (placed, radius, halfHeight, bothCaps) {
     const rot = placed.rotation, pos = placed.position;
@@ -149,9 +147,9 @@ PolyClip.buildFaceContact = function (placedA, placedB, normalBtoA, out, nextCon
     if (!pickInc.face || pickInc.dot < PolyClip.FACE_OPPOSED_DOT) return 0;
     const incFace = pickInc.face;
 
-    // A cap-derived patch is a real support patch in every sense: a flat cap against a flat face is
-    // a genuine face-on-face contact, so it gets the same centroid velocity solve a box face patch
-    // does (see VelocitySolve._boxFacePatchVelocity) and the same centre-of-mass support test.
+    // A cap-derived patch is a real support patch in every sense: a flat cap against a flat face is a
+    // genuine face-on-face contact, so it gets the same centroid velocity solve a box face patch does
+    // and the same centre-of-mass support test.
     const fromFacePatch = true;
 
     let poly = PolyClip._polyA, clipped = PolyClip._polyB;
