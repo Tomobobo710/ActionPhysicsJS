@@ -1,4 +1,4 @@
-// ActionPhysics 0.1.0 — built 2026-09-18T22:54:55.132Z
+// ActionPhysics 0.1.0 — built 2026-09-18T23:31:18.991Z
 // ==== src/intro.js ====
 (function (root, factory) {
     'use strict';
@@ -5780,20 +5780,18 @@ PolyClip.facesOf = function (placed) {
     const shape = placed.shape;
     if (shape instanceof BoxShape) return PolyClip._boxFaces(placed);
     if (shape instanceof ConvexShape) return PolyClip._hullFaces(placed);
-    // A curved shape's flat cap as a real polygon. A cylinder resting on its flat end, or a cone on
-    // its base, gets a genuine clipped patch instead of GJK/EPA's single wandering witness point -
-    // which is what lets the solver's support test tell a supported cap from an overhanging one.
+    // A curved shape's flat cap as a real polygon, so a cylinder resting on its flat end or a cone on
+    // its base gets a genuine clipped patch instead of GJK/EPA's single wandering witness point.
     if (shape instanceof ConeShape) return PolyClip._capFaces(placed, shape.radius, shape.halfHeight, false);
     if (shape instanceof CylinderShape) return PolyClip._capFaces(placed, shape.radius, shape.halfHeight, true);
     return null;
 };
 
-// A cylinder's two flat caps (and a cone's single base cap) as regular polygons in the local XZ
-// plane, so a curved shape resting on its flat end gets a REAL clipped patch instead of GJK/EPA's
-// single wandering witness point. That patch is what lets the solver's support test tell a
-// supported cylinder/cone (centre of mass over the patch) from an overhanging one it must tip.
-// The curved side is not represented - a cylinder on its side finds no aligned face and keeps the
-// GJK/EPA path (which is correct there: the contact is a line, not a face).
+// A cylinder's two flat caps (and a cone's single base cap) as regular polygons in the local XZ plane, so
+// a curved shape resting on its flat end gets a REAL clipped patch instead of GJK/EPA's single witness
+// point - which is what lets the solver's support test tell a supported cap from an overhanging one. The
+// curved side is not represented: a cylinder on its side keeps the GJK/EPA path, where the contact is a
+// line, not a face.
 PolyClip.CAP_SIDES = 12;
 PolyClip._capFaces = function (placed, radius, halfHeight, bothCaps) {
     const rot = placed.rotation, pos = placed.position;
@@ -5915,9 +5913,9 @@ PolyClip.buildFaceContact = function (placedA, placedB, normalBtoA, out, nextCon
     if (!pickInc.face || pickInc.dot < PolyClip.FACE_OPPOSED_DOT) return 0;
     const incFace = pickInc.face;
 
-    // A cap-derived patch is a real support patch in every sense: a flat cap against a flat face is
-    // a genuine face-on-face contact, so it gets the same centroid velocity solve a box face patch
-    // does (see VelocitySolve._boxFacePatchVelocity) and the same centre-of-mass support test.
+    // A cap-derived patch is a real support patch in every sense: a flat cap against a flat face is a
+    // genuine face-on-face contact, so it gets the same centroid velocity solve a box face patch does
+    // and the same centre-of-mass support test.
     const fromFacePatch = true;
 
     let poly = PolyClip._polyA, clipped = PolyClip._polyB;
@@ -6222,10 +6220,8 @@ ConvexTri.PENETRATION_LIMIT = 1.0;
 
 // A support probe this far behind the triangle plane (as a share of the convex's smallest half-extent)
 // is only a face contact if the deep point actually lies OVER the triangle. A shape resting beside a
-// perpendicular side face pokes its girth past that face's plane while its deepest point projects
-// onto the face's EDGE - reading the whole girth as penetration and flinging the body sideways. A
-// prop genuinely wedged on a tile step (the perf heightfield) still has its deep point inside the
-// triangle, so it keeps its face contact.
+// perpendicular side face pokes its girth past that face's plane while its deepest point projects onto
+// the face's EDGE, which would read the whole girth as penetration and fling the body sideways.
 ConvexTri.MAX_PENETRATION_FRACTION = 1.0;
 ConvexTri.DEEP_PENETRATION_FRACTION = 0.25;
 ConvexTri.EDGE_INSIDE_MARGIN = 0.01;
@@ -6237,10 +6233,9 @@ ConvexTri._minHalfExtent = function (shape) {
 };
 ConvexTri.MIN_CULL_LIMIT = 0.05;
 
-// See BoxTriFace.HINT_ALIGN_LIMIT: the hint normal is inherited from whichever mesh face was already
-// in contact, so on a tile corner it can be PERPENDICULAR to the triangle being tested. Obeying a
-// tangential hint ends up with refN (and therefore the support probe direction and the emitted
-// normal) pointing the wrong way.
+// As BoxTriFace.HINT_ALIGN_LIMIT: the hint is inherited from whichever mesh face was already in contact,
+// so on a tile corner it can be PERPENDICULAR to the triangle being tested, leaving refN - and with it
+// the probe direction and emitted normal - pointing the wrong way.
 ConvexTri.HINT_ALIGN_LIMIT = 0.9;
 ConvexTri.EDGE_SLACK = 0.06;
 ConvexTri.AREA_EPSILON = 1e-12;
@@ -6425,15 +6420,10 @@ ConvexTri.test = function (placedA, placedB, out, nextContact, hintNormalBToA, m
         const outside = ConvexTri.lastDeepestOutsideDist;
         const along = gap > 0 ? gap : 0;
         // A sphere is sampled at ONE point - its support point along -refN - so the distance from that
-        // point out to the triangle is not a distance from the SPHERE to the triangle. A sphere perched
-        // on a mesh VERTEX has that support point projecting up-slope past the apex, a radius outside
-        // the triangle it is touching, so measuring the point alone declares every triangle at a vertex
-        // 'separated' - and a 'separated' verdict skips the GJK/EPA fallback too, so the pair reports no
-        // contact at all while the sphere is touching. The next tick then finds it a whole tick's fall
-        // into the mesh and pops it out (a sphere dropped on an apex left at 13.8 m/s from a 3.5 m/s
-        // arrival). Subtracting the sphere's own radius back off is a real lower bound on the true
-        // shape-to-triangle distance, so a sphere near a vertex is measured honestly and handed to
-        // GJK/EPA, while a triangle genuinely far away is still culled.
+        // point to the triangle is not a distance from the SPHERE to it: on a mesh VERTEX the support point
+        // projects up-slope past the apex, a radius outside the triangle it touches, which would declare
+        // the pair 'separated' and skip the GJK/EPA fallback too. Subtracting the sphere's own radius is a
+        // real lower bound on the true shape-to-triangle distance.
         const reach = (cvxPlaced.shape instanceof SphereShape) ? cvxPlaced.shape.radius : 0;
         if (isFinite(outside) && Math.sqrt(along * along + outside * outside) - reach > cullLimit) {
             ConvexTri.lastVerdict = 'separated';
@@ -6461,12 +6451,11 @@ ConvexTri.lastVerdict = 'maybe';
 
 ConvexTri.REFRESH_DRIFT_TOLERANCE = 0.35;
 
-// Closed-form contact for a cylinder/cone CAP resting on a mesh triangle. ConvexTri's probe cloud is
-// fine for a curved line (a cylinder on its side) but is the wrong shape for a flat cap: its points
-// are probe samples of the rim, not the real cap-overlap polygon, so the solver cannot tell a
-// supported cap from an overhanging one. When the cap normal genuinely faces the triangle, clip the
-// cap polygon to the triangle instead - the same true patch BoxTriFace gives a box - and the
-// solver's support test (which keys off a real patch extent) can tip an overhang.
+// Closed-form contact for a cylinder/cone CAP resting on a mesh triangle. ConvexTri's probe cloud suits a
+// curved line - a cylinder on its side - but not a flat cap: its points sample the rim rather than the
+// real cap-overlap polygon, so the solver cannot tell a supported cap from an overhanging one. When the
+// cap normal genuinely faces the triangle, clip the cap polygon to it instead - the same true patch
+// BoxTriFace gives a box - and the solver's support test can tip an overhang.
 const CapTriFace = {};
 
 CapTriFace.applies = function (placedA, placedB) {
@@ -6659,12 +6648,10 @@ BoxTriFace.SEPARATION_LIMIT = 0.5;
 BoxTriFace.PENETRATION_LIMIT = 1.0;
 BoxTriFace.MAX_PENETRATION_FRACTION = 0.25;
 
-// A hint normal is only allowed to orient this triangle when it is genuinely this face's normal.
-// The hint is carried over from whichever face of the mesh was already in contact (see
-// NarrowPhase._ctHintNormal), so on a corner/edge of a tile it can belong to a PERPENDICULAR face.
-// A tangential hint carries no orientation information, and obeying it left refN pointing the wrong
-// way - which measures the box's whole thickness (2*halfExtent) as penetration instead of its real
-// overlap, shoving the box sideways off the tile.
+// A hint normal may only orient this triangle when it is genuinely this face's normal. The hint is
+// carried over from whichever mesh face was already in contact, so on a tile corner it can belong to a
+// PERPENDICULAR face; obeying a tangential one left refN pointing the wrong way, which measures the
+// box's whole thickness as penetration instead of its real overlap and shoves it off the tile.
 BoxTriFace.HINT_ALIGN_LIMIT = 0.9;
 
 BoxTriFace.EDGE_SLACK = 0.02;
@@ -6755,27 +6742,21 @@ BoxTriFace.lastBestDot = 0;
     const triVerts = BoxTriFace._triVerts;
     triVerts[0] = t0; triVerts[1] = t1; triVerts[2] = t2;
 
-    // The two features here are a triangle and one flat face of a box, and which of them is the
-    // smaller one decides which way round to clip: normally the box's face is the smaller feature and
-    // it gets clipped against the triangle's edges (below). But the reverse is just as common - a
-    // SMALL mesh triangle lying on a LARGE box face, which is every small mesh prop resting on a big
-    // floor, and every triangle of one mesh box dropped onto a bigger one. There is no face contact
-    // to be had from the triangle's side of that pair (its area is a fraction of the reference face's),
-    // so those pairs used to fall all the way through to GJK/EPA - and a triangle coplanar with the
-    // face it rests on is the worst case for EPA, which returns whatever near-degenerate direction its
-    // final simplex happens to give. At the shared vertex of a mesh box's bottom face that is a
-    // normal tipped 2 degrees off vertical, which shoves the box sideways as it lands.
+    // Which of the two features here is smaller decides which way round to clip. Normally the box's face
+    // is, and it is clipped against the triangle's edges below; the reverse - a SMALL mesh triangle on a
+    // LARGE box face, which is every small mesh prop resting on a big floor - has no face contact to be had
+    // from the triangle's side, so it falls through to GJK/EPA, where a triangle coplanar with the face it
+    // rests on is the worst case: EPA returns a near-degenerate direction.
     if (!BoxTriFace._boxFaceIsSmaller(hx, bestAxis, t0, t1, t2)) {
         return BoxTriFace._smallTriangleOnFace(aIsTri, triPlaced, refN, t0, t1, t2,
             cx, cy, cz, u, v, eu, ev, out, nextContact);
     }
 
-    // A face whose region merely TOUCHES the triangle along a shared edge (a box parked at the very
-    // edge of a tile, its side face coplanar with the tile's side face) survives the slack clip as a
+    // A face whose region merely TOUCHES the triangle along a shared edge survives the slack clip as a
     // zero-width sliver, and a sliver still reports the full distance between the two planes as
-    // penetration. On a ledge that turns an overhanging prop's side face into a lateral shove that
-    // walks it back to flush with the edge. The overlap must be real: re-clip without the slack and
-    // require actual area before treating this as a face patch.
+    // penetration - on a ledge that turns an overhanging prop's side face into a lateral shove. The
+    // overlap must be real: re-clip without the slack and require actual area before treating this as a
+    // face patch.
     if (!BoxTriFace._clipToTriangle(face, 4, BoxTriFace._poly2, BoxTriFace._clip2, triVerts, refN, 0)) return null;
     const trueArea = BoxTriFace._polyArea(BoxTriFace._clipOut, BoxTriFace._clipOutN, refN);
     if (trueArea <= (4 * eu * ev) * BoxTriFace.MIN_OVERLAP_COVERAGE) return null;
@@ -6829,13 +6810,11 @@ BoxTriFace.lastBestDot = 0;
 };
 
 // The mirror of the face patch above: the triangle is the smaller feature, so the BOX's face is the
-// reference and the triangle is the incident polygon. The triangle's vertices are clipped to the
-// face's rectangle and measured against the face's plane, which gives the contact the face's own
-// normal exactly - no GJK/EPA witness direction to tip it - and the same per-point depths the box's
-// own face patch would give. Depth is positive when the triangle's plane has passed the face's plane
-// in the direction the box's interior lies, which is the opposite sense from _clipToTriangle's
-// measurement (that one measures the box's face against the triangle's plane, this one is measured
-// against the box's), so the sign is carried explicitly rather than negated.
+// reference and the triangle is the incident polygon. Clipping it to the face's rectangle and measuring
+// against the face's plane gives the contact the face's own normal exactly - no GJK/EPA witness direction
+// to tip it - and the same per-point depths the box's face patch would give. Depth is positive when the
+// triangle's plane has passed the face's plane the way the box's interior lies, the opposite sense from
+// _clipToTriangle, so the sign is carried explicitly rather than negated.
 BoxTriFace._smallTriangleOnFace = function (aIsTri, triPlaced, refN, t0, t1, t2,
     cx, cy, cz, u, v, eu, ev, out, nextContact) {
 
@@ -7464,7 +7443,7 @@ function _coincidentTri(p, q) {
 // ==== src/solver/Solver.js ====
 // XPBD solver (Muller et al. 2020). Velocity is derived from position (v = (x - x_prev) / h).
 // Per substep: integrate -> refresh contact geometry -> reset lambdas -> solve positions ->
-// derive velocity -> solve contact velocity. See Integrate/PositionSolve/VelocitySolve.
+// derive velocity -> solve contact velocity.
 class Solver {
     constructor(opts) {
         opts = opts || {};
@@ -7484,13 +7463,12 @@ class Solver {
         this._biasAng = new Map();
         this._restRing = new Map(); // per-body ring buffer of recent transforms for rest-velocity reconciliation
 
-        // Horizontal extent of the manifold being solved, filled by _supportBounds when the manifold is
-        // a closed-form box-box patch (see _solveManifold).
+        // Horizontal extent of the manifold being solved; filled by _supportBounds for a closed-form
+        // box-box patch.
         this._supMinX = 0; this._supMaxX = 0; this._supMinZ = 0; this._supMaxZ = 0;
         this._checkSupport = false;
         this._supportCentreTol = SUPPORT_CENTRE_TOL;
-        // Per-substep union of every upward patch each body stands on, keyed by body id. See
-        // _collectSupportBounds.
+        // Per-substep union of every upward patch each body stands on, keyed by body id.
         this._supportBoundsByBody = new Map();
         this._supportGen = 0;
 
@@ -7508,64 +7486,34 @@ class Solver {
         this._probeInvRot = new Quaternion();
     }
 
-    // Widens a body's support entry with the body's OWN contact region, for contact points that
-    // carry no patch geometry of their own - a bare GJK/EPA witness.
-    //
-    // The support under a body is where its contact REGION is, and one witness is a single sample of
-    // that region, not the region. Treating it as the region is wrong in both directions, and both
-    // are measurable. A cone lying on its side rests on one point of its base rim with its centre of
-    // mass half a metre out to the side, and reading that one point as its whole support is what left
-    // the cone balanced there - tip 0.400 m in the air, the base radius exactly, |v| and |w| both
-    // 0.000 - for a hundred ticks until the test's scripted shove knocked it over. Conversely a cone
-    // standing on its base has its witness somewhere on the base disc, so reading the witness alone as
-    // the support says the centre of mass hangs past its edge and tips the cone over (rest height
-    // 0.07085 where the base radius puts it at 0.22).
-    //
-    // Asking the SHAPE settles both: probe its support in a ring of directions around the contact and
-    // keep the samples that come back at the contact depth. On a flat face they spread across it; on a
-    // rounded contact they have already climbed clear of the contact plane and are dropped, collapsing
-    // the region to the contact itself. Same ring ConvexTri uses to describe a curved contact against a
-    // mesh (see ConvexTri.PROBE_TILT).
+    // Widens a body's support entry with the body's OWN contact region, for contact points that carry no
+    // patch geometry of their own - a bare GJK/EPA witness. One witness is a single sample of the region,
+    // not the region: read alone it leaves a shape balanced on a rim, or tips one whose witness sits
+    // off-centre. Asking the SHAPE settles both, by probing its support in a ring around the contact and
+    // keeping the samples that come back at contact depth.
     _widenSupportWithProbe(body, isA, nx, ny, nz, px, py, pz, sd, e) {
         const shape = body.shape;
-        // A sphere's contact region is a point whatever it rests on, so its witness already IS the
-        // region. A compound has no support function of its own (it dispatches per child) and a mesh
-        // is not convex, so neither can be asked.
+        // A sphere's witness already IS its contact region. A compound dispatches per child and a mesh
+        // is not convex, so neither has a support function to ask.
         if (shape instanceof SphereShape || shape instanceof CompoundShape || shape instanceof MeshShape) return;
         if (typeof shape.supportInto !== 'function') return;
 
         // The direction from this body INTO the contact. The normal is stored B-relative, pointing B->A.
         const dx = isA ? -nx : nx, dy = isA ? -ny : ny, dz = isA ? -nz : nz;
         this._probeNormal.set(dx, dy, dz);
-        // The ring's tangent basis decides WHICH points of the contact region get sampled, and an
-        // arbitrary perpendicular pair misses the one direction that matters for a barrel: a capsule
-        // or cylinder resting on its side touches along a LINE, and the samples that lie on that line
-        // are the ones out at the barrel's ends. Probing towards the shape's own axis returns exactly
-        // those - the support in a direction tilted towards the axis lands on the cap end AT CONTACT
-        // DEPTH, rise zero, because a barrel is straight - so the line's full length is recovered while
-        // the curved shoulder samples, which climb clear by a share of the radius, stay rejected. With
-        // an arbitrary basis those axial samples are never taken, the region collapses to the single
-        // witness, and a barrel whose witness is not under its centre of mass reads as overhanging
-        // (measured: the coin-pusher's cylinder rolls 1.76 turns where it needs 3, and leaves the ramp
-        // early). An upright barrel has no perpendicular axis component, so it keeps the usual basis,
-        // and its flat cap - whose samples are coplanar - widens on its own.
+        // The tangent basis decides WHICH points of the region get sampled, and an arbitrary
+        // perpendicular pair misses the barrel case: a cylinder on its side touches along a LINE, and
+        // only sampling towards the shape's own axis reaches that line's ends, because the support in
+        // an axially tilted direction lands on the cap end at contact depth, rise zero. An upright
+        // barrel keeps the usual basis, and its flat cap - whose samples are coplanar - widens on its own.
         Solver._tangentBasis(this._probeNormal, this._probeT1, this._probeT2);
         const t1 = this._probeT1, t2 = this._probeT2, dir = this._probeDir, out = this._probeOut;
         const inv = this._probeInvRot.copy(body.rotation).invert();
 
-        // How far off the contact plane a sample may sit and still count as part of the body's
-        // contact region. This has to be a CONTACT tolerance, not a share of the body: a sample this
-        // far off the plane is not touching the surface, whatever the body's size. Scaling it to the
-        // body (the old PROBE_DEPTH_BAND_FRACTION * smallest-extent) let a large-radius curved shape
-        // admit samples centimetres clear of the plane - a 300 mm-radius capsule's shoulder samples
-        // rise 37 mm at this probe tilt - and so fabricate a contact region wide enough to swallow a
-        // centre of mass that is genuinely off the contact. That is a false equilibrium: measured, a
-        // capsule dropped at 15 degrees onto a flat floor sat at its starting tilt and slept instead
-        // of toppling, because its one real contact point had been replaced by a 270 mm-wide
-        // "patch" it was never touching. A flat face still widens correctly at any band - its
-        // samples are coplanar to floating point - and a barrel's LINE is recovered by probing along
-        // the shape's own axis, so an absolute contact tolerance now separates the two real contact
-        // shapes from curvature noise instead of admitting all three.
+        // How far off the contact plane a sample may sit and still count as part of the body's contact
+        // region. An absolute CONTACT tolerance, not a share of the body: scaled to the body it admits
+        // samples well clear of the plane and fabricates a support region wide enough to swallow a
+        // centre of mass that is genuinely off the contact - a false equilibrium.
         const band = Solver.PROBE_DEPTH_BAND;
 
         for (let i = 0; i < Solver.PROBE_COUNT; i++) {
@@ -7574,19 +7522,11 @@ class Solver {
             const len = Math.sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z) || 1;
             dir.scaleInPlace(1 / len);
             MinkowskiSupport.supportOfInto(out, body, inv, dir, this._probeLocal);
-            // Measure the sample's height above the CONTACT PLANE, not above the witness. The witness
-            // is reported at the penetration depth, so on a settled barrel it sits up to ~20 mm inside
-            // the floor while the barrel's own support line - which IS at contact depth - lies that
-            // far above it. Judged against the witness, a barrel's samples are rejected for exactly
-            // the same reason, and by the same R*(1-cos) amount, as a tilted cap's shoulder samples,
-            // so NO band can admit the one and reject the other: measured, a barrelled cylinder of
-            // R=0.28 needs the band above 0.030 while a 15-degree capsule of R=0.30 needs it below
-            // 0.032 - a 2 mm window that exists only because the radii happen to differ, and the
-            // engine has to be right for both. Adding the contact's own signedDistance moves the
-            // reference onto the surface the two bodies actually meet at, and then the barrel's
-            // samples read ~3 mm off it while the cap's read ~32 mm: a single absolute contact
-            // tolerance separates them at ANY radius, which is what makes the tipover possible to fix
-            // without re-breaking the barrels.
+            // Height above the CONTACT PLANE, not above the witness: the witness is reported at the
+            // penetration depth, so judging against it rejects a barrel's own support line for exactly
+            // the reason, and by the same R*(1-cos) amount, as a tilted cap's shoulder. Adding the
+            // contact's signedDistance moves the reference onto the surface the two bodies actually
+            // meet at, which separates them at any radius.
             const proj = (out.x - px) * dx + (out.y - py) * dy + (out.z - pz) * dz + sd;
             if (proj < -band) continue;
             if (out.x < e.minX) e.minX = out.x;
@@ -7596,19 +7536,14 @@ class Solver {
         }
     }
 
-    // Records the horizontal extent of `manifold`'s contact patch into _supMinX/_supMaxX/_supMinZ/
-    // _supMaxZ, so _suppressQuietVerticalLanding can tell a patch the body is sitting ON from one it
-    // hangs off: a centre of mass inside this extent is supported from below, while a centre that has
-    // passed it is an overhang whose normal response cannot hold the body up without rotating it.
+    // Records the horizontal extent of `manifold`'s contact patch so the support test can tell a patch
+    // the body is sitting ON from one it hangs off: a centre of mass inside the extent is supported
+    // from below, while a centre that has passed it is an overhang.
     _supportBounds(bodyA, bodyB, manifold, n) {
         // The support under a body is the UNION of every upward patch it stands on this substep, not
-        // the patch of whichever manifold happens to be solved. A cone dropped on the seam of a tiled
-        // floor has a patch on each side of the seam and its centre of mass outside either one alone;
-        // judged manifold by manifold each patch reads as an overhang, both hand out torque, and the
-        // body is toppled off a surface it is in fact resting flat on. Unioned, the centre of mass
-        // sits inside the support and the contact is solved torque-free - which is what the same
-        // floor drawn as one mesh would do. Only multi-manifold bodies differ from the old behaviour:
-        // for a body standing on one patch the union is that patch.
+        // whichever manifold happens to be solved: a cone dropped on a tile seam has a patch either side
+        // of it and its centre of mass outside either alone, so judged manifold by manifold both read as
+        // overhangs and topple it off a surface it is resting flat on.
         const union = this._supportBoundsForBody(bodyA, bodyB);
         if (union) {
             this._supMinX = union.minX; this._supMaxX = union.maxX;
@@ -7636,13 +7571,10 @@ class Solver {
         this._supportCentreTol = curved ? CURVED_SUPPORT_CENTRE_TOL : SUPPORT_CENTRE_TOL;
     }
 
-    // Builds the per-body support union for one substep, keyed by body id. Only upward contacts
-    // count (a patch the body is standing on), and only ones that are actually touching - a
-    // speculative contact has no load to carry yet. Every point of a patch counts, including the
-    // separated probe samples a curved cloud spreads over the shape it stands on - those are what
-    // describe the width of its contact region, and dropping them narrows the support to noise.
-    // `gen` retires last substep's entries without
-    // reallocating: the map keeps one small record per body for the life of the solver.
+    // Builds the per-body support union for one substep, keyed by body id. Only upward contacts that
+    // actually touch count - a speculative contact carries no load yet - but every point of a patch
+    // does, including the separated probe samples that describe a curved region's width. `gen` retires
+    // last substep's entries without reallocating.
     _collectSupportBounds(manifolds) {
         const gen = ++this._supportGen;
         const byBody = this._supportBoundsByBody;
@@ -7653,12 +7585,10 @@ class Solver {
             if (!aFree && !bFree) continue;
             for (let i = 0; i < m.points.length; i++) {
                 const p = m.points[i];
-                // A point of a real patch (box-box, BoxTriFace/CapTriFace, PolyClip) that is still
-                // separated carries no load and does not widen the support. A ConvexTri probe sample
-                // is different: it samples the SHAPE, so around a curved contact its depth swings by
-                // the shape's own radius, and its separated samples are precisely what describe how
-                // wide the contact region is. Dropping them narrows a capsule's support to noise and
-                // lets a settled one be judged overhanging; keeping them is what the width means.
+                // A separated point of a real patch carries no load and does not widen the support. A
+                // ConvexTri probe sample is different: it samples the SHAPE, so its separated samples
+                // are exactly what describe how wide a curved contact region is. Dropping them narrows
+                // a capsule's support to noise and lets a settled one be judged overhanging.
                 if (p.signedDistance < -REST_TOUCH_BAND && !p.fromCurvedTri) continue;
                 const ny = p.normal.y;
                 if (ny > -0.98 && ny < 0.98) continue;
@@ -7718,26 +7648,20 @@ class Solver {
         this._reconcileRestVelocity(bodies, dt);
     }
 
-    // Zeroes the velocity of a body whose sustained motion over the last REST_WINDOW ticks is below
-    // the rest thresholds, from a per-body ring buffer of recent transforms. Once a body has stayed
-    // that quiet for REST_PIN_STREAK consecutive ticks it is also transform-pinned: each tick's
-    // residual drift is reverted to the previous sampled pose. The per-point Gauss-Seidel contact
-    // solve leaks a little tangential drift every substep for non-box shapes (box patches are already
-    // centroid-solved, see VelocitySolve.js), so a "settled" cylinder/cone/sphere slowly walks across
-    // its support with its reported velocity reading zero. The streak gate keeps this off any body
-    // that is only briefly quiet - a rider settling onto a carrier, a shape between bounces - so only
-    // a genuinely parked body gets pinned, and a sleeping body then matches a never-slept one exactly.
-    // See NOTES.md.
+    // Zeroes the velocity of a body whose sustained motion over the last REST_WINDOW ticks is below the
+    // rest thresholds. Past REST_PIN_STREAK quiet ticks it is also transform-pinned, reverting each tick's
+    // residual drift: the per-point Gauss-Seidel solve leaks tangential drift for non-box shapes, so a
+    // "settled" cylinder or cone would otherwise walk across its own support with its reported velocity
+    // reading zero.
     _reconcileRestVelocity(bodies, dt) {
         const win = REST_WINDOW;
         for (let i = 0; i < bodies.length; i++) {
             const b = bodies[i];
             if (b.bodyType !== RigidBody.DYNAMIC || !b.isAwake) continue;
 
-            // A body woken by a world change still looks quiet to the ring (it holds the pose it
-            // slept in), so the ring would zero its fresh gravity and snap it back every tick.
-            // Drop it; it rebuilds from scratch and can't re-pin until still for a full window.
-            // Routine wakes (impulse, contact, island restless) don't set the flag.
+            // A body woken by a world change still looks quiet to the ring (it holds the pose it slept
+            // in), which would zero its fresh gravity and snap it back every tick. Drop it; it rebuilds
+            // and can't re-pin until still for a full window.
             if (b._restRingStale) {
                 b._restRingStale = false;
                 this._restRing.delete(b.id);
@@ -7835,14 +7759,11 @@ class Solver {
     }
 
     // Collects the manifolds that describe ONE physical contact set: a dynamic body touching several
-    // non-dynamic surfaces whose patches are coplanar - four mesh tiles butting together, a body
-    // straddling a tile seam, a box lying across two ground pieces. The per-manifold centroid solve
-    // is right for a single face patch (see VelocitySolve._boxFacePatchVelocity) but applies one
-    // restitution+friction impulse PER SURFACE when there are several: each impulse is offset from
-    // the centre of mass, the first one's torque changes the state the next one measures, the torques
-    // stop cancelling, and the body is handed a lateral kick and spin it was never given. Solving the
-    // coplanar set as one contact set at one centroid makes the tiled ground behave exactly like the
-    // single mesh it represents. Only runs of two or more are grouped; everything else is untouched.
+    // coplanar non-dynamic surfaces - four mesh tiles butting together, a box lying across two ground
+    // pieces. The per-manifold centroid solve is right for a single face patch, but applies one
+    // restitution+friction impulse PER SURFACE when there are several: each is offset from the centre
+    // of mass, the torques stop cancelling, and the body is handed a lateral kick and spin it was never
+    // given. Only runs of two or more are grouped.
     _coplanarPatchGroups(manifolds) {
         const groups = this._patchGroups;
         const byBody = this._patchGroupsByBody;
@@ -7934,31 +7855,21 @@ class Solver {
         // manifold's points, which are somewhere else entirely.
         this._checkSupport = false;
         const n = manifold.points.length;
-        // A body teetering on a ledge or a table edge has its patch clipped down to a single point
-        // (or one line of two), and that one point is the whole support region: the centre of mass
-        // can sit past it, and then the contact cannot hold the body up without rotating it. The
-        // extent test must therefore run for a real patch BEFORE the single-point early return -
-        // otherwise a quiet body parked past the edge is solved torque-free and hangs there frozen
-        // (see _suppressQuietVerticalLanding).
-        // The extent test runs for EVERY contact, including a bare GJK/EPA witness. A lone contact
-        // point is a pivot: the centre of mass either sits over it - in which case the contact can
-        // carry the weight without turning the body - or it does not, and then the contact MUST
-        // rotate the body, so suppressing its angular response is what leaves a cone balanced
-        // upright on its base rim with its tip a whole radius in the air, perfectly still, forever.
-        // The witness being one sample of a rounded contact region rather than its centre is what the
-        // tolerance in _supportBounds absorbs - a resting sphere's witness is under its centre of
-        // mass, so it is inside the tolerance, while this cone's is half a metre outside.
+        // A body teetering on a ledge has its patch clipped to a single point, and that point IS the whole
+        // support region: the centre of mass can sit past it, and then the contact cannot hold the body up
+        // without rotating it, so the extent test must run BEFORE the single-point early return. A lone
+        // contact point is a pivot, and suppressing its angular response is what leaves a body balanced
+        // upright on its rim, perfectly still, forever.
         this._checkSupport = true;
         this._supportBounds(bodyA, bodyB, manifold, n);
         if (n <= 1) {
             if (n === 1) this._solvePoint(manifold.points[0], bodyA, bodyB, h);
             return;
         }
-        // The support-extent test below is only meaningful for the closed-form box-box patch, which is
-        // generated complete in one go: it is clipped to the supported part of the box's face, but every
-        // point of it belongs to a patch that exists right now, so the extent describes this contact.
-        // Mesh and single-witness contacts have no such guarantee (their set grows and re-clips through
-        // a landing), and testing them against it costs far more than it buys.
+        // The extent test below only means anything for the closed-form box-box patch, generated
+        // complete in one go and clipped to the supported part of the box's face. Mesh and
+        // single-witness sets grow and re-clip through a landing, so testing them against it costs more
+        // than it buys.
         let boxBoxPatch = true;
         for (let i = 0; i < n; i++) {
             if (!manifold.points[i].fromBoxBox) { boxBoxPatch = false; break; }
@@ -7984,9 +7895,9 @@ class Solver {
         }
         if (suppressPatchTorque) this._skipPositionAngular = true;
         for (let i = 0; i < n; i++) {
-            // Closed-form box patches already provide a complete face manifold; do not
-            // artificially cap their penetration correction, which can leave a tumbling box
-            // sunk below a flat support while its angular contact corrections keep injecting work.
+            // Closed-form box patches provide a complete face manifold; capping their penetration
+            // correction can leave a tumbling box sunk below a flat support while its angular contact
+            // corrections keep injecting work.
             this._solvePoint(manifold.points[i], bodyA, bodyB, h, !manifold.points[i].fromBoxBox && !manifold.points[i].fromMeshFace);
         }
         if (suppressPatchTorque) this._skipPositionAngular = false;
@@ -8030,35 +7941,24 @@ Solver.RESTITUTION_SLOP_FACTOR = 8;
 Solver.MAX_PENETRATION_PER_SUBSTEP = 0.005;
 
 // Half-width of the support extent a body's centre may sit outside of and still count as resting ON
-// the patch rather than overhanging it. The dead zone also has to cover a curved shape's probe cloud
-// (see _supportBounds), which samples the contact region rather than outlining it: a resting capsule
-// or cylinder reads a few millimetres of apparent overhang that is sampling noise, not a real
+// the patch rather than overhanging it. The dead zone must also cover a curved shape's probe cloud,
+// whose samples read a few millimetres of apparent overhang that is sampling noise, not a real
 // overhang, and reactivating its torque there makes it buzz instead of rest.
 var SUPPORT_CENTRE_TOL = 0.005;
 var CURVED_SUPPORT_CENTRE_TOL = 0.02;
 
-// Ring of directions the contact-region probe samples a body's support in (see
-// _widenSupportWithProbe) - the same ring, tilt and count ConvexTri uses on its curved contacts.
-// PROBE_DEPTH_BAND is how far off the contact plane a sample may sit and still count as part of the
-// body's region: on a flat face the samples are coplanar to floating-point, while on a rounded
-// contact they have climbed clear of it by a share of the shape's own radius. It is an absolute
-// contact tolerance deliberately - see _widenSupportWithProbe for what scaling it to the body broke.
+// Ring of directions the contact-region probe samples a body's support in - the same ring, tilt and
+// count ConvexTri uses on its curved contacts.
 Solver.PROBE_COUNT = 4;
-// How far off the contact normal the ring samples, and this must be SMALL. At 0.5 rad a probe lands
-// on a curved surface's SHOULDER - R*(1-cos 0.5) = 0.106*R off the contact plane - which is not part
-// of the contact at all, so a barrel's samples came back exactly as "climbed" as a tilted cap's and
-// no depth band could separate them. Sampling near the normal lands on the contact FEATURE instead:
-// the support along a barrel's own axis sits at the barrel's end ON the contact line, rise zero, so
-// the line's full length is recovered, while a tilted cap's samples stay within R*sin(tilt) of its one
-// true contact point - too narrow to cover a centre of mass that is genuinely off the contact. A flat
-// face is unaffected at any tilt: the support in a tilted direction is still a corner of that face.
-// Swept against the suite's conflicting fixtures, 0.5 rad fails both barrels and the coin-pusher, 0.2
-// and 0.15 fail the tipover on its sleep budget, and 0.05-0.10 passes every one of them.
+// How far off the contact normal the ring samples, and this must be SMALL. At 0.5 rad a probe lands on a
+// curved surface's SHOULDER - R*(1-cos 0.5) = 0.106*R off the contact plane - which is not part of the
+// contact, so a barrel comes back as "climbed" as a tilted cap and no depth band separates them. Near the
+// normal it lands on the contact FEATURE instead, whose rise along the shape's own axis is zero, while a
+// tilted cap's samples stay within R*sin(tilt) of its one true contact point.
 Solver.PROBE_TILT = 0.07;
 // How far off the CONTACT PLANE a probe sample may sit and still count as part of the body's contact
-// region (see _widenSupportWithProbe, which measures against the plane rather than the witness, and
-// why that distinction is what makes this band work). An absolute contact tolerance: admitting a
-// sample further off than this would fabricate a contact region the body is not touching.
+// region. Measured against the plane rather than the witness, and an absolute contact tolerance:
+// admitting a sample further off than this would fabricate a region the body is not touching.
 Solver.PROBE_DEPTH_BAND = 0.01;
 Solver._PROBE_U = [Solver.PROBE_TILT, -Solver.PROBE_TILT, 0, 0];
 Solver._PROBE_V = [0, 0, Solver.PROBE_TILT, -Solver.PROBE_TILT];
@@ -8070,12 +7970,9 @@ var REST_PIN_STREAK = 12;
 var REST_TOUCH_BAND = 0.005;
 
 // Does this shape have flat faces a body can tip from face to face onto? A box or a hull does; a
-// sphere, capsule, cylinder or cone does not (nothing to tip onto - its contact is a point or a
-// line, and the rotation an off-centre push generates about it is real). Compounds count as flat
-// only when every child does. Used by the position solve (a flat-faced body may only be solved
-// torque-free once it has genuinely stopped turning) and by the velocity solve (a flat-faced
-// body's patch is a polygon, whose extent gives a trustworthy anchor - see
-// VelocitySolve._boxFacePatchVelocity).
+// sphere, capsule, cylinder or cone does not - nothing to tip onto, and the rotation an off-centre
+// push generates about its point or line contact is real. Compounds count as flat only when every
+// child does.
 function isFlatFaced(shape) {
     if (shape instanceof BoxShape || shape instanceof ConvexShape) return true;
     if (shape instanceof CompoundShape) {
@@ -8244,16 +8141,13 @@ proto._solvePoint = function (point, bodyA, bodyB, h, capPenetration) {
     const deltaLambda = newLambda - oldLambda;
     point.normalLambda = newLambda;
 
-    // Only the share explainable by the body's own closing velocity becomes derived velocity; the
-    // rest is a pure position edit (biasDelta), subtracted back out in the velocity-derivation
-    // step. Lets a loaded resting body correct fully while a raw spawn overlap resolves gently.
+    // Only the share explainable by the body's own closing velocity becomes derived velocity; the rest is
+    // a pure position edit (biasDelta), subtracted back out in the velocity-derivation step, so a loaded
+    // resting body corrects fully while a raw spawn overlap resolves gently.
     //
-    // The allowance is per contact point per SUBSTEP, and it is spent, not refreshed: a deep overlap
-    // is deliberately corrected a little at a time (MAX_PENETRATION_PER_SUBSTEP), so this same point
-    // is solved several times in a substep, and crediting each of those passes separately turned a
-    // handful of 5 mm position edits into a 19 m/s launch. What the body's own motion explains is how
-    // far it closed this substep; correcting the same overlap again inside that substep is not more
-    // of its own motion, and must not be credited again.
+    // The allowance is per point per SUBSTEP and is spent, not refreshed: a deep overlap is corrected a
+    // little at a time (MAX_PENETRATION_PER_SUBSTEP), so this point is solved several times in a substep,
+    // and crediting each pass separately turned a handful of 5 mm edits into a 19 m/s launch.
     const liveRelVel = this._contactRelativeNormalVelocity(point, bodyA, bodyB);
     const alreadyCredited = point._credited || 0;
     let allowance = Math.max(liveRelVel, 0) * h * Solver.EXPLAINABLE_MARGIN - alreadyCredited;
@@ -8264,13 +8158,10 @@ proto._solvePoint = function (point, bodyA, bodyB, h, capPenetration) {
     const velocityDelta = -velocityC / wSum;
     const biasDelta = deltaLambda - velocityDelta;
     const priorSkipAngular = this._skipPositionAngular;
-    // A vertical contact is load-bearing, so its angular response is decided by the support test
-    // inside _suppressQuietVerticalLanding: a body whose centre of mass is over the support (or that
-    // a real patch holds up) is solved torque-free, while one that has passed the edge keeps its
-    // torque - and must, or a prop balanced on the corner of a mesh edge hangs there frozen instead
-    // of tipping off. A ConvexTri probe sample on a PERPENDICULAR side face reads the shape's own
-    // girth as penetration; correcting that angularly flings the body, so a non-vertical curved
-    // contact stays torque-free.
+    // A vertical contact is load-bearing, so its angular response is decided by the support test: a body
+    // whose centre of mass is over the support is solved torque-free, while one that has passed the edge
+    // keeps its torque - and must, or a prop balanced on a corner hangs there frozen instead of tipping
+    // off. A ConvexTri sample on a PERPENDICULAR side face reads the shape's girth as penetration.
     if ((point.fromCurvedTri && Math.abs(ny) < 0.98) ||
         this._suppressQuietVerticalLanding(bodyA, bodyB, point, nx, ny, nz)) this._skipPositionAngular = true;
 
@@ -8286,10 +8177,10 @@ proto._suppressQuietVerticalLanding = function (bodyA, bodyB, point, nx, ny, nz)
     let body = bodyA.bodyType === RigidBody.DYNAMIC ? bodyA :
         (bodyB.bodyType === RigidBody.DYNAMIC ? bodyB : null);
     if (!body) return false;
-    // Only a patch the body is actually sitting ON may be solved torque-free. Once the centre of mass
-    // has passed the patch's horizontal extent the contact is one-sided - its normal response cannot
-    // hold the body up without rotating it - so a body parked on the edge of a ledge keeps its
-    // angular response and tips, instead of standing in a false equilibrium.
+    // Only a patch the body is actually sitting ON may be solved torque-free. Past the patch's
+    // horizontal extent the contact is one-sided - it cannot hold the body up without rotating it - so
+    // a body parked on the edge of a ledge keeps its angular response and tips instead of standing in
+    // a false equilibrium.
     if (this._checkSupport) {
         const tol = this._supportCentreTol;
         if (body.position.x < this._supMinX - tol || body.position.x > this._supMaxX + tol) return false;
@@ -8297,14 +8188,11 @@ proto._suppressQuietVerticalLanding = function (bodyA, bodyB, point, nx, ny, nz)
     }
     const av = body.angular_velocity, lv = body.linear_velocity;
     if (lv.x * lv.x + lv.z * lv.z > 0.05 * 0.05) return false;
-    // A shape with FLAT faces (a box, a hull) tips from face to face, and the rotation that carries
-    // it there comes from these very corrections - so it may only be solved torque-free once it has
-    // genuinely stopped turning. A CURVED shape has nothing to tip onto: its contact against a
-    // vertical surface is a point or a line, and the rotation an off-centre push generates about it
-    // is not something the shape's own motion accounts for. Requiring "already still" there is
-    // circular - that spurious rock IS the rotation, so the gate it would need to open never opens,
-    // and a settled capsule rocks against the mesh at a fifth of a radian per second forever while
-    // its reported velocity reads zero.
+    // A shape with FLAT faces (a box, a hull) tips from face to face, and the rotation that carries it
+    // there comes from these very corrections, so it may only be solved torque-free once it has
+    // genuinely stopped turning. A CURVED shape has nothing to tip onto, and requiring "already still"
+    // there is circular - that spurious rock IS the rotation, so the gate never opens and a settled
+    // capsule rocks against the mesh forever while its reported velocity reads zero.
     if (isFlatFaced(body.shape)) {
         if (av.x * av.x + av.y * av.y + av.z * av.z > 0.01 * 0.01) return false;
         const q = body.rotation;
@@ -8369,11 +8257,10 @@ proto._applyPositionalCorrection = function (bodyA, bodyB, rA, rB, nx, ny, nz, d
 };
 
 // Small-angle PBD angular update from a linear positional impulse p at offset r: I^-1*(r x p)*0.5.
-// When `bias`, the rotation is also recorded as a bias rotation: like the linear bias displacement, a
-// penetration-pop's rotation is a pure position edit, not something the body's own motion did, and
-// _deriveVelocities subtracts it back out. Without this, resolving a deep overlap spun the body up in
-// one substep (a 0.19 rad correction becomes ~45 rad/s at h=1/240) - the angular half of the same
-// energy-injection bug the linear bias already guards against.
+// When `bias`, the rotation is also recorded as a bias rotation - a penetration-pop's rotation is a
+// pure position edit, not something the body's own motion did - and _deriveVelocities subtracts it back
+// out. Without this, resolving a deep overlap spun the body up in one substep (a 0.19 rad correction
+// becomes ~45 rad/s at h=1/240).
 proto._applyAngularCorrection = function (body, r, px, py, pz, bias) {
     if (this._skipPositionAngular) return;
     const torqueX = r.y * pz - r.z * py, torqueY = r.z * px - r.x * pz, torqueZ = r.x * py - r.y * px;
@@ -8396,11 +8283,11 @@ proto._applyAngularCorrection = function (body, r, px, py, pz, bias) {
 // applied after positions are solved, plus the velocity-space helpers they share.
 var proto = Solver.prototype;
 
-// Solving restitution + friction point-by-point over a flat face patch fabricates lateral drift on
-// a symmetric drop: each point's off-center impulse spins the body a hair, the next reads the spun
-// state, and the impulses no longer cancel. For a genuine face patch (a BoxBox face manifold, or a
-// mesh face manifold whose points all come from TriTri) resolve it once at the centroid instead.
-// Everything else keeps the per-point solve.
+// Solving restitution + friction point-by-point over a flat face patch fabricates lateral drift on a
+// symmetric drop: each point's off-center impulse spins the body a hair, the next reads the spun state,
+// and the impulses no longer cancel. A genuine face patch (a BoxBox face manifold, or a mesh face
+// manifold whose points all come from TriTri) is resolved once at the centroid instead; everything
+// else keeps the per-point solve.
 proto.COPLANAR_NORMAL_DOT = 0.9999;
 
 proto._boxFacePatchVelocity = function (manifold, bodyA, bodyB, gravity, h) {
@@ -8419,9 +8306,8 @@ proto._boxFacePatchVelocity = function (manifold, bodyA, bodyB, gravity, h) {
     // A mesh face patch is one face by construction, so use all its points for the centroid - not
     // just the ones the position sweep left engaged this substep. A BoxBox patch uses engaged-only.
     const useAll = allMeshFace;
-    // How the anchor is chosen (below) depends on whether the patch is a polygon of a flat-faced
-    // body. A curved body's points sample the shape's own surface instead, and a shape with mixed
-    // children (a compound with a cylinder in it) counts as curved.
+    // How the anchor is chosen below depends on whether the patch is a polygon of a flat-faced body. A
+    // curved body's points sample the shape's own surface instead, so mixed children count as curved.
     const dyn = bodyA.bodyType === RigidBody.DYNAMIC ? bodyA : bodyB;
     let nx = 0, ny = 0, nz = 0, cnt = 0, engaged = 0, maxPre = 0, totLam = 0;
     let curved = !isFlatFaced(dyn.shape);
@@ -8443,21 +8329,12 @@ proto._boxFacePatchVelocity = function (manifold, bodyA, bodyB, gravity, h) {
     if (nl < 1e-9) return false;
     nx /= nl; ny /= nl; nz /= nl;
 
-    // The anchor is the centre of the contact REGION, and these points are only a SAMPLE of it - four
-    // at most, chosen by a spread-maximizing reduction, plus whatever vertices a mesh triangle's clip
-    // adds. Their arithmetic mean is therefore not the region's centre: on a slab resting flat across
-    // a tile seam this manifold holds three of the face's four corners plus the point where the seam
-    // crosses one edge, and that mean lands half a metre off the body - so restitution was applied a
-    // half-metre to one side and spun a slab that had been dropped dead flat (measured 0 -> 3.9 rad/s
-    // in a single substep, against exactly 0 on the same square drawn as one box face). The centre of
-    // the sample's EXTENT along the patch plane does not depend on WHICH interior points the reduction
-    // kept, so it stays on the region; for any patch whose points are a fair sample the two agree.
+    // The anchor is the centre of the contact REGION, and these points are only a SAMPLE of it: the
+    // reduction keeps four, so their mean is not the region's centre, while the centre of their EXTENT
+    // along the patch plane does not depend on WHICH points were kept.
     //
-    // A CURVED body is the exception, and keeps the mean: its points sample the SHAPE's surface
-    // across the contact band rather than outlining a polygon, so the extreme samples sit out on the
-    // shape's shoulders and the midpoint of those extremes is not the centre of the band. Measured:
-    // taking a lying cylinder's seam contact from the mean to the extent midpoint stops it rolling
-    // (the coin-pusher roller manages 0.63 turns where it needs 3) and drops it through the floor.
+    // A CURVED body keeps the mean: its points sample the SHAPE's surface, so the extremes sit out on its
+    // shoulders and their midpoint is not the centre of the band.
     let minAx = Infinity, maxAx = -Infinity, minAy = Infinity, maxAy = -Infinity, minAz = Infinity, maxAz = -Infinity;
     let minBx = Infinity, maxBx = -Infinity, minBy = Infinity, maxBy = -Infinity, minBz = Infinity, maxBz = -Infinity;
     let sumAx = 0, sumAy = 0, sumAz = 0, sumBx = 0, sumBy = 0, sumBz = 0;
@@ -8547,12 +8424,11 @@ proto._boxFacePatchVelocity = function (manifold, bodyA, bodyB, gravity, h) {
     return true;
 };
 
-// One velocity solve for a whole coplanar contact set (see Solver._coplanarPatchGroups): restitution
-// and friction applied ONCE at the set's shared centroid, so a body resting on four butting mesh
-// tiles sees exactly the impulse it would see on one mesh of the same shape. The dynamic body is
-// treated as A and every grouped surface as the static B, so the only impulse applied is the one to
-// the body. Returns false when the set is not solvable as one (points on two planes, nothing
-// engaged), in which case the caller falls back to the per-point solves.
+// One velocity solve for a whole coplanar contact set (see Solver._coplanarPatchGroups): restitution and
+// friction applied ONCE at the set's shared centroid, so a body resting on four butting mesh tiles sees
+// the impulse it would see on one mesh of the same shape. The dynamic body is treated as A and every
+// grouped surface as the static B. Returns false when the set is not solvable as one, and the caller
+// falls back to the per-point solves.
 proto._solvePatchGroup = function (group, gravity, h) {
     const dyn = group.dyn, other = group.other;
     const anchor = this._tmpDispA;
